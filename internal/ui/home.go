@@ -923,18 +923,36 @@ func (h *Home) rebuildFlatItems() {
 
 	// Apply status filter if active
 	if h.statusFilter != "" {
-		// First pass: identify groups that have matching sessions
+		// First pass: identify groups that have matching sessions.
+		// IMPORTANT: match against groupTree sessions, not flattened items.
+		// Flatten hides sessions in collapsed groups, which would otherwise make
+		// filtered views appear empty when users collapse groups.
 		groupsWithMatches := make(map[string]bool)
-		for _, item := range allItems {
-			if item.Type == session.ItemTypeSession && item.Session != nil {
-				if item.Session.Status == h.statusFilter {
-					// Mark this session's group and all parent groups as having matches
-					groupsWithMatches[item.Path] = true
-					// Also mark parent paths
-					parts := strings.Split(item.Path, "/")
-					for i := range parts {
-						parentPath := strings.Join(parts[:i+1], "/")
-						groupsWithMatches[parentPath] = true
+
+		markGroupAndParents := func(groupPath string) {
+			if groupPath == "" {
+				return
+			}
+			groupsWithMatches[groupPath] = true
+			parts := strings.Split(groupPath, "/")
+			for i := range parts {
+				parentPath := strings.Join(parts[:i+1], "/")
+				groupsWithMatches[parentPath] = true
+			}
+		}
+
+		if h.groupTree != nil {
+			for _, g := range h.groupTree.GroupList {
+				if g == nil {
+					continue
+				}
+				for _, sess := range g.Sessions {
+					if sess != nil && sess.GetStatusThreadSafe() == h.statusFilter {
+						// Mark once per group path, then stop scanning this group's sessions.
+						// Any matching session is sufficient because all sessions in this
+						// loop belong to the same group path (g.Path).
+						markGroupAndParents(g.Path)
+						break
 					}
 				}
 			}
@@ -950,7 +968,7 @@ func (h *Home) rebuildFlatItems() {
 				}
 			} else if item.Type == session.ItemTypeSession && item.Session != nil {
 				// Keep session if it matches the filter
-				if item.Session.Status == h.statusFilter {
+				if item.Session.GetStatusThreadSafe() == h.statusFilter {
 					filtered = append(filtered, item)
 				}
 			}
@@ -3518,20 +3536,7 @@ func (h *Home) handleSearchKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "enter":
 		selected := h.search.Selected()
 		if selected != nil {
-			// Ensure the session's group AND all parent groups are expanded so it's visible
-			if selected.GroupPath != "" {
-				h.groupTree.ExpandGroupWithParents(selected.GroupPath)
-			}
-			h.rebuildFlatItems()
-
-			// Find the session in flatItems (not instances) and set cursor
-			for i, item := range h.flatItems {
-				if item.Type == session.ItemTypeSession && item.Session != nil && item.Session.ID == selected.ID {
-					h.cursor = i
-					h.syncViewport() // Ensure the cursor is visible in the viewport
-					break
-				}
-			}
+			h.jumpToSession(selected)
 		}
 		h.search.Hide()
 		return h, nil
@@ -3594,12 +3599,23 @@ func (h *Home) handleGlobalSearchSelection(result *GlobalSearchResult) tea.Cmd {
 	}
 	h.instancesMu.RUnlock()
 
+	// For create-from-search path, clear blocking filter first.
+	// Existing-session path relies on jumpToSession() self-healing.
+	if h.statusFilter != "" {
+		h.statusFilter = ""
+		h.rebuildFlatItems()
+	}
+
 	// Create new session with this Claude session ID
 	return h.createSessionFromGlobalSearch(result)
 }
 
 // jumpToSession jumps the cursor to the specified session
 func (h *Home) jumpToSession(inst *session.Instance) {
+	if inst == nil {
+		return
+	}
+
 	// Ensure the session's group is expanded
 	if inst.GroupPath != "" {
 		h.groupTree.ExpandGroupWithParents(inst.GroupPath)
@@ -3607,13 +3623,29 @@ func (h *Home) jumpToSession(inst *session.Instance) {
 	h.rebuildFlatItems()
 
 	// Find and select the session
+	if h.selectSessionInFlatItems(inst.ID) {
+		return
+	}
+
+	// If a status filter is hiding it, clear filter and retry.
+	if h.statusFilter != "" {
+		h.statusFilter = ""
+		h.rebuildFlatItems()
+		_ = h.selectSessionInFlatItems(inst.ID)
+	}
+}
+
+// selectSessionInFlatItems moves cursor to a session ID in current flatItems.
+// Returns true when the session is present under current filter/expansion state.
+func (h *Home) selectSessionInFlatItems(sessionID string) bool {
 	for i, item := range h.flatItems {
-		if item.Type == session.ItemTypeSession && item.Session != nil && item.Session.ID == inst.ID {
+		if item.Type == session.ItemTypeSession && item.Session != nil && item.Session.ID == sessionID {
 			h.cursor = i
 			h.syncViewport()
-			break
+			return true
 		}
 	}
+	return false
 }
 
 // createSessionFromGlobalSearch creates a new Agent Deck session from global search result

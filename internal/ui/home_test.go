@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"encoding/json"
 	"fmt"
 	"strings"
 	"testing"
@@ -101,6 +102,167 @@ func TestHomeUpdateSearch(t *testing.T) {
 	}
 	if !h.search.IsVisible() {
 		t.Error("Local search should be visible after pressing / when global search is not available")
+	}
+}
+
+func TestHomeRebuildFlatItems_StatusFilterPreservesCollapsedMatchingGroups(t *testing.T) {
+	home := NewHome()
+	home.width = 100
+	home.height = 30
+
+	inst := &session.Instance{
+		ID:        "sess-1",
+		Title:     "waiting-session",
+		GroupPath: "lyceum",
+		Status:    session.StatusWaiting,
+	}
+
+	home.instances = []*session.Instance{inst}
+	home.groupTree = session.NewGroupTree(home.instances)
+	home.groupTree.CollapseGroup("lyceum")
+	home.statusFilter = session.StatusWaiting
+
+	home.rebuildFlatItems()
+
+	if len(home.flatItems) != 1 {
+		t.Fatalf("flatItems length = %d, want 1 group item", len(home.flatItems))
+	}
+	if home.flatItems[0].Type != session.ItemTypeGroup {
+		t.Fatalf("flatItems[0].Type = %v, want ItemTypeGroup", home.flatItems[0].Type)
+	}
+	if home.flatItems[0].Path != "lyceum" {
+		t.Fatalf("flatItems[0].Path = %q, want %q", home.flatItems[0].Path, "lyceum")
+	}
+}
+
+func TestHomeJumpToSessionClearsStatusFilterWhenTargetHidden(t *testing.T) {
+	home := NewHome()
+	home.width = 100
+	home.height = 30
+
+	inst := &session.Instance{
+		ID:        "sess-2",
+		Title:     "idle-session",
+		GroupPath: "lyceum",
+		Status:    session.StatusIdle,
+	}
+
+	home.instances = []*session.Instance{inst}
+	home.groupTree = session.NewGroupTree(home.instances)
+	home.statusFilter = session.StatusWaiting // target session hidden by filter
+	home.rebuildFlatItems()
+	if len(home.flatItems) != 0 {
+		t.Fatalf("expected hidden session with waiting filter, got %d visible items", len(home.flatItems))
+	}
+
+	home.jumpToSession(inst)
+
+	if home.statusFilter != "" {
+		t.Fatalf("statusFilter = %q, want empty after jumpToSession", home.statusFilter)
+	}
+	selected := home.getSelectedSession()
+	if selected == nil {
+		t.Fatal("selected session is nil after jumpToSession")
+	}
+	if selected.ID != inst.ID {
+		t.Fatalf("selected.ID = %q, want %q", selected.ID, inst.ID)
+	}
+}
+
+func TestHomeGlobalSearchSelectionClearsFilterAndPersistsUIState(t *testing.T) {
+	home := NewHome()
+	home.width = 100
+	home.height = 30
+
+	inst := &session.Instance{
+		ID:              "sess-3",
+		Title:           "idle-session",
+		GroupPath:       "lyceum",
+		Status:          session.StatusIdle,
+		ClaudeSessionID: "claude-session-3",
+	}
+
+	home.instances = []*session.Instance{inst}
+	home.instanceByID = map[string]*session.Instance{inst.ID: inst}
+	home.groupTree = session.NewGroupTree(home.instances)
+	home.statusFilter = session.StatusWaiting // hidden by filter
+	home.rebuildFlatItems()
+
+	if len(home.flatItems) != 0 {
+		t.Fatalf("expected hidden session with waiting filter, got %d visible items", len(home.flatItems))
+	}
+
+	// Persist initial filtered state.
+	home.saveUIState()
+	db := home.storage.GetDB()
+	if db == nil {
+		t.Fatal("storage db is nil")
+	}
+	initialJSON, err := db.GetMeta("ui_state")
+	if err != nil {
+		t.Fatalf("GetMeta(ui_state) failed: %v", err)
+	}
+	var initial uiState
+	if err := json.Unmarshal([]byte(initialJSON), &initial); err != nil {
+		t.Fatalf("failed to parse initial ui_state: %v", err)
+	}
+	if initial.StatusFilter != string(session.StatusWaiting) {
+		t.Fatalf("initial StatusFilter = %q, want %q", initial.StatusFilter, session.StatusWaiting)
+	}
+
+	// Select existing session via global search.
+	cmd := home.handleGlobalSearchSelection(&GlobalSearchResult{SessionID: inst.ClaudeSessionID})
+	if cmd != nil {
+		t.Fatal("expected nil cmd when selecting existing session from global search")
+	}
+	if home.statusFilter != "" {
+		t.Fatalf("statusFilter = %q, want empty after global search selection", home.statusFilter)
+	}
+	selected := home.getSelectedSession()
+	if selected == nil || selected.ID != inst.ID {
+		t.Fatalf("selected session mismatch: got %#v, want ID %q", selected, inst.ID)
+	}
+
+	// Persist cleared state and verify no stale filter remains.
+	home.saveUIState()
+	updatedJSON, err := db.GetMeta("ui_state")
+	if err != nil {
+		t.Fatalf("GetMeta(ui_state) after clear failed: %v", err)
+	}
+	var updated uiState
+	if err := json.Unmarshal([]byte(updatedJSON), &updated); err != nil {
+		t.Fatalf("failed to parse updated ui_state: %v", err)
+	}
+	if updated.StatusFilter != "" {
+		t.Fatalf("updated StatusFilter = %q, want empty", updated.StatusFilter)
+	}
+
+	// Cleanup to avoid cross-test contamination from persisted UI state.
+	if err := db.SetMeta("ui_state", ""); err != nil {
+		t.Fatalf("failed to cleanup ui_state metadata: %v", err)
+	}
+}
+
+func TestHomeGlobalSearchSelectionCreatePathClearsFilter(t *testing.T) {
+	home := NewHome()
+	home.width = 100
+	home.height = 30
+
+	home.instances = []*session.Instance{}
+	home.instanceByID = map[string]*session.Instance{}
+	home.groupTree = session.NewGroupTree(home.instances)
+	home.statusFilter = session.StatusWaiting
+	home.rebuildFlatItems()
+
+	cmd := home.handleGlobalSearchSelection(&GlobalSearchResult{
+		SessionID: "missing-session-id",
+		CWD:       ".",
+	})
+	if cmd == nil {
+		t.Fatal("expected non-nil cmd for create-from-global-search path")
+	}
+	if home.statusFilter != "" {
+		t.Fatalf("statusFilter = %q, want empty after create path selection", home.statusFilter)
 	}
 }
 
