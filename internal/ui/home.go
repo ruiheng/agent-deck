@@ -1869,7 +1869,7 @@ func (h *Home) backgroundStatusUpdate() {
 	// Feed hook statuses from watcher to instances (enables hook fast path in UpdateStatus)
 	if h.hookWatcher != nil {
 		for _, inst := range instances {
-			if inst.Tool == "claude" || inst.Tool == "codex" {
+			if inst.Tool == "claude" || inst.Tool == "codex" || inst.Tool == "gemini" {
 				if hs := h.hookWatcher.GetHookStatus(inst.ID); hs != nil {
 					inst.UpdateHookStatus(hs)
 				}
