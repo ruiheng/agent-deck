@@ -1604,18 +1604,6 @@ func waitForAgentReady(tmuxSess *tmux.Session, tool string) error {
 					continue
 				}
 			}
-			// Gate Codex sends on prompt readiness: wait for "codex>" or
-			// "Continue?" to be visible before considering the agent ready.
-			if tool == "codex" {
-				if rawContent, captureErr := tmuxSess.CapturePaneFresh(); captureErr == nil {
-					content := tmux.StripANSI(rawContent)
-					detector := tmux.NewPromptDetector("codex")
-					if !detector.HasPrompt(content) {
-						// Codex hasn't shown its prompt yet; keep polling.
-						continue
-					}
-				}
-			}
 			time.Sleep(300 * time.Millisecond) // Small delay for UI to render
 			return nil
 		}
