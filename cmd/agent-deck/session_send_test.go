@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync/atomic"
@@ -10,7 +11,18 @@ import (
 	"time"
 
 	"github.com/asheshgoplani/agent-deck/internal/session"
+	"github.com/asheshgoplani/agent-deck/internal/tmux"
 )
+
+func skipIfNoTmuxServerMain(t *testing.T) {
+	t.Helper()
+	if _, err := exec.LookPath("tmux"); err != nil {
+		t.Skip("tmux not available")
+	}
+	if err := exec.Command("tmux", "list-sessions").Run(); err != nil {
+		t.Skip("tmux server not running")
+	}
+}
 
 // mockStatusChecker implements statusChecker for testing waitForCompletion.
 type mockStatusChecker struct {
@@ -389,10 +401,58 @@ func TestSendWithRetryTarget_IncreasedAmbiguousBudget(t *testing.T) {
 	}
 }
 
-// Integration test coverage for Codex readiness: waitForAgentReady uses a
-// concrete *tmux.Session so it cannot be unit tested with mocks here.
-// See TestSend_CodexReadiness in internal/integration/send_reliability_test.go
-// (Plan 02) for integration test coverage of Codex prompt gating.
+func TestWaitForAgentReady_CodexAcceptsCurrentPromptWithoutLegacyDetector(t *testing.T) {
+	skipIfNoTmuxServerMain(t)
+
+	tmpDir := t.TempDir()
+	scriptPath := filepath.Join(tmpDir, "fake-codex-current-prompt.sh")
+	script := `#!/bin/sh
+sleep 1
+printf "How can I help today?\n"
+while IFS= read -r line; do
+  echo "received: $line"
+  printf "How can I help today?\n"
+done
+`
+	if err := os.WriteFile(scriptPath, []byte(script), 0755); err != nil {
+		t.Fatalf("failed to write fake codex script: %v", err)
+	}
+
+	tmuxSess := tmux.NewSession("Test-Wait-Codex-Current-Prompt", tmpDir)
+	defer func() { _ = tmuxSess.Kill() }()
+	if err := tmuxSess.Start(scriptPath); err != nil {
+		t.Fatalf("failed to start tmux session: %v", err)
+	}
+	// Make status detection use Codex prompt patterns instead of generic shell ones.
+	tmuxSess.Command = "codex"
+
+	ready := make(chan error, 1)
+	go func() {
+		ready <- waitForAgentReady(tmuxSess, "codex")
+	}()
+
+	select {
+	case err := <-ready:
+		if err != nil {
+			t.Fatalf("waitForAgentReady returned error: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		content, _ := tmuxSess.CapturePaneFresh()
+		t.Fatalf("waitForAgentReady did not return for current Codex prompt; pane=%q", tmux.StripANSI(content))
+	}
+
+	content, err := tmuxSess.CapturePaneFresh()
+	if err != nil {
+		t.Fatalf("failed to capture pane: %v", err)
+	}
+	plain := tmux.StripANSI(content)
+	if !strings.Contains(plain, "How can I help today?") {
+		t.Fatalf("expected current Codex prompt in pane, got %q", plain)
+	}
+	if tmux.NewPromptDetector("codex").HasPrompt(plain) {
+		t.Fatalf("legacy Codex prompt detector unexpectedly matched current prompt %q", plain)
+	}
+}
 
 // TestWaitOutputRetrieval_StaleSessionID verifies that --wait correctly
 // retrieves output even when the initially-loaded ClaudeSessionID is stale.

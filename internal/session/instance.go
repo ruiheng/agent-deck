@@ -1972,17 +1972,6 @@ func (i *Instance) sendMessageWhenReady(message string) error {
 					continue
 				}
 			}
-			// Gate Codex sends on prompt readiness: wait for "codex>" or
-			// "Continue?" to be visible before considering the agent ready.
-			if i.Tool == "codex" {
-				if rawContent, captureErr := i.tmuxSession.CapturePaneFresh(); captureErr == nil {
-					content := tmux.StripANSI(rawContent)
-					detector := tmux.NewPromptDetector("codex")
-					if !detector.HasPrompt(content) {
-						continue
-					}
-				}
-			}
 			// Small delay to ensure UI is fully rendered
 			time.Sleep(300 * time.Millisecond)
 
