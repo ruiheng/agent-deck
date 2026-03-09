@@ -71,6 +71,49 @@ func TestCurrentComposerPrompt_UsesBottomComposerBlock(t *testing.T) {
 	}
 }
 
+func TestCurrentComposerPrompt_FindsTallFallbackPromptOutsideBottomWindow(t *testing.T) {
+	contentLines := []string{
+		"bash -c 'codex --model gpt-5.4 -a on-request'",
+		"",
+		"╭────────────────────────────────────────────╮",
+		"│ >_ OpenAI Codex (v0.111.0)                 │",
+		"╰────────────────────────────────────────────╯",
+		"",
+		"Tip: welcome banner",
+		"",
+		`› {`,
+		`    "preconditions": {`,
+		`      "must_fully_load_skills": [`,
+		`        "agent-deck-workflow"`,
+		`      ]`,
+		`    },`,
+		`    "execution": {`,
+		`      "action": "execute_delegate_task",`,
+		`      "artifact_path": ".agent-artifacts/example/delegate-task.md",`,
+		`      "note": "Read and follow the delegate task file before any code change."`,
+		`    },`,
+		`    "context": {`,
+		`      "task_id": "example-task"`,
+		`    }`,
+		`}`,
+	}
+	for range 60 {
+		contentLines = append(contentLines, "")
+	}
+	content := strings.Join(contentLines, "\n")
+
+	got, ok := CurrentComposerPrompt(content)
+	if !ok {
+		t.Fatal("expected tall fallback composer prompt to be found")
+	}
+	if !strings.HasPrefix(got, `{ "preconditions": {`) {
+		t.Fatalf("expected JSON prompt body, got %q", got)
+	}
+	if !strings.Contains(got, `"task_id": "example-task"`) {
+		t.Fatalf("expected task_id in prompt body, got %q", got)
+	}
+}
+
 func TestNormalizePromptText(t *testing.T) {
 	tests := []struct {
 		name  string
@@ -140,6 +183,19 @@ func TestParsePromptFromComposerBlock(t *testing.T) {
 	}
 	if got != "hello world" {
 		t.Fatalf("expected 'hello world', got %q", got)
+	}
+
+	got, ok = ParsePromptFromLineWithContinuations([]string{
+		"prefix output",
+		"› branch/example-feature-rename). If branch setup fails, stop and report.",
+		"  After first implementation pass, commit and prepare review request.",
+		"  gpt-5.4 high · 100% left · ~/workspace",
+	}, 1)
+	if !ok {
+		t.Fatal("expected ParsePromptFromLineWithContinuations to find wrapped fallback prompt")
+	}
+	if !strings.Contains(got, "After first implementation pass") {
+		t.Fatalf("expected wrapped fallback prompt body, got %q", got)
 	}
 
 	// No marker present
