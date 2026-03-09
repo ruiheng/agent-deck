@@ -86,6 +86,16 @@ func ParsePromptFromComposerBlock(lines []string) (string, bool) {
 	return "", false
 }
 
+// ParsePromptFromLineWithContinuations parses a prompt starting on lines[start]
+// and collects any following indented continuation lines. This is used by the
+// fallback path when the UI does not render explicit composer divider lines.
+func ParsePromptFromLineWithContinuations(lines []string, start int) (string, bool) {
+	if start < 0 || start >= len(lines) {
+		return "", false
+	}
+	return ParsePromptFromComposerBlock(lines[start:])
+}
+
 // CurrentComposerPrompt extracts the current prompt text from the composer region
 // at the bottom of the terminal pane. It searches for the last two divider lines
 // and parses the prompt between them, with a fallback for layouts without dividers.
@@ -119,19 +129,20 @@ func CurrentComposerPrompt(content string) (string, bool) {
 		}
 	}
 
-	// Fallback for layouts without clear divider lines: look near the bottom
-	// for a strict prompt marker at the start of the line.
-	start := 0
-	if len(lines) > 40 {
-		start = len(lines) - 40
-	}
-	for i := len(lines) - 1; i >= start; i-- {
-		trimmed := strings.TrimLeft(lines[i], " \t")
+	// Fallback for layouts without clear divider lines: scan the full visible
+	// pane from bottom to top for the last prompt marker. Codex can leave a
+	// long unsent prompt well above the bottom because the viewport below it is
+	// blank, so limiting this search to the last N lines misses the real input.
+	for i := len(lines) - 1; i >= 0; i-- {
+		trimmed := strings.TrimLeft(lines[i], " 	")
 		if strings.TrimSpace(trimmed) == "" {
 			continue
 		}
 		for _, marker := range []string{"❯", "›"} {
 			if strings.HasPrefix(trimmed, marker) {
+				if body, ok := ParsePromptFromLineWithContinuations(lines, i); ok {
+					return body, true
+				}
 				return NormalizePromptText(strings.TrimSpace(trimmed[len(marker):])), true
 			}
 		}
