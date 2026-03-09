@@ -328,6 +328,70 @@ func TestSendWithRetryTarget_RetriesWhenWrappedComposerPromptStillHasMessage(t *
 	}
 }
 
+func TestSendWithRetryTarget_RetriesWhenTallCodexPromptSitsAboveBottomWindow(t *testing.T) {
+	contentLines := []string{
+		"bash -c 'codex --model gpt-5.4 -a on-request'",
+		"",
+		"╭────────────────────────────────────────────╮",
+		"│ >_ OpenAI Codex (v0.111.0)                 │",
+		"╰────────────────────────────────────────────╯",
+		"",
+		"Tip: welcome banner",
+		"",
+		`› {`,
+		`    "preconditions": {`,
+		`      "must_fully_load_skills": [`,
+		`        "agent-deck-workflow"`,
+		`      ]`,
+		`    },`,
+		`    "execution": {`,
+		`      "action": "execute_delegate_task",`,
+		`      "artifact_path": ".agent-artifacts/example/delegate-task.md",`,
+		`      "note": "Read and follow the delegate task file before any code change."`,
+		`    },`,
+		`    "context": {`,
+		`      "task_id": "example-task"`,
+		`    }`,
+		`}`,
+	}
+	for range 60 {
+		contentLines = append(contentLines, "")
+	}
+	tallPane := strings.Join(contentLines, "\n")
+	message := strings.Join([]string{
+		`{`,
+		`  "preconditions": {`,
+		`    "must_fully_load_skills": [`,
+		`      "agent-deck-workflow"`,
+		`    ]`,
+		`  },`,
+		`  "execution": {`,
+		`    "action": "execute_delegate_task",`,
+		`    "artifact_path": ".agent-artifacts/example/delegate-task.md",`,
+		`    "note": "Read and follow the delegate task file before any code change."`,
+		`  },`,
+		`  "context": {`,
+		`    "task_id": "example-task"`,
+		`  }`,
+		`}`,
+	}, "\n")
+	mock := &mockSendRetryTarget{
+		statuses: []string{"idle", "active"},
+		panes: []string{
+			tallPane,
+			"",
+		},
+	}
+
+	err := sendWithRetryTarget(mock, message, false, sendRetryOptions{maxRetries: 4, checkDelay: 0})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got := atomic.LoadInt32(&mock.sendEnterCalls); got != 1 {
+		t.Fatalf("expected 1 SendEnter call for tall Codex prompt, got %d", got)
+	}
+}
+
 func TestSendWithRetryTarget_AmbiguousStateUsesLimitedFallbackRetries(t *testing.T) {
 	mock := &mockSendRetryTarget{
 		statuses: []string{"error", "error", "error", "error"},
