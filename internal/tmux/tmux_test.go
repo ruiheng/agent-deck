@@ -164,6 +164,67 @@ func TestDefaultTmuxSocketCandidatesDedupe(t *testing.T) {
 	assert.Equal(t, 1, count, "expected default socket path to be deduplicated")
 }
 
+func TestUnregisterSessionFromCacheRemovesSessionAndWindows(t *testing.T) {
+	sessionCacheMu.Lock()
+	origSessionCacheData := sessionCacheData
+	origSessionCacheTime := sessionCacheTime
+	staleSessionTime := time.Now().Add(-3 * time.Second)
+	sessionCacheData = map[string]int64{
+		"sess-alive": 111,
+		"sess-gone":  222,
+	}
+	sessionCacheTime = staleSessionTime
+	sessionCacheMu.Unlock()
+	t.Cleanup(func() {
+		sessionCacheMu.Lock()
+		sessionCacheData = origSessionCacheData
+		sessionCacheTime = origSessionCacheTime
+		sessionCacheMu.Unlock()
+	})
+
+	windowCacheMu.Lock()
+	origWindowCacheData := windowCacheData
+	origWindowCacheTime := windowCacheTime
+	staleWindowTime := time.Now().Add(-5 * time.Second)
+	windowCacheData = map[string][]WindowInfo{
+		"sess-alive": {{Index: 0, Name: "alive"}},
+		"sess-gone":  {{Index: 1, Name: "gone"}},
+	}
+	windowCacheTime = staleWindowTime
+	windowCacheMu.Unlock()
+	t.Cleanup(func() {
+		windowCacheMu.Lock()
+		windowCacheData = origWindowCacheData
+		windowCacheTime = origWindowCacheTime
+		windowCacheMu.Unlock()
+	})
+
+	unregisterSessionFromCache("sess-gone")
+
+	exists, cacheValid := sessionExistsFromCache("sess-gone")
+	assert.False(t, cacheValid, "stale session cache must remain stale after unregister")
+	assert.False(t, exists, "removed session should no longer exist in cache")
+
+	activity, activityValid := sessionActivityFromCache("sess-gone")
+	assert.False(t, activityValid, "removed session should have no cached activity")
+	assert.Equal(t, int64(0), activity)
+
+	sessionCacheMu.RLock()
+	gotSessionTime := sessionCacheTime
+	sessionCacheMu.RUnlock()
+
+	windowCacheMu.RLock()
+	_, removedWindow := windowCacheData["sess-gone"]
+	aliveWindow, keptWindow := windowCacheData["sess-alive"]
+	gotWindowTime := windowCacheTime
+	windowCacheMu.RUnlock()
+	assert.False(t, removedWindow, "removed session should leave no window cache entry")
+	assert.True(t, keptWindow, "other sessions must remain cached")
+	assert.Len(t, aliveWindow, 1)
+	assert.Equal(t, staleSessionTime, gotSessionTime, "unregister must not refresh session cache TTL")
+	assert.Equal(t, staleWindowTime, gotWindowTime, "unregister must not refresh window cache TTL")
+}
+
 func TestPromptDetector(t *testing.T) {
 	// Test shell prompt detection
 	shellDetector := NewPromptDetector("shell")
