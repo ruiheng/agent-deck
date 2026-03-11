@@ -58,6 +58,7 @@ func TestLifecycleStop_TerminatesSession(t *testing.T) {
 
 	require.NoError(t, inst.Kill())
 	assert.Equal(t, session.StatusStopped, inst.Status, "status should be stopped after Kill()")
+	assert.False(t, inst.Exists(), "Exists() should reflect kill immediately without waiting for cache TTL")
 
 	WaitForCondition(t, 3*time.Second, 200*time.Millisecond,
 		"session to not exist",

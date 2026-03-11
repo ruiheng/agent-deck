@@ -172,6 +172,23 @@ func registerSessionInCache(name string) {
 	sessionCacheData[name] = time.Now().Unix()
 }
 
+// unregisterSessionFromCache removes a killed session from the in-memory caches.
+// This prevents Exists() and title/window lookups from seeing stale data during
+// the cache TTL window after tmux has already removed the session.
+func unregisterSessionFromCache(name string) {
+	sessionCacheMu.Lock()
+	if sessionCacheData != nil {
+		delete(sessionCacheData, name)
+	}
+	sessionCacheMu.Unlock()
+
+	windowCacheMu.Lock()
+	if windowCacheData != nil {
+		delete(windowCacheData, name)
+	}
+	windowCacheMu.Unlock()
+}
+
 // sessionActivityFromCache gets session activity timestamp from cache
 // Returns (activity, cacheValid) - if cache is stale/empty, cacheValid is false
 func sessionActivityFromCache(name string) (int64, bool) {
@@ -1347,6 +1364,9 @@ func (s *Session) Kill() error {
 	// Kill the tmux session
 	cmd := exec.Command("tmux", "kill-session", "-t", s.Name)
 	err := cmd.Run()
+	if err == nil {
+		unregisterSessionFromCache(s.Name)
+	}
 
 	// Verify old processes are dead; escalate to SIGKILL if needed
 	if len(oldPIDs) > 0 {
