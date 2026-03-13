@@ -399,6 +399,36 @@ func TestSendWithRetryTarget_RetriesWhenTallCodexPromptSitsAboveBottomWindow(t *
 	}
 }
 
+func TestSendWithRetryTarget_VisibleComposerInputWithoutExactMatchStillPressesEnter(t *testing.T) {
+	mock := &mockSendRetryTarget{
+		statuses: []string{"waiting", "active"},
+		panes: []string{
+			"› task_id: example-task\n  reviewer: claude",
+			"",
+		},
+	}
+
+	message := strings.Join([]string{
+		`{`,
+		`  "task": "delegate review",`,
+		`  "context": {`,
+		`    "task_id": "example-task"`,
+		`  }`,
+		`}`,
+	}, "\n")
+
+	err := sendWithRetryTarget(mock, message, false, sendRetryOptions{maxRetries: 4, checkDelay: 0})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got := atomic.LoadInt32(&mock.sendKeysCalls); got != 1 {
+		t.Fatalf("expected no full resend when visible composer input exists, got %d sends", got)
+	}
+	if got := atomic.LoadInt32(&mock.sendEnterCalls); got != 1 {
+		t.Fatalf("expected 1 SendEnter call for visible composer input fallback, got %d", got)
+	}
+}
+
 func TestSendWithRetryTarget_AmbiguousStateDoesNotInjectBlankEnter(t *testing.T) {
 	mock := &mockSendRetryTarget{
 		statuses: []string{"error", "error", "error", "error"},
