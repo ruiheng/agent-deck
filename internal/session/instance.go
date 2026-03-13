@@ -2061,9 +2061,13 @@ func (i *Instance) sendMessageWhenReady(message string) error {
 				time.Sleep(verifyDelay)
 
 				unsentPromptDetected := false
+				hasVisibleComposerInput := false
 				if rawContent, captureErr := i.tmuxSession.CapturePaneFresh(); captureErr == nil {
 					content := tmux.StripANSI(rawContent)
 					unsentPromptDetected = send.HasUnsentPastedPrompt(content) || send.HasUnsentComposerPrompt(content, message)
+					if promptBody, hasPrompt := send.CurrentComposerPrompt(content); hasPrompt && send.NormalizePromptText(promptBody) != "" {
+						hasVisibleComposerInput = true
+					}
 				}
 				verifiedStatus, statusErr := i.tmuxSession.GetStatus()
 
@@ -2096,13 +2100,18 @@ func (i *Instance) sendMessageWhenReady(message string) error {
 						}
 					} else {
 						waitingNoMarkerChecks = 0
-						waitingNoEvidenceChecks++
-						if waitingNoEvidenceChecks >= waitingNoEvidenceResendThreshold && fullResends < maxFullResends {
-							if resendErr := i.tmuxSession.SendKeysAndEnter(message); resendErr != nil {
-								return fmt.Errorf("failed to resend message: %w", resendErr)
-							}
-							fullResends++
+						if hasVisibleComposerInput {
 							waitingNoEvidenceChecks = 0
+							_ = i.tmuxSession.SendEnter()
+						} else {
+							waitingNoEvidenceChecks++
+							if waitingNoEvidenceChecks >= waitingNoEvidenceResendThreshold && fullResends < maxFullResends {
+								if resendErr := i.tmuxSession.SendKeysAndEnter(message); resendErr != nil {
+									return fmt.Errorf("failed to resend message: %w", resendErr)
+								}
+								fullResends++
+								waitingNoEvidenceChecks = 0
+							}
 						}
 					}
 					continue
