@@ -242,7 +242,7 @@ func TestSendWithRetryTarget_StopsWhenActive(t *testing.T) {
 	}
 }
 
-func TestSendWithRetryTarget_WaitingWithoutPasteMarkerReturnsSuccess(t *testing.T) {
+func TestSendWithRetryTarget_WaitingWithoutPasteMarkerResendsFullMessage(t *testing.T) {
 	mock := &mockSendRetryTarget{
 		statuses: []string{"waiting", "waiting", "waiting", "waiting"},
 		panes:    []string{"", "", "", ""},
@@ -251,9 +251,11 @@ func TestSendWithRetryTarget_WaitingWithoutPasteMarkerReturnsSuccess(t *testing.
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	// With aggressive early retry (retry < 5), all 4 iterations nudge Enter.
-	if got := atomic.LoadInt32(&mock.sendEnterCalls); got != 4 {
-		t.Fatalf("expected 4 aggressive early SendEnter calls for waiting-without-active state, got %d", got)
+	if got := atomic.LoadInt32(&mock.sendKeysCalls); got != 2 {
+		t.Fatalf("expected 2 SendKeysAndEnter calls (initial + full resend), got %d", got)
+	}
+	if got := atomic.LoadInt32(&mock.sendEnterCalls); got != 0 {
+		t.Fatalf("expected 0 SendEnter calls without staged prompt evidence, got %d", got)
 	}
 }
 
@@ -290,10 +292,11 @@ func TestSendWithRetryTarget_DetectsPasteMarkerAfterInitialWaiting(t *testing.T)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	// 2 calls: retry 0 fires early aggressive nudge (waiting, no active seen),
-	// retry 1 fires from paste marker detection.
-	if got := atomic.LoadInt32(&mock.sendEnterCalls); got != 2 {
-		t.Fatalf("expected 2 SendEnter calls (1 early nudge + 1 paste marker), got %d", got)
+	if got := atomic.LoadInt32(&mock.sendKeysCalls); got != 1 {
+		t.Fatalf("expected no full resend when pasted prompt evidence appears, got %d sends", got)
+	}
+	if got := atomic.LoadInt32(&mock.sendEnterCalls); got != 1 {
+		t.Fatalf("expected 1 SendEnter call from paste marker detection, got %d", got)
 	}
 }
 
@@ -396,7 +399,7 @@ func TestSendWithRetryTarget_RetriesWhenTallCodexPromptSitsAboveBottomWindow(t *
 	}
 }
 
-func TestSendWithRetryTarget_AmbiguousStateUsesLimitedFallbackRetries(t *testing.T) {
+func TestSendWithRetryTarget_AmbiguousStateDoesNotInjectBlankEnter(t *testing.T) {
 	mock := &mockSendRetryTarget{
 		statuses: []string{"error", "error", "error", "error"},
 		panes:    []string{"", "", "", ""},
@@ -405,9 +408,11 @@ func TestSendWithRetryTarget_AmbiguousStateUsesLimitedFallbackRetries(t *testing
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	// Ambiguous-state Enter budget increased from 2 to 4; all 4 retries send Enter.
-	if got := atomic.LoadInt32(&mock.sendEnterCalls); got != 4 {
-		t.Fatalf("expected 4 fallback SendEnter calls (increased budget), got %d", got)
+	if got := atomic.LoadInt32(&mock.sendKeysCalls); got != 1 {
+		t.Fatalf("expected 1 SendKeysAndEnter call in ambiguous state, got %d", got)
+	}
+	if got := atomic.LoadInt32(&mock.sendEnterCalls); got != 0 {
+		t.Fatalf("expected 0 SendEnter calls without staged prompt evidence, got %d", got)
 	}
 }
 
@@ -424,13 +429,11 @@ func TestSendWithRetryTarget_ReturnsErrorWhenInitialSendFails(t *testing.T) {
 	}
 }
 
-func TestSendWithRetryTarget_AggressiveEarlyEnterNudge(t *testing.T) {
-	// Verify that SendEnter is called on every iteration for the first 5
-	// retries when in waiting-without-active state, then every 2nd iteration.
+func TestSendWithRetryTarget_WaitingWithoutPromptEvidenceResendsOnlyOnce(t *testing.T) {
 	mock := &mockSendRetryTarget{
 		statuses: []string{
-			"waiting", "waiting", "waiting", "waiting", "waiting", // retries 0-4: all nudge
-			"waiting", "waiting", "waiting", "waiting", "waiting", // retries 5-9: even nudge
+			"waiting", "waiting", "waiting", "waiting", "waiting",
+			"waiting", "waiting", "waiting", "waiting", "waiting",
 		},
 		panes: []string{"", "", "", "", "", "", "", "", "", ""},
 	}
@@ -438,19 +441,15 @@ func TestSendWithRetryTarget_AggressiveEarlyEnterNudge(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	// First 5 retries (0-4): all nudge = 5 calls
-	// Retries 5-9: retry%2==0 means retries 6, 8 nudge = 2 calls
-	// Total: 5 + 2 = 7
-	// But wait: retry 5 is not < 5 and 5%2 != 0, so no nudge.
-	// retry 6: 6%2 == 0, nudge. retry 7: no. retry 8: nudge. retry 9: no.
-	// Total: 5 (early) + 2 (even from 5-9) = 7
-	if got := atomic.LoadInt32(&mock.sendEnterCalls); got != 7 {
-		t.Fatalf("expected 7 SendEnter calls (5 early + 2 even), got %d", got)
+	if got := atomic.LoadInt32(&mock.sendKeysCalls); got != 2 {
+		t.Fatalf("expected exactly 1 full resend without prompt evidence, got %d sends", got)
+	}
+	if got := atomic.LoadInt32(&mock.sendEnterCalls); got != 0 {
+		t.Fatalf("expected 0 SendEnter calls without staged prompt evidence, got %d", got)
 	}
 }
 
-func TestSendWithRetryTarget_IncreasedAmbiguousBudget(t *testing.T) {
-	// Verify that ambiguous-state Enter budget is 4 (up from 2).
+func TestSendWithRetryTarget_AmbiguousStateWithoutPromptEvidenceNeverNudgesEnter(t *testing.T) {
 	mock := &mockSendRetryTarget{
 		statuses: []string{"error", "error", "error", "error", "error"},
 		panes:    []string{"", "", "", "", ""},
@@ -459,9 +458,8 @@ func TestSendWithRetryTarget_IncreasedAmbiguousBudget(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	// Retries 0, 1, 2, 3 are < 4 so SendEnter is called 4 times; retry 4 is not.
-	if got := atomic.LoadInt32(&mock.sendEnterCalls); got != 4 {
-		t.Fatalf("expected 4 SendEnter calls for increased ambiguous budget, got %d", got)
+	if got := atomic.LoadInt32(&mock.sendEnterCalls); got != 0 {
+		t.Fatalf("expected 0 SendEnter calls without staged prompt evidence, got %d", got)
 	}
 }
 

@@ -1496,14 +1496,19 @@ func sendWithRetryTarget(target sendRetryTarget, message string, skipVerify bool
 	// Strategy:
 	// - If unsent prompt is visible, press Enter again immediately.
 	// - Consider success only after sustained post-send activity ("active").
-	// - If we never observe active and remain in waiting/idle, keep a periodic
-	//   fallback Enter cadence instead of returning early (handles late unsent
-	//   prompt rendering races seen in Claude startup).
+	// - If we stay in waiting/idle with zero evidence that the message ever
+	//   reached the composer, retry by re-sending the full message once instead
+	//   of synthesizing naked Enter presses. A stray Enter can leave Claude with
+	//   an empty newline in the input box; a full resend recovers the lost paste.
 	const activeSuccessThreshold = 2
 	const waitingAfterActiveThreshold = 2
+	const waitingNoEvidenceResendThreshold = 3
+	const maxFullResends = 1
 	waitingNoMarkerChecks := 0
+	waitingNoEvidenceChecks := 0
 	activeChecks := 0
 	sawActiveAfterSend := false
+	fullResends := 0
 	for retry := 0; retry < opts.maxRetries; retry++ {
 		time.Sleep(opts.checkDelay)
 
@@ -1516,6 +1521,7 @@ func sendWithRetryTarget(target sendRetryTarget, message string, skipVerify bool
 
 		if unsentPromptDetected {
 			waitingNoMarkerChecks = 0
+			waitingNoEvidenceChecks = 0
 			activeChecks = 0
 			_ = target.SendEnter()
 			continue
@@ -1524,6 +1530,7 @@ func sendWithRetryTarget(target sendRetryTarget, message string, skipVerify bool
 		if err == nil && status == "active" {
 			sawActiveAfterSend = true
 			waitingNoMarkerChecks = 0
+			waitingNoEvidenceChecks = 0
 			activeChecks++
 			if activeChecks >= activeSuccessThreshold {
 				return nil
@@ -1535,29 +1542,25 @@ func sendWithRetryTarget(target sendRetryTarget, message string, skipVerify bool
 		if err == nil && (status == "waiting" || status == "idle") {
 			if sawActiveAfterSend {
 				waitingNoMarkerChecks++
+				waitingNoEvidenceChecks = 0
 				if waitingNoMarkerChecks >= waitingAfterActiveThreshold {
 					return nil
 				}
 			} else {
 				waitingNoMarkerChecks = 0
-				// We haven't observed any post-send activity yet. Nudge Enter
-				// aggressively in the early window (every iteration for first 5
-				// retries) then every 2nd iteration. This addresses bracketed
-				// paste timing failures that are most likely early on.
-				if retry < 5 || retry%2 == 0 {
-					_ = target.SendEnter()
+				waitingNoEvidenceChecks++
+				if waitingNoEvidenceChecks >= waitingNoEvidenceResendThreshold && fullResends < maxFullResends {
+					if resendErr := target.SendKeysAndEnter(message); resendErr != nil {
+						return fmt.Errorf("failed to resend message: %w", resendErr)
+					}
+					fullResends++
+					waitingNoEvidenceChecks = 0
 				}
 			}
 			continue
 		}
 		waitingNoMarkerChecks = 0
-
-		// Ambiguous state: keep a best-effort Enter retry budget.
-		// Increased from 2 to 4 because some TUI frameworks take longer
-		// to process and reflect state.
-		if retry < 4 {
-			_ = target.SendEnter()
-		}
+		waitingNoEvidenceChecks = 0
 	}
 
 	// Best effort: don't fail even if verification is inconclusive.
