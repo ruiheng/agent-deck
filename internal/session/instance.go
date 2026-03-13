@@ -1988,15 +1988,22 @@ func (i *Instance) sendMessageWhenReady(message string) error {
 			// Strategy:
 			// - If unsent prompt is visible, press Enter again immediately.
 			// - Consider success only after sustained post-send activity ("active").
-			// - If we never observe active and remain in waiting/idle, keep a
-			//   periodic fallback Enter cadence instead of returning early.
+			// - If we stay in waiting/idle with zero evidence that the message ever
+			//   reached the composer, retry by re-sending the full message once
+			//   instead of synthesizing naked Enter presses. A stray Enter can leave
+			//   Claude with an empty newline in the input box; a full resend
+			//   recovers the lost paste.
 			const verifyRetries = 50
 			const verifyDelay = 300 * time.Millisecond
 			const activeSuccessThreshold = 2
 			const waitingAfterActiveThreshold = 2
+			const waitingNoEvidenceResendThreshold = 3
+			const maxFullResends = 1
 			waitingNoMarkerChecks := 0
+			waitingNoEvidenceChecks := 0
 			activeChecks := 0
 			sawActiveAfterSend := false
+			fullResends := 0
 
 			for retry := 0; retry < verifyRetries; retry++ {
 				time.Sleep(verifyDelay)
@@ -2010,6 +2017,7 @@ func (i *Instance) sendMessageWhenReady(message string) error {
 
 				if unsentPromptDetected {
 					waitingNoMarkerChecks = 0
+					waitingNoEvidenceChecks = 0
 					activeChecks = 0
 					_ = i.tmuxSession.SendEnter()
 					continue
@@ -2018,6 +2026,7 @@ func (i *Instance) sendMessageWhenReady(message string) error {
 				if statusErr == nil && verifiedStatus == "active" {
 					sawActiveAfterSend = true
 					waitingNoMarkerChecks = 0
+					waitingNoEvidenceChecks = 0
 					activeChecks++
 					if activeChecks >= activeSuccessThreshold {
 						return nil
@@ -2029,26 +2038,26 @@ func (i *Instance) sendMessageWhenReady(message string) error {
 				if statusErr == nil && (verifiedStatus == "waiting" || verifiedStatus == "idle") {
 					if sawActiveAfterSend {
 						waitingNoMarkerChecks++
+						waitingNoEvidenceChecks = 0
 						if waitingNoMarkerChecks >= waitingAfterActiveThreshold {
 							return nil
 						}
 					} else {
 						waitingNoMarkerChecks = 0
-						// We haven't observed any post-send activity yet.
-						// Nudge Enter aggressively in the early window (every
-						// iteration for first 5 retries) then every 2nd iteration.
-						if retry < 5 || retry%2 == 0 {
-							_ = i.tmuxSession.SendEnter()
+						waitingNoEvidenceChecks++
+						if waitingNoEvidenceChecks >= waitingNoEvidenceResendThreshold && fullResends < maxFullResends {
+							if resendErr := i.tmuxSession.SendKeysAndEnter(message); resendErr != nil {
+								return fmt.Errorf("failed to resend message: %w", resendErr)
+							}
+							fullResends++
+							waitingNoEvidenceChecks = 0
 						}
 					}
 					continue
 				}
 
 				waitingNoMarkerChecks = 0
-				// Increased from 2 to 4 for TUI frameworks needing more time.
-				if retry < 4 {
-					_ = i.tmuxSession.SendEnter()
-				}
+				waitingNoEvidenceChecks = 0
 			}
 
 			// Best effort: don't fail if verification remains inconclusive.
