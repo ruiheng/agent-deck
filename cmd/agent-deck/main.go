@@ -742,6 +742,12 @@ func isWorktreeAlreadyExistsError(err error) bool {
 }
 
 func resolveAutoParentInstance(instances []*session.Instance) *session.Instance {
+	if tmuxSessionName, err := getCurrentTmuxSessionName(); err == nil {
+		if inst := findInstanceByTmuxSessionName(instances, tmuxSessionName); inst != nil {
+			return inst
+		}
+	}
+
 	candidates := []string{
 		strings.TrimSpace(os.Getenv("AGENT_DECK_SESSION_ID")),
 		strings.TrimSpace(os.Getenv("AGENTDECK_INSTANCE_ID")),

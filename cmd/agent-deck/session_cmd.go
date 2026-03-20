@@ -1026,6 +1026,10 @@ func findSessionByTmux(instances []*session.Instance) *session.Instance {
 	sessionName := parts[0]
 	currentPath := parts[1]
 
+	if inst := findInstanceByTmuxSessionName(instances, sessionName); inst != nil {
+		return inst
+	}
+
 	// Parse agent-deck session name: agentdeck_<title>_<id>
 	if strings.HasPrefix(sessionName, "agentdeck_") {
 		// Extract title (everything between agentdeck_ and the last _id)

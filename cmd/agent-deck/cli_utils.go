@@ -8,7 +8,14 @@ import (
 	"os/exec"
 	"strings"
 
+	"github.com/asheshgoplani/agent-deck/internal/profile"
 	"github.com/asheshgoplani/agent-deck/internal/session"
+)
+
+var (
+	getCurrentTmuxSessionNameFn  = getCurrentTmuxSessionName
+	getCurrentTmuxEnvironmentFn  = getCurrentTmuxEnvironmentValue
+	findInstanceDataByTmuxFastFn = findInstanceDataByTmuxFast
 )
 
 // normalizeArgs reorders args so flags come before positional arguments.
@@ -281,33 +288,62 @@ func GetCurrentSessionID() string {
 		return ""
 	}
 
-	// Get current tmux session name
-	cmd := exec.Command("tmux", "display-message", "-p", "#S")
+	// Primary source of truth: the managed tmux session exports the real
+	// agent-deck instance ID into the tmux environment after session start.
+	if instanceID := strings.TrimSpace(getCurrentTmuxEnvironmentFn("AGENTDECK_INSTANCE_ID")); instanceID != "" {
+		return instanceID
+	}
+
+	// Fallback for older sessions that predate AGENTDECK_INSTANCE_ID in tmux env:
+	// resolve by exact tmux session name, not by parsing the randomized tmux suffix.
+	sessionName, err := getCurrentTmuxSessionNameFn()
+	if err != nil || sessionName == "" {
+		return ""
+	}
+
+	instData, _ := findInstanceDataByTmuxFastFn(sessionName, profile.DetectCurrentProfile())
+	if instData == nil {
+		return ""
+	}
+	return instData.ID
+}
+
+func getCurrentTmuxEnvironmentValue(key string) string {
+	cmd := exec.Command("tmux", "show-environment", key)
 	output, err := cmd.Output()
 	if err != nil {
 		return ""
 	}
+	return parseTmuxEnvironmentValue(string(output), key)
+}
 
-	sessionName := strings.TrimSpace(string(output))
-
-	// Parse agent-deck session name: agentdeck_<title>_<id>
-	if !strings.HasPrefix(sessionName, "agentdeck_") {
+func parseTmuxEnvironmentValue(output, key string) string {
+	line := strings.TrimSpace(output)
+	prefix := key + "="
+	if !strings.HasPrefix(line, prefix) {
 		return ""
 	}
+	return strings.TrimSpace(strings.TrimPrefix(line, prefix))
+}
 
-	// Extract ID (last part after final underscore)
-	parts := strings.Split(sessionName, "_")
-	if len(parts) < 3 {
-		return ""
+func findInstanceByTmuxSessionName(instances []*session.Instance, tmuxSessionName string) *session.Instance {
+	for _, inst := range instances {
+		if tmuxSess := inst.GetTmuxSession(); tmuxSess != nil && tmuxSess.Name == tmuxSessionName {
+			return inst
+		}
 	}
-
-	// ID is the last part
-	return parts[len(parts)-1]
+	return nil
 }
 
 // ResolveSessionOrCurrent resolves a session by identifier, or uses current session if empty
 func ResolveSessionOrCurrent(identifier string, instances []*session.Instance) (*session.Instance, string, string) {
 	if identifier == "" {
+		if tmuxSessionName, err := getCurrentTmuxSessionNameFn(); err == nil {
+			if inst := findInstanceByTmuxSessionName(instances, tmuxSessionName); inst != nil {
+				return inst, "", ""
+			}
+		}
+
 		// Try to detect current session
 		currentID := GetCurrentSessionID()
 		if currentID == "" {

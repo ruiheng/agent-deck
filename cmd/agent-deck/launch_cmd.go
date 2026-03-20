@@ -307,18 +307,39 @@ func handleLaunch(profile string, args []string) {
 		os.Exit(1)
 	}
 
+	rollbackLaunch := func(prefix string, cause error) {
+		// Best effort: if tmux was partially started before the failure surfaced,
+		// remove it so rollback doesn't leave an orphaned live session behind.
+		if tmuxSess := newInstance.GetTmuxSession(); tmuxSess != nil && tmuxSess.Exists() {
+			_ = tmuxSess.Kill()
+		}
+
+		filtered := make([]*session.Instance, 0, len(instances)-1)
+		for _, inst := range instances {
+			if inst.ID != newInstance.ID {
+				filtered = append(filtered, inst)
+			}
+		}
+
+		if err := saveSessionData(storage, filtered); err != nil {
+			out.Error(fmt.Sprintf("%s: %v (rollback failed: %v)", prefix, cause, err), ErrCodeInvalidOperation)
+			os.Exit(1)
+		}
+
+		out.Error(fmt.Sprintf("%s: %v", prefix, cause), ErrCodeInvalidOperation)
+		os.Exit(1)
+	}
+
 	// Attach MCPs if specified
 	if len(mcpFlags) > 0 {
 		availableMCPs := session.GetAvailableMCPs()
 		for _, mcpName := range mcpFlags {
 			if _, exists := availableMCPs[mcpName]; !exists {
-				out.Error(fmt.Sprintf("MCP '%s' not found in config.toml", mcpName), ErrCodeNotFound)
-				os.Exit(1)
+				rollbackLaunch("failed to prepare session", fmt.Errorf("MCP '%s' not found in config.toml", mcpName))
 			}
 		}
 		if err := session.WriteMCPJsonFromConfig(path, mcpFlags); err != nil {
-			out.Error(fmt.Sprintf("failed to write MCPs: %v", err), ErrCodeInvalidOperation)
-			os.Exit(1)
+			rollbackLaunch("failed to prepare session", fmt.Errorf("failed to write MCPs: %w", err))
 		}
 	}
 
@@ -327,13 +348,11 @@ func handleLaunch(profile string, args []string) {
 	// - --no-wait: start immediately, then fire-and-forget send below
 	if initialMessage != "" && !*noWait {
 		if err := newInstance.StartWithMessage(initialMessage); err != nil {
-			out.Error(fmt.Sprintf("failed to start session: %v", err), ErrCodeInvalidOperation)
-			os.Exit(1)
+			rollbackLaunch("failed to start session", err)
 		}
 	} else {
 		if err := newInstance.Start(); err != nil {
-			out.Error(fmt.Sprintf("failed to start session: %v", err), ErrCodeInvalidOperation)
-			os.Exit(1)
+			rollbackLaunch("failed to start session", err)
 		}
 	}
 

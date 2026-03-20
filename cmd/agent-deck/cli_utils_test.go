@@ -1,9 +1,12 @@
 package main
 
 import (
+	"errors"
 	"flag"
 	"reflect"
 	"testing"
+
+	"github.com/asheshgoplani/agent-deck/internal/session"
 )
 
 func TestNormalizeArgs(t *testing.T) {
@@ -356,5 +359,171 @@ func TestResolveGroupSelection(t *testing.T) {
 					tt.currentGroup, tt.parentGroup, tt.explicitGroupProvided, got, tt.want)
 			}
 		})
+	}
+}
+
+func TestParseTmuxEnvironmentValue(t *testing.T) {
+	tests := []struct {
+		name   string
+		output string
+		key    string
+		want   string
+	}{
+		{
+			name:   "matches requested key",
+			output: "AGENTDECK_INSTANCE_ID=inst-123\n",
+			key:    "AGENTDECK_INSTANCE_ID",
+			want:   "inst-123",
+		},
+		{
+			name:   "unset value returns empty",
+			output: "-AGENTDECK_INSTANCE_ID\n",
+			key:    "AGENTDECK_INSTANCE_ID",
+			want:   "",
+		},
+		{
+			name:   "different key returns empty",
+			output: "OTHER_KEY=value\n",
+			key:    "AGENTDECK_INSTANCE_ID",
+			want:   "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := parseTmuxEnvironmentValue(tt.output, tt.key); got != tt.want {
+				t.Fatalf("parseTmuxEnvironmentValue(%q, %q) = %q, want %q", tt.output, tt.key, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestFindInstanceByTmuxSessionName(t *testing.T) {
+	match := session.NewInstance("match", "/tmp")
+	other := session.NewInstance("other", "/tmp")
+
+	got := findInstanceByTmuxSessionName([]*session.Instance{other, match}, match.GetTmuxSession().Name)
+	if got != match {
+		t.Fatalf("findInstanceByTmuxSessionName() = %v, want match instance", got)
+	}
+}
+
+func TestGetCurrentSessionIDPrefersTmuxEnvironment(t *testing.T) {
+	t.Setenv("TMUX", "/tmp/tmux-test/default,1,0")
+
+	origEnv := getCurrentTmuxEnvironmentFn
+	origName := getCurrentTmuxSessionNameFn
+	origFind := findInstanceDataByTmuxFastFn
+	t.Cleanup(func() {
+		getCurrentTmuxEnvironmentFn = origEnv
+		getCurrentTmuxSessionNameFn = origName
+		findInstanceDataByTmuxFastFn = origFind
+	})
+
+	getCurrentTmuxEnvironmentFn = func(key string) string {
+		if key != "AGENTDECK_INSTANCE_ID" {
+			t.Fatalf("unexpected key lookup: %s", key)
+		}
+		return "inst-env"
+	}
+	getCurrentTmuxSessionNameFn = func() (string, error) {
+		t.Fatal("tmux session name lookup should not run when env is present")
+		return "", nil
+	}
+	findInstanceDataByTmuxFastFn = func(tmuxSessionName, preferredProfile string) (*session.InstanceData, string) {
+		t.Fatal("storage fallback should not run when env is present")
+		return nil, ""
+	}
+
+	if got := GetCurrentSessionID(); got != "inst-env" {
+		t.Fatalf("GetCurrentSessionID() = %q, want %q", got, "inst-env")
+	}
+}
+
+func TestGetCurrentSessionIDFallsBackToTmuxSessionLookup(t *testing.T) {
+	t.Setenv("TMUX", "/tmp/tmux-test/default,1,0")
+
+	origEnv := getCurrentTmuxEnvironmentFn
+	origName := getCurrentTmuxSessionNameFn
+	origFind := findInstanceDataByTmuxFastFn
+	t.Cleanup(func() {
+		getCurrentTmuxEnvironmentFn = origEnv
+		getCurrentTmuxSessionNameFn = origName
+		findInstanceDataByTmuxFastFn = origFind
+	})
+
+	getCurrentTmuxEnvironmentFn = func(key string) string { return "" }
+	getCurrentTmuxSessionNameFn = func() (string, error) {
+		return "agentdeck_child_deadbeef", nil
+	}
+	findInstanceDataByTmuxFastFn = func(tmuxSessionName, preferredProfile string) (*session.InstanceData, string) {
+		if tmuxSessionName != "agentdeck_child_deadbeef" {
+			t.Fatalf("unexpected tmux session name: %s", tmuxSessionName)
+		}
+		return &session.InstanceData{ID: "inst-storage"}, "_test"
+	}
+
+	if got := GetCurrentSessionID(); got != "inst-storage" {
+		t.Fatalf("GetCurrentSessionID() = %q, want %q", got, "inst-storage")
+	}
+}
+
+func TestResolveSessionOrCurrentFallsBackToExactTmuxName(t *testing.T) {
+	t.Setenv("TMUX", "/tmp/tmux-test/default,1,0")
+
+	origEnv := getCurrentTmuxEnvironmentFn
+	origName := getCurrentTmuxSessionNameFn
+	origFind := findInstanceDataByTmuxFastFn
+	t.Cleanup(func() {
+		getCurrentTmuxEnvironmentFn = origEnv
+		getCurrentTmuxSessionNameFn = origName
+		findInstanceDataByTmuxFastFn = origFind
+	})
+
+	inst := session.NewInstance("child", "/tmp")
+	getCurrentTmuxEnvironmentFn = func(key string) string { return "" }
+	getCurrentTmuxSessionNameFn = func() (string, error) {
+		return inst.GetTmuxSession().Name, nil
+	}
+	findInstanceDataByTmuxFastFn = func(tmuxSessionName, preferredProfile string) (*session.InstanceData, string) {
+		t.Fatal("loaded instance match should win before storage fallback")
+		return nil, ""
+	}
+
+	got, msg, code := ResolveSessionOrCurrent("", []*session.Instance{inst})
+	if got != inst {
+		t.Fatalf("ResolveSessionOrCurrent() = %v, want %v (msg=%q code=%q)", got, inst, msg, code)
+	}
+}
+
+func TestResolveSessionOrCurrentReturnsNotFoundWithoutTmuxSession(t *testing.T) {
+	t.Setenv("TMUX", "/tmp/tmux-test/default,1,0")
+
+	origEnv := getCurrentTmuxEnvironmentFn
+	origName := getCurrentTmuxSessionNameFn
+	origFind := findInstanceDataByTmuxFastFn
+	t.Cleanup(func() {
+		getCurrentTmuxEnvironmentFn = origEnv
+		getCurrentTmuxSessionNameFn = origName
+		findInstanceDataByTmuxFastFn = origFind
+	})
+
+	getCurrentTmuxEnvironmentFn = func(key string) string { return "" }
+	getCurrentTmuxSessionNameFn = func() (string, error) {
+		return "", errors.New("no client")
+	}
+	findInstanceDataByTmuxFastFn = func(tmuxSessionName, preferredProfile string) (*session.InstanceData, string) {
+		return nil, ""
+	}
+
+	got, msg, code := ResolveSessionOrCurrent("", nil)
+	if got != nil {
+		t.Fatalf("ResolveSessionOrCurrent() = %v, want nil", got)
+	}
+	if code != ErrCodeNotFound {
+		t.Fatalf("ResolveSessionOrCurrent() code = %q, want %q", code, ErrCodeNotFound)
+	}
+	if msg == "" {
+		t.Fatal("ResolveSessionOrCurrent() should return an explanatory message")
 	}
 }
