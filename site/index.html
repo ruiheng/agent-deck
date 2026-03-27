@@ -387,13 +387,14 @@
                     </summary>
                     <div class="px-4 pb-4">
                         <div class="code-block bg-tn-bg rounded-lg p-3 border border-tn-border relative">
-                            <button onclick="copyCode(this, `# Terminal\nset -g default-terminal &quot;tmux-256color&quot;\nset -ag terminal-overrides &quot;,*256col*:Tc&quot;\n\n# Performance\nset -sg escape-time 0\nset -g history-limit 10000\n\n# Mouse (scroll + drag-to-copy)\nset -g mouse on\n\n# Clipboard\nset -s set-clipboard external\nbind-key -T copy-mode-vi MouseDragEnd1Pane send-keys -X copy-pipe-and-cancel &quot;pbcopy&quot;\nbind-key -T copy-mode MouseDragEnd1Pane send-keys -X copy-pipe-and-cancel &quot;pbcopy&quot;`)"
+                            <button onclick="copyCode(this, `# Terminal\nset -g default-terminal &quot;tmux-256color&quot;\nset -ag terminal-overrides &quot;,*256col*:Tc&quot;\nset -as terminal-features &quot;,foot:RGB&quot;\n\n# Performance\nset -sg escape-time 0\nset -g history-limit 10000\n\n# Mouse (scroll + drag-to-copy)\nset -g mouse on\n\n# Clipboard\nset -s set-clipboard external\nbind-key -T copy-mode-vi MouseDragEnd1Pane send-keys -X copy-pipe-and-cancel &quot;pbcopy&quot;\nbind-key -T copy-mode MouseDragEnd1Pane send-keys -X copy-pipe-and-cancel &quot;pbcopy&quot;`)"
                                     class="absolute top-2 right-2 text-xs text-tn-dim hover:text-tn-accent transition-colors px-2 py-1 rounded hover:bg-tn-surface">
                                 Copy
                             </button>
                             <pre class="text-xs text-tn-cyan overflow-x-auto"><code># Terminal
 set -g default-terminal "tmux-256color"
 set -ag terminal-overrides ",*256col*:Tc"
+set -as terminal-features ",foot:RGB"
 
 # Performance
 set -sg escape-time 0
@@ -418,13 +419,14 @@ bind-key -T copy-mode MouseDragEnd1Pane send-keys -X copy-pipe-and-cancel "pbcop
                     </summary>
                     <div class="px-4 pb-4">
                         <div class="code-block bg-tn-bg rounded-lg p-3 border border-tn-border relative">
-                            <button onclick="copyCode(this, `# Terminal\nset -g default-terminal &quot;tmux-256color&quot;\nset -ag terminal-overrides &quot;,*256col*:Tc&quot;\n\n# Performance\nset -sg escape-time 0\nset -g history-limit 10000\n\n# Mouse (scroll + drag-to-copy)\nset -g mouse on\n\n# Clipboard\nset -s set-clipboard external\nbind-key -T copy-mode-vi MouseDragEnd1Pane send-keys -X copy-pipe-and-cancel &quot;xclip -in -selection clipboard&quot;\nbind-key -T copy-mode MouseDragEnd1Pane send-keys -X copy-pipe-and-cancel &quot;xclip -in -selection clipboard&quot;`)"
+                            <button onclick="copyCode(this, `# Terminal\nset -g default-terminal &quot;tmux-256color&quot;\nset -ag terminal-overrides &quot;,*256col*:Tc&quot;\nset -as terminal-features &quot;,foot:RGB&quot;\n\n# Performance\nset -sg escape-time 0\nset -g history-limit 10000\n\n# Mouse (scroll + drag-to-copy)\nset -g mouse on\n\n# Clipboard\nset -s set-clipboard external\nbind-key -T copy-mode-vi MouseDragEnd1Pane send-keys -X copy-pipe-and-cancel &quot;xclip -in -selection clipboard&quot;\nbind-key -T copy-mode MouseDragEnd1Pane send-keys -X copy-pipe-and-cancel &quot;xclip -in -selection clipboard&quot;`)"
                                     class="absolute top-2 right-2 text-xs text-tn-dim hover:text-tn-accent transition-colors px-2 py-1 rounded hover:bg-tn-surface">
                                 Copy
                             </button>
                             <pre class="text-xs text-tn-cyan overflow-x-auto"><code># Terminal
 set -g default-terminal "tmux-256color"
 set -ag terminal-overrides ",*256col*:Tc"
+set -as terminal-features ",foot:RGB"
 
 # Performance
 set -sg escape-time 0

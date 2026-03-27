@@ -70,6 +70,36 @@ func TestNewSessionUniqueness(t *testing.T) {
 	}
 }
 
+func TestCurrentTrueColorTerminalFeature(t *testing.T) {
+	originalTerm, hadTerm := os.LookupEnv("TERM")
+	originalColorTerm, hadColorTerm := os.LookupEnv("COLORTERM")
+	t.Cleanup(func() {
+		if hadTerm {
+			_ = os.Setenv("TERM", originalTerm)
+		} else {
+			_ = os.Unsetenv("TERM")
+		}
+		if hadColorTerm {
+			_ = os.Setenv("COLORTERM", originalColorTerm)
+		} else {
+			_ = os.Unsetenv("COLORTERM")
+		}
+	})
+
+	_ = os.Setenv("TERM", "foot")
+	_ = os.Setenv("COLORTERM", "truecolor")
+	assert.Equal(t, "foot:RGB", currentTrueColorTerminalFeature())
+
+	_ = os.Setenv("COLORTERM", "24bit")
+	assert.Equal(t, "foot:RGB", currentTrueColorTerminalFeature())
+
+	_ = os.Setenv("COLORTERM", "yes")
+	assert.Equal(t, "", currentTrueColorTerminalFeature())
+
+	_ = os.Unsetenv("COLORTERM")
+	assert.Equal(t, "", currentTrueColorTerminalFeature())
+}
+
 func TestSession_InjectStatusLine_Default(t *testing.T) {
 	// NewSession should default to true
 	sess := NewSession("test", "/tmp")

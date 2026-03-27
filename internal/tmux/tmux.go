@@ -439,6 +439,23 @@ func GetTerminalInfo() TerminalInfo {
 	return info
 }
 
+// currentTrueColorTerminalFeature returns a tmux terminal-features entry for the
+// current outer terminal when the environment explicitly advertises true color.
+// Example: TERM=foot + COLORTERM=truecolor => "foot:RGB".
+func currentTrueColorTerminalFeature() string {
+	term := strings.TrimSpace(os.Getenv("TERM"))
+	if term == "" {
+		return ""
+	}
+
+	colorterm := strings.ToLower(strings.TrimSpace(os.Getenv("COLORTERM")))
+	if colorterm != "truecolor" && colorterm != "24bit" {
+		return ""
+	}
+
+	return term + ":RGB"
+}
+
 // SupportsHyperlinks returns true if the current terminal supports OSC 8 hyperlinks
 func SupportsHyperlinks() bool {
 	return GetTerminalInfo().SupportsOSC8
@@ -1257,6 +1274,10 @@ func (s *Session) Start(command string) error {
 		"set-option", "-t", s.Name, "escape-time", "10", ";",
 		"set", "-sq", "extended-keys", "on", ";",
 		"set", "-asq", "terminal-features", ",*:hyperlinks:extkeys").Run()
+
+	if rgbFeature := currentTrueColorTerminalFeature(); rgbFeature != "" {
+		_ = exec.Command("tmux", "set", "-asq", "terminal-features", ","+rgbFeature).Run()
+	}
 
 	// Bind Ctrl+Q to detach at the tmux level as fallback for terminals where
 	// XON/XOFF flow control intercepts the key before it reaches the PTY stdin

@@ -551,7 +551,7 @@ configure_tmux() {
     local TMUX_CONF="$HOME/.tmux.conf"
     local MARKER="# agent-deck configuration"
     local VERSION_MARKER="# agent-deck-tmux-config-version:"
-    local CURRENT_VERSION="3"  # Bump this when config changes
+    local CURRENT_VERSION="4"  # Bump this when config changes
     local NEEDS_UPDATE=false
     local HAS_CONFIG=false
 
@@ -576,6 +576,7 @@ configure_tmux() {
             echo "  • Added auto-enter copy-mode on scroll up"
             echo "  • Added explicit scroll bindings for copy-mode"
             echo "  • Improved terminal compatibility"
+            echo "  • Restored truecolor for foot and other non-*256col terminals"
             echo ""
             read -p "Update tmux configuration? [Y/n] " -n 1 -r
             echo
@@ -664,6 +665,7 @@ $VERSION_MARKER $CURRENT_VERSION
 set -g default-terminal \"tmux-256color\"
 set -ag terminal-overrides \",xterm*:Tc:smcup@:rmcup@\"
 set -ag terminal-overrides \",*256col*:Tc\"
+set -as terminal-features \",foot:RGB\"
 
 # Performance
 set -sg escape-time 0
