@@ -364,7 +364,7 @@ func runOpenCodePluginPhase0Mode(prepared *openCodePluginPhase0PreparedEnv, opts
 
 	switch mode {
 	case "host":
-		cmd.Env = append(cmd.Env, buildOpenCodePluginPhase0HostEnv(prepared, instanceID, reportPath, hooksDir)...)
+		cmd.Env = append(cmd.Env, buildOpenCodePluginPhase0HostEnv(runEnv, instanceID, reportPath, hooksDir)...)
 	case "sandbox":
 		cmd.Env = append(cmd.Env, buildOpenCodePluginPhase0SandboxEnv()...)
 	}

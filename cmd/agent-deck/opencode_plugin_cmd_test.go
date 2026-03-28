@@ -131,6 +131,52 @@ func TestCloneOpenCodePluginPhase0Env_CreatesIndependentRunRoots(t *testing.T) {
 	}
 }
 
+func TestBuildOpenCodePluginPhase0HostEnv_UsesRunSpecificClone(t *testing.T) {
+	prepared := &openCodePluginPhase0PreparedEnv{
+		tempRoot:      filepath.Join(t.TempDir(), "prepared-root"),
+		tempConfigDir: filepath.Join(t.TempDir(), ".config", "opencode"),
+		tempDataDir:   filepath.Join(t.TempDir(), ".local", "share", "opencode"),
+		tempCacheDir:  filepath.Join(t.TempDir(), ".cache", "opencode"),
+		tempStateDir:  filepath.Join(t.TempDir(), ".local", "state", "opencode"),
+	}
+	runEnv := &openCodePluginPhase0PreparedEnv{
+		tempRoot:      filepath.Join(prepared.tempRoot, "host"),
+		tempConfigDir: filepath.Join(prepared.tempRoot, "host", ".config", "opencode"),
+		tempDataDir:   filepath.Join(prepared.tempRoot, "host", ".local", "share", "opencode"),
+		tempCacheDir:  filepath.Join(prepared.tempRoot, "host", ".cache", "opencode"),
+		tempStateDir:  filepath.Join(prepared.tempRoot, "host", ".local", "state", "opencode"),
+	}
+
+	env := buildOpenCodePluginPhase0HostEnv(runEnv, "inst-host", "/tmp/report.jsonl", "/tmp/hooks")
+
+	wantHome := filepath.Join(prepared.tempRoot, "host")
+	if got := lookupEnvValue(env, "HOME"); got != wantHome {
+		t.Fatalf("HOME = %q, want %q", got, wantHome)
+	}
+	if got := lookupEnvValue(env, "XDG_CONFIG_HOME"); got != filepath.Join(wantHome, ".config") {
+		t.Fatalf("XDG_CONFIG_HOME = %q, want %q", got, filepath.Join(wantHome, ".config"))
+	}
+	if got := lookupEnvValue(env, "XDG_DATA_HOME"); got != filepath.Join(wantHome, ".local", "share") {
+		t.Fatalf("XDG_DATA_HOME = %q, want %q", got, filepath.Join(wantHome, ".local", "share"))
+	}
+	if got := lookupEnvValue(env, "XDG_CACHE_HOME"); got != filepath.Join(wantHome, ".cache") {
+		t.Fatalf("XDG_CACHE_HOME = %q, want %q", got, filepath.Join(wantHome, ".cache"))
+	}
+	if got := lookupEnvValue(env, "XDG_STATE_HOME"); got != filepath.Join(wantHome, ".local", "state") {
+		t.Fatalf("XDG_STATE_HOME = %q, want %q", got, filepath.Join(wantHome, ".local", "state"))
+	}
+}
+
+func lookupEnvValue(env []string, key string) string {
+	prefix := key + "="
+	for _, entry := range env {
+		if strings.HasPrefix(entry, prefix) {
+			return strings.TrimPrefix(entry, prefix)
+		}
+	}
+	return ""
+}
+
 func TestCopyDirTree_SkipsPluginsTopLevel(t *testing.T) {
 	src := t.TempDir()
 	dst := t.TempDir()

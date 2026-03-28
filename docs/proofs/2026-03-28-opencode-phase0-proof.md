@@ -41,13 +41,13 @@ Overall result: PASS
 
 Host mode:
 - Plugin initialized and observed `AGENTDECK_INSTANCE_ID`
-- Observed session ID: `ses_2cb0a3699ffegZuiTaRRy184RW`
+- Observed session ID: `ses_2cb07078cffeKpCtmmUsCJ9aW9`
 - Extracted session ID field: `properties.sessionID`
 - Host-visible hook JSON and `.sid` anchor were written successfully and matched the observed session ID
 
 Sandbox mode:
 - Plugin initialized and observed `AGENTDECK_INSTANCE_ID`
-- Observed session ID: `ses_2cb0a251fffeOSfCtjoHtLBGG1`
+- Observed session ID: `ses_2cb06f675ffewS3hRrcmmlufeq`
 - Extracted session ID field: `properties.sessionID`
 - Host-visible hook JSON and `.sid` anchor were written successfully through the container mount and matched the observed session ID
 
