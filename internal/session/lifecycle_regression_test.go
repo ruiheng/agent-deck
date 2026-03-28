@@ -308,6 +308,29 @@ func TestCLIHookColdLoad_EmptyStatus(t *testing.T) {
 	assert.Nil(t, hs, "readHookStatusFile should return nil for files not in GetHooksDir()")
 }
 
+func TestCLIHookColdLoad_UsesStickyAnchorWhenSessionIDMissing(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+
+	instanceID := "anchor-cold-load-inst"
+	require.NoError(t, os.MkdirAll(GetHooksDir(), 0755))
+	WriteHookSessionAnchor(instanceID, "sid-anchor-123")
+
+	payload := map[string]any{
+		"status":     "waiting",
+		"session_id": "",
+		"event":      "session.idle",
+		"ts":         time.Now().Unix(),
+	}
+	data, err := json.Marshal(payload)
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(filepath.Join(GetHooksDir(), instanceID+".json"), data, 0644))
+
+	hs := readHookStatusFile(instanceID)
+	require.NotNil(t, hs, "readHookStatusFile should return hook status from disk")
+	assert.Equal(t, "sid-anchor-123", hs.SessionID, "cold-load should recover sticky hook session binding")
+}
+
 // TestThreadSafeAccessors_Concurrent verifies GetStatusThreadSafe and
 // SetStatusThreadSafe don't race when called from multiple goroutines.
 func TestThreadSafeAccessors_Concurrent(t *testing.T) {

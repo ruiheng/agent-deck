@@ -30,6 +30,16 @@ func ReadHookSessionAnchor(instanceID string) string {
 	return strings.TrimSpace(string(data))
 }
 
+// ResolveHookSessionID keeps hook JSON compatible while allowing readers to
+// recover the last sticky session binding from the .sid sidecar.
+func ResolveHookSessionID(instanceID, sessionID string) string {
+	sessionID = strings.TrimSpace(sessionID)
+	if sessionID != "" {
+		return sessionID
+	}
+	return ReadHookSessionAnchor(instanceID)
+}
+
 // WriteHookSessionAnchor persists the latest non-empty hook session ID.
 func WriteHookSessionAnchor(instanceID, sessionID string) {
 	instanceID = strings.TrimSpace(instanceID)

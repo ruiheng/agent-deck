@@ -2,7 +2,6 @@ package session
 
 import (
 	"context"
-	"encoding/json"
 	"os"
 	"path/filepath"
 	"sort"
@@ -107,9 +106,12 @@ func (d *TransitionDaemon) syncProfile(profile string) time.Duration {
 	hookCandidates := make(map[string]hookTransitionCandidate, len(instances))
 	for _, inst := range instances {
 		byID[inst.ID] = inst
-		if IsClaudeCompatible(inst.Tool) || inst.Tool == "codex" || inst.Tool == "gemini" {
-			if hs := d.hookStatusForInstance(inst.ID); hs != nil {
-				inst.UpdateHookStatus(hs)
+		if !toolUsesHookSessionBinding(inst.Tool) {
+			continue
+		}
+		if hs := d.hookStatusForInstance(inst.ID); hs != nil {
+			inst.UpdateHookStatus(hs)
+			if toolUsesHookStatusFastPath(inst.Tool) {
 				if candidate, ok := terminalHookTransitionCandidate(inst.Tool, hs); ok {
 					hookCandidates[inst.ID] = candidate
 				}
@@ -277,28 +279,14 @@ func readHookStatusFile(instanceID string) *HookStatus {
 	if err != nil || len(data) == 0 {
 		return nil
 	}
-	var raw struct {
-		Status    string `json:"status"`
-		SessionID string `json:"session_id"`
-		Event     string `json:"event"`
-		Timestamp int64  `json:"ts"`
-	}
-	if err := json.Unmarshal(data, &raw); err != nil {
+	hs := decodeHookStatusFile(instanceID, data)
+	if hs == nil {
 		return nil
 	}
-	if strings.TrimSpace(raw.Status) == "" {
+	if strings.TrimSpace(hs.Status) == "" {
 		return nil
 	}
-	updatedAt := time.Now()
-	if raw.Timestamp > 0 {
-		updatedAt = time.Unix(raw.Timestamp, 0)
-	}
-	return &HookStatus{
-		Status:    raw.Status,
-		SessionID: raw.SessionID,
-		Event:     raw.Event,
-		UpdatedAt: updatedAt,
-	}
+	return hs
 }
 
 func (d *TransitionDaemon) emitHookTransitionCandidates(

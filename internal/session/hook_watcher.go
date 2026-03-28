@@ -25,6 +25,13 @@ type HookStatus struct {
 	UpdatedAt time.Time // When this status was received
 }
 
+type hookStatusPayload struct {
+	Status    string `json:"status"`
+	SessionID string `json:"session_id"`
+	Event     string `json:"event"`
+	Timestamp int64  `json:"ts"`
+}
+
 // StatusFileWatcher watches ~/.agent-deck/hooks/ for status file changes
 // and updates instance hook status in real time.
 type StatusFileWatcher struct {
@@ -165,25 +172,12 @@ func (w *StatusFileWatcher) processFile(filePath string) {
 		return
 	}
 
-	var status struct {
-		Status    string `json:"status"`
-		SessionID string `json:"session_id"`
-		Event     string `json:"event"`
-		Timestamp int64  `json:"ts"`
-	}
-	if err := json.Unmarshal(data, &status); err != nil {
-		return
-	}
-
 	// Extract instance ID from filename (remove .json extension)
 	base := filepath.Base(filePath)
 	instanceID := strings.TrimSuffix(base, ".json")
-
-	hookStatus := &HookStatus{
-		Status:    status.Status,
-		SessionID: status.SessionID,
-		Event:     status.Event,
-		UpdatedAt: time.Unix(status.Timestamp, 0),
+	hookStatus := decodeHookStatusFile(instanceID, data)
+	if hookStatus == nil {
+		return
 	}
 
 	w.mu.Lock()
@@ -192,12 +186,31 @@ func (w *StatusFileWatcher) processFile(filePath string) {
 
 	hookLog.Debug("hook_status_updated",
 		slog.String("instance", instanceID),
-		slog.String("status", status.Status),
-		slog.String("event", status.Event),
+		slog.String("status", hookStatus.Status),
+		slog.String("event", hookStatus.Event),
 	)
 
 	if w.onChange != nil {
 		w.onChange()
+	}
+}
+
+func decodeHookStatusFile(instanceID string, data []byte) *HookStatus {
+	var status hookStatusPayload
+	if err := json.Unmarshal(data, &status); err != nil {
+		return nil
+	}
+
+	updatedAt := time.Now()
+	if status.Timestamp > 0 {
+		updatedAt = time.Unix(status.Timestamp, 0)
+	}
+
+	return &HookStatus{
+		Status:    status.Status,
+		SessionID: ResolveHookSessionID(instanceID, status.SessionID),
+		Event:     status.Event,
+		UpdatedAt: updatedAt,
 	}
 }
 

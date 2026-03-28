@@ -2225,6 +2225,14 @@ func (i *Instance) sendMessageWhenReady(message string) error {
 // instead of every 500ms tick, dramatically reducing subprocess spawns
 const errorRecheckInterval = 30 * time.Second
 
+func toolUsesHookSessionBinding(tool string) bool {
+	return IsClaudeCompatible(tool) || tool == "codex" || tool == "gemini" || tool == "opencode"
+}
+
+func toolUsesHookStatusFastPath(tool string) bool {
+	return IsClaudeCompatible(tool) || tool == "codex" || tool == "gemini"
+}
+
 func hookFastPathFreshnessForTool(tool, hookStatus string) time.Duration {
 	if tool != "codex" {
 		return hookFastPathWindow
@@ -2312,7 +2320,7 @@ func (i *Instance) UpdateStatus() error {
 
 	// COLD LOAD: CLI doesn't run StatusFileWatcher, so hookStatus is always empty.
 	// Read the hook file from disk once to give CLI the same fast path as the TUI.
-	if i.hookStatus == "" && (IsClaudeCompatible(i.Tool) || i.Tool == "codex" || i.Tool == "gemini") {
+	if i.hookStatus == "" && toolUsesHookSessionBinding(i.Tool) {
 		if hs := readHookStatusFile(i.ID); hs != nil {
 			i.hookStatus = hs.Status
 			i.hookLastUpdate = hs.UpdatedAt
@@ -2320,9 +2328,12 @@ func (i *Instance) UpdateStatus() error {
 			// Reset stale acknowledged flag from ReconnectSessionLazy.
 			// Without this, sessions loaded from SQLite with previousStatus="idle"
 			// would report idle even when the hook file says waiting/running.
-			if i.tmuxSession != nil && (hs.Status == "running" || hs.Status == "waiting") {
+			if toolUsesHookStatusFastPath(i.Tool) &&
+				i.tmuxSession != nil &&
+				(hs.Status == "running" || hs.Status == "waiting") {
 				i.tmuxSession.ResetAcknowledged()
 			}
+			i.applyHookSessionBindingLocked(hs)
 		}
 	}
 
@@ -2330,7 +2341,7 @@ func (i *Instance) UpdateStatus() error {
 	// Freshness is tool- and state-specific (e.g. Codex running vs waiting).
 	// When this path is stale/missing, control naturally falls through to tmux
 	// polling and tool-specific session sync (tmux env/process-files/disk).
-	if (IsClaudeCompatible(i.Tool) || i.Tool == "codex" || i.Tool == "gemini") &&
+	if toolUsesHookStatusFastPath(i.Tool) &&
 		i.hookStatus != "" &&
 		time.Since(i.hookLastUpdate) < hookFastPathFreshnessForTool(i.Tool, i.hookStatus) {
 		switch i.hookStatus {
@@ -2363,25 +2374,6 @@ func (i *Instance) UpdateStatus() error {
 			}
 		case "dead":
 			i.Status = StatusError
-		}
-		if i.hookSessionID != "" {
-			switch {
-			case IsClaudeCompatible(i.Tool):
-				if i.hookSessionID != i.ClaudeSessionID {
-					i.ClaudeSessionID = i.hookSessionID
-					i.ClaudeDetectedAt = time.Now()
-				}
-			case i.Tool == "codex":
-				if i.hookSessionID != i.CodexSessionID {
-					i.CodexSessionID = i.hookSessionID
-					i.CodexDetectedAt = time.Now()
-				}
-			case i.Tool == "gemini":
-				if i.hookSessionID != i.GeminiSessionID {
-					i.GeminiSessionID = i.hookSessionID
-					i.GeminiDetectedAt = time.Now()
-				}
-			}
 		}
 		return nil
 	}
@@ -2620,16 +2612,21 @@ func (i *Instance) UpdateHookStatus(status *HookStatus) {
 
 	i.hookStatus = status.Status
 	i.hookLastUpdate = status.UpdatedAt
+	i.hookSessionID = ResolveHookSessionID(i.ID, status.SessionID)
+	i.applyHookSessionBindingLocked(status)
+}
 
-	// Resolve session ID from hook payload first, then sidecar anchor.
-	sessionID := strings.TrimSpace(status.SessionID)
-	if sessionID == "" {
-		sessionID = ReadHookSessionAnchor(i.ID)
+func (i *Instance) applyHookSessionBindingLocked(status *HookStatus) {
+	if status == nil || !toolUsesHookSessionBinding(i.Tool) {
+		return
 	}
+
+	sessionID := ResolveHookSessionID(i.ID, status.SessionID)
 	if sessionID == "" {
 		return
 	}
 
+	i.hookSessionID = sessionID
 	switch {
 	case IsClaudeCompatible(i.Tool):
 		if sessionID == i.ClaudeSessionID {
@@ -2687,6 +2684,16 @@ func (i *Instance) UpdateHookStatus(status *HookStatus) {
 				_ = i.tmuxSession.SetEnvironment("GEMINI_SESSION_ID", sessionID)
 			}
 		}
+	case i.Tool == "opencode":
+		if sessionID == i.OpenCodeSessionID {
+			return
+		}
+		sessionLog.Debug("opencode_session_update_from_hook",
+			slog.String("old_id", i.OpenCodeSessionID),
+			slog.String("new_id", sessionID),
+			slog.String("event", status.Event),
+		)
+		i.setOpenCodeSession(sessionID)
 	}
 }
 

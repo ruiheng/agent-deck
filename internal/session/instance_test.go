@@ -2687,6 +2687,28 @@ func TestInstance_UpdateHookStatus_UsesAnchorWhenHookSessionIDMissing_Codex(t *t
 	}
 }
 
+func TestInstance_UpdateHookStatus_UsesAnchorWhenHookSessionIDMissing_OpenCode(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
+	inst := NewInstanceWithTool("hook-anchor-opencode", "/tmp/test", "opencode")
+	WriteHookSessionAnchor(inst.ID, "anchor-opencode-1")
+
+	hookStatus := &HookStatus{
+		Status:    "waiting",
+		SessionID: "",
+		Event:     "session.idle",
+		UpdatedAt: time.Now(),
+	}
+	inst.UpdateHookStatus(hookStatus)
+
+	if inst.OpenCodeSessionID != "anchor-opencode-1" {
+		t.Fatalf("OpenCodeSessionID = %q, want anchor-opencode-1", inst.OpenCodeSessionID)
+	}
+	if inst.hookSessionID != "anchor-opencode-1" {
+		t.Fatalf("hookSessionID = %q, want anchor-opencode-1", inst.hookSessionID)
+	}
+}
+
 func TestInstance_UpdateHookStatus_GeminiRejectsCandidateWithoutConversationData(t *testing.T) {
 	tmpDir := t.TempDir()
 	geminiConfigDirOverride = tmpDir

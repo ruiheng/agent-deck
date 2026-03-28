@@ -253,6 +253,34 @@ func TestHookFastPath_ShellIgnoresHooks(t *testing.T) {
 	t.Logf("Shell session status from tmux polling: %s", inst.Status)
 }
 
+func TestHookFastPath_OpenCodeBindsSessionButIgnoresLifecycleHooks(t *testing.T) {
+	skipIfNoTmuxServer(t)
+
+	inst := NewInstanceWithTool("test-opencode-no-hooks", "/tmp", "opencode")
+	inst.Command = "sleep 30"
+
+	err := inst.Start()
+	require.NoError(t, err, "Start() should succeed")
+	defer func() { _ = inst.Kill() }()
+
+	time.Sleep(2 * time.Second)
+
+	inst.UpdateHookStatus(&HookStatus{
+		Status:    "running",
+		SessionID: "ses_opencode_hook_binding",
+		Event:     "session.status",
+		UpdatedAt: time.Now(),
+	})
+
+	err = inst.UpdateStatus()
+	require.NoError(t, err, "UpdateStatus() should succeed")
+
+	assert.Equal(t, "ses_opencode_hook_binding", inst.OpenCodeSessionID,
+		"OpenCode should still accept hook-derived session binding")
+	assert.NotEqual(t, StatusRunning, inst.Status,
+		"OpenCode should not use hook lifecycle fast path in v1")
+}
+
 // =============================================================================
 // Task 2: Status Persistence to SQLite Tests (TEST-07)
 // =============================================================================
