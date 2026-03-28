@@ -1590,6 +1590,33 @@ func TestInstance_CreateForkedOpenCodeInstance(t *testing.T) {
 	}
 }
 
+func TestInstance_CreateForkedOpenCodeInstance_UsesChildInstanceID(t *testing.T) {
+	inst := NewInstanceWithTool("parent", "/tmp/test", "opencode")
+	inst.OpenCodeSessionID = "ses_parent1234567890abcdef"
+	inst.OpenCodeDetectedAt = time.Now()
+
+	forked, cmd, err := inst.CreateForkedOpenCodeInstance("child", "")
+	if err != nil {
+		t.Fatalf("CreateForkedOpenCodeInstance() failed: %v", err)
+	}
+	if !strings.HasPrefix(cmd, "bash '") {
+		t.Fatalf("CreateForkedOpenCodeInstance() should return bash command, got: %s", cmd)
+	}
+	scriptPath := strings.TrimPrefix(cmd, "bash '")
+	scriptPath = strings.TrimSuffix(scriptPath, "'")
+	scriptContent, err := os.ReadFile(scriptPath)
+	if err != nil {
+		t.Fatalf("Failed to read fork script at %s: %v", scriptPath, err)
+	}
+	script := string(scriptContent)
+	if strings.Contains(script, "AGENTDECK_INSTANCE_ID='"+inst.ID+"'") {
+		t.Fatalf("fork script leaked parent instance ID: %s", script)
+	}
+	if !strings.Contains(script, "AGENTDECK_INSTANCE_ID='"+forked.ID+"'") {
+		t.Fatalf("fork script missing child instance ID %q: %s", forked.ID, script)
+	}
+}
+
 func TestParseGeminiLastAssistantMessage(t *testing.T) {
 	// VERIFIED: Actual Gemini session JSON structure
 	sessionJSON := `{

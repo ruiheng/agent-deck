@@ -77,6 +77,15 @@ func SyncAgentConfig(homeDir string, mount AgentConfigMount) (string, error) {
 		copyDirSet[d] = true
 	}
 
+	authoritativeDirSet := make(map[string]bool, len(mount.authoritativeDirs))
+	for _, d := range mount.authoritativeDirs {
+		authoritativeDirSet[d] = true
+		dest := filepath.Join(sandboxDir, d)
+		if err := os.RemoveAll(dest); err != nil && !os.IsNotExist(err) {
+			slog.Warn("Pruning authoritative dir", "dir", dest, "error", err)
+		}
+	}
+
 	preserveSet := make(map[string]bool, len(mount.preserveFiles))
 	for _, f := range mount.preserveFiles {
 		preserveSet[f] = true
@@ -108,6 +117,12 @@ func SyncAgentConfig(homeDir string, mount AgentConfigMount) (string, error) {
 			// Use resolved path to follow validated symlinks.
 			if copyDirSet[name] {
 				dest := filepath.Join(sandboxDir, name)
+				if authoritativeDirSet[name] {
+					if err := os.RemoveAll(dest); err != nil && !os.IsNotExist(err) {
+						slog.Warn("Resetting authoritative dir", "dir", dest, "error", err)
+						continue
+					}
+				}
 				if err := copyDirRecursive(resolved, dest); err != nil {
 					slog.Warn("Copying directory", "src", resolved, "error", err)
 				}

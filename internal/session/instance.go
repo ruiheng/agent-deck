@@ -4358,8 +4358,19 @@ func (i *Instance) ForkOpenCodeWithOptions(newTitle, newGroupPath string, opts *
 		return "", fmt.Errorf("cannot fork: no active OpenCode session")
 	}
 
+	return i.buildOpenCodeForkCommand(generateID(), opts)
+}
+
+func (i *Instance) buildOpenCodeForkCommand(childInstanceID string, opts *OpenCodeOptions) (string, error) {
+	if !i.CanForkOpenCode() {
+		return "", fmt.Errorf("cannot fork: no active OpenCode session")
+	}
+
 	workDir := i.ProjectPath
-	envPrefix := i.buildEnvSourceCommand() + i.buildOpenCodeRuntimeEnvPrefix()
+	envPrefix := i.buildEnvSourceCommand()
+	if strings.TrimSpace(childInstanceID) != "" {
+		envPrefix += "AGENTDECK_INSTANCE_ID=" + shellQuote(childInstanceID) + " "
+	}
 
 	// Build extra flags from options (for fork, exclude session mode flags)
 	var extraFlags string
@@ -4444,17 +4455,18 @@ func (i *Instance) CreateForkedOpenCodeInstanceWithOptions(
 	newTitle, newGroupPath string,
 	opts *OpenCodeOptions,
 ) (*Instance, string, error) {
-	cmd, err := i.ForkOpenCodeWithOptions(newTitle, newGroupPath, opts)
-	if err != nil {
-		return nil, "", err
-	}
-
 	forked := NewInstance(newTitle, i.ProjectPath)
 	if newGroupPath != "" {
 		forked.GroupPath = newGroupPath
 	} else {
 		forked.GroupPath = i.GroupPath
 	}
+
+	cmd, err := i.buildOpenCodeForkCommand(forked.ID, opts)
+	if err != nil {
+		return nil, "", err
+	}
+
 	forked.Command = cmd
 	forked.Tool = "opencode"
 

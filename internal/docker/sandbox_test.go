@@ -161,10 +161,11 @@ func TestSyncAgentConfig_OpenCodeCopiesPluginsOnly(t *testing.T) {
 	require.NoError(t, os.WriteFile(filepath.Join(hostDir, "plugins", "agentdeck.js"), []byte("plugin"), 0o755))
 
 	mount := AgentConfigMount{
-		hostRel:     ".config/opencode",
-		skipEntries: []string{"sandbox"},
-		copyDirs:    []string{"plugins"},
-		skipFiles:   true,
+		hostRel:           ".config/opencode",
+		skipEntries:       []string{"sandbox"},
+		copyDirs:          []string{"plugins"},
+		authoritativeDirs: []string{"plugins"},
+		skipFiles:         true,
 	}
 	sandboxDir, err := SyncAgentConfig(homeDir, mount)
 	require.NoError(t, err)
@@ -175,6 +176,39 @@ func TestSyncAgentConfig_OpenCodeCopiesPluginsOnly(t *testing.T) {
 	data, err := os.ReadFile(filepath.Join(sandboxDir, "plugins", "agentdeck.js"))
 	require.NoError(t, err)
 	require.Equal(t, "plugin", string(data))
+}
+
+func TestSyncAgentConfig_OpenCodePrunesDeletedPlugins(t *testing.T) {
+	t.Parallel()
+
+	homeDir := t.TempDir()
+	hostDir := filepath.Join(homeDir, ".config", "opencode")
+	pluginPath := filepath.Join(hostDir, "plugins", "agentdeck-session-binding.js")
+	require.NoError(t, os.MkdirAll(filepath.Dir(pluginPath), 0o755))
+	require.NoError(t, os.WriteFile(pluginPath, []byte("plugin-v1"), 0o755))
+
+	mount := AgentConfigMount{
+		hostRel:           ".config/opencode",
+		skipEntries:       []string{"sandbox"},
+		copyDirs:          []string{"plugins"},
+		authoritativeDirs: []string{"plugins"},
+		skipFiles:         true,
+	}
+
+	sandboxDir, err := SyncAgentConfig(homeDir, mount)
+	require.NoError(t, err)
+
+	mirrorPluginPath := filepath.Join(sandboxDir, "plugins", "agentdeck-session-binding.js")
+	_, err = os.Stat(mirrorPluginPath)
+	require.NoError(t, err)
+
+	require.NoError(t, os.Remove(pluginPath))
+
+	_, err = SyncAgentConfig(homeDir, mount)
+	require.NoError(t, err)
+
+	_, err = os.Stat(mirrorPluginPath)
+	require.True(t, os.IsNotExist(err))
 }
 
 func TestSyncAgentConfig_FollowsSymlinks(t *testing.T) {

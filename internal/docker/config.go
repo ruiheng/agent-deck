@@ -44,11 +44,12 @@ var agentConfigMounts = []AgentConfigMount{
 		},
 	},
 	{
-		hostRel:         ".config/opencode",
-		containerSuffix: ".config/opencode",
-		skipEntries:     []string{"sandbox"},
-		copyDirs:        []string{"plugins"},
-		skipFiles:       true,
+		hostRel:           ".config/opencode",
+		containerSuffix:   ".config/opencode",
+		skipEntries:       []string{"sandbox"},
+		copyDirs:          []string{"plugins"},
+		authoritativeDirs: []string{"plugins"},
+		skipFiles:         true,
 	},
 	{
 		hostRel:         ".local/share/opencode",
@@ -174,6 +175,9 @@ type AgentConfigMount struct {
 	skipEntries []string
 	// copyDirs are directories to recursively copy into the sandbox.
 	copyDirs []string
+	// authoritativeDirs are copied subdirectories whose sandbox mirror should
+	// exactly match the host on each sync, including deletions.
+	authoritativeDirs []string
 	// skipFiles suppresses copying top-level regular files from the host dir.
 	// Use this when only specific subdirectories should be exposed in sandbox.
 	skipFiles bool
