@@ -49,7 +49,6 @@ var agentConfigMounts = []AgentConfigMount{
 		skipEntries:       []string{"sandbox"},
 		copyDirs:          []string{"plugins"},
 		authoritativeDirs: []string{"plugins"},
-		skipFiles:         true,
 	},
 	{
 		hostRel:         ".local/share/opencode",

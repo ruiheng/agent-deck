@@ -144,12 +144,9 @@ func handleOpenCodePluginPhase0(args []string) {
 		os.Exit(1)
 	}
 
-	if opts.jsonOutput {
-		enc := json.NewEncoder(os.Stdout)
-		enc.SetIndent("", "  ")
-		_ = enc.Encode(report)
-	} else {
-		printOpenCodePluginPhase0Summary(os.Stdout, report)
+	if outputErr := writeOpenCodePluginPhase0Output(os.Stdout, opts.jsonOutput, report); outputErr != nil {
+		fmt.Fprintf(os.Stderr, "Error writing proof output: %v\n", outputErr)
+		os.Exit(1)
 	}
 
 	if runErr != nil {
@@ -357,7 +354,7 @@ func runOpenCodePluginPhase0Mode(prepared *openCodePluginPhase0PreparedEnv, opts
 	cmd.Stderr = &stderrBuf
 	cmd.Dir = opts.projectPath
 	cmd.Env = append([]string{}, os.Environ()...)
-	cmd.Env = filterEnv(cmd.Env, "HOME", "XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_CACHE_HOME", "AGENTDECK_INSTANCE_ID", "AGENTDECK_HOOKS_DIR", "AGENTDECK_PROOF_REPORT_PATH", "AGENTDECK_PROOF_MODE", "OPENCODE_DISABLE_AUTOUPDATE", "OPENCODE_DISABLE_MODELS_FETCH", "OPENCODE_DISABLE_LSP_DOWNLOAD")
+	cmd.Env = filterEnv(cmd.Env, "HOME", "XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_CACHE_HOME", "XDG_STATE_HOME", "AGENTDECK_INSTANCE_ID", "AGENTDECK_HOOKS_DIR", "AGENTDECK_PROOF_REPORT_PATH", "AGENTDECK_PROOF_MODE", "OPENCODE_DISABLE_AUTOUPDATE", "OPENCODE_DISABLE_MODELS_FETCH", "OPENCODE_DISABLE_LSP_DOWNLOAD")
 
 	switch mode {
 	case "host":
@@ -626,6 +623,19 @@ func writeOpenCodePluginPhase0Report(path string, report *openCodePluginPhase0Re
 	}
 	data = append(data, '\n')
 	return os.WriteFile(path, data, 0o644)
+}
+
+func writeOpenCodePluginPhase0Output(w io.Writer, jsonOutput bool, report *openCodePluginPhase0Report) error {
+	if report == nil {
+		return nil
+	}
+	if jsonOutput {
+		enc := json.NewEncoder(w)
+		enc.SetIndent("", "  ")
+		return enc.Encode(report)
+	}
+	printOpenCodePluginPhase0Summary(w, report)
+	return nil
 }
 
 func printOpenCodePluginPhase0Summary(w io.Writer, report *openCodePluginPhase0Report) {

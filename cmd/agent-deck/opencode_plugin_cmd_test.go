@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"os"
 	"path/filepath"
 	"strings"
@@ -164,6 +165,39 @@ func TestBuildOpenCodePluginPhase0HostEnv_UsesRunSpecificClone(t *testing.T) {
 	}
 	if got := lookupEnvValue(env, "XDG_STATE_HOME"); got != filepath.Join(wantHome, ".local", "state") {
 		t.Fatalf("XDG_STATE_HOME = %q, want %q", got, filepath.Join(wantHome, ".local", "state"))
+	}
+}
+
+func TestWriteOpenCodePluginPhase0Output_NilReportIsNoop(t *testing.T) {
+	t.Parallel()
+
+	var out bytes.Buffer
+	if err := writeOpenCodePluginPhase0Output(&out, false, nil); err != nil {
+		t.Fatalf("writeOpenCodePluginPhase0Output(summary,nil) error = %v", err)
+	}
+	if err := writeOpenCodePluginPhase0Output(&out, true, nil); err != nil {
+		t.Fatalf("writeOpenCodePluginPhase0Output(json,nil) error = %v", err)
+	}
+	if out.Len() != 0 {
+		t.Fatalf("expected no output for nil report, got %q", out.String())
+	}
+}
+
+func TestFilterEnv_RemovesXDGStateHome(t *testing.T) {
+	t.Parallel()
+
+	env := []string{
+		"HOME=/tmp/home",
+		"XDG_STATE_HOME=/tmp/state",
+		"PATH=/usr/bin",
+	}
+
+	filtered := filterEnv(env, "XDG_STATE_HOME")
+	if got := lookupEnvValue(filtered, "XDG_STATE_HOME"); got != "" {
+		t.Fatalf("XDG_STATE_HOME = %q, want removed", got)
+	}
+	if got := lookupEnvValue(filtered, "PATH"); got != "/usr/bin" {
+		t.Fatalf("PATH = %q, want preserved", got)
 	}
 }
 

@@ -151,7 +151,7 @@ func TestSyncAgentConfig_CopyDirsRecursive(t *testing.T) {
 	require.True(t, os.IsNotExist(err))
 }
 
-func TestSyncAgentConfig_OpenCodeCopiesPluginsOnly(t *testing.T) {
+func TestSyncAgentConfig_OpenCodeCopiesTopLevelConfigAndPlugins(t *testing.T) {
 	t.Parallel()
 
 	homeDir := t.TempDir()
@@ -165,15 +165,15 @@ func TestSyncAgentConfig_OpenCodeCopiesPluginsOnly(t *testing.T) {
 		skipEntries:       []string{"sandbox"},
 		copyDirs:          []string{"plugins"},
 		authoritativeDirs: []string{"plugins"},
-		skipFiles:         true,
 	}
 	sandboxDir, err := SyncAgentConfig(homeDir, mount)
 	require.NoError(t, err)
 
-	_, err = os.Stat(filepath.Join(sandboxDir, "opencode.json"))
-	require.True(t, os.IsNotExist(err))
+	data, err := os.ReadFile(filepath.Join(sandboxDir, "opencode.json"))
+	require.NoError(t, err)
+	require.Equal(t, `{"mode":"host"}`, string(data))
 
-	data, err := os.ReadFile(filepath.Join(sandboxDir, "plugins", "agentdeck.js"))
+	data, err = os.ReadFile(filepath.Join(sandboxDir, "plugins", "agentdeck.js"))
 	require.NoError(t, err)
 	require.Equal(t, "plugin", string(data))
 }
@@ -192,7 +192,6 @@ func TestSyncAgentConfig_OpenCodePrunesDeletedPlugins(t *testing.T) {
 		skipEntries:       []string{"sandbox"},
 		copyDirs:          []string{"plugins"},
 		authoritativeDirs: []string{"plugins"},
-		skipFiles:         true,
 	}
 
 	sandboxDir, err := SyncAgentConfig(homeDir, mount)
@@ -209,6 +208,36 @@ func TestSyncAgentConfig_OpenCodePrunesDeletedPlugins(t *testing.T) {
 
 	_, err = os.Stat(mirrorPluginPath)
 	require.True(t, os.IsNotExist(err))
+}
+
+func TestSyncAgentConfig_OpenCodeRetainsTopLevelFilesWhenPruningPlugins(t *testing.T) {
+	t.Parallel()
+
+	homeDir := t.TempDir()
+	hostDir := filepath.Join(homeDir, ".config", "opencode")
+	pluginPath := filepath.Join(hostDir, "plugins", "agentdeck-session-binding.js")
+	require.NoError(t, os.MkdirAll(filepath.Dir(pluginPath), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(hostDir, "opencode.json"), []byte(`{"mode":"host"}`), 0o644))
+	require.NoError(t, os.WriteFile(pluginPath, []byte("plugin-v1"), 0o755))
+
+	mount := AgentConfigMount{
+		hostRel:           ".config/opencode",
+		skipEntries:       []string{"sandbox"},
+		copyDirs:          []string{"plugins"},
+		authoritativeDirs: []string{"plugins"},
+	}
+
+	sandboxDir, err := SyncAgentConfig(homeDir, mount)
+	require.NoError(t, err)
+
+	require.NoError(t, os.Remove(pluginPath))
+
+	_, err = SyncAgentConfig(homeDir, mount)
+	require.NoError(t, err)
+
+	data, err := os.ReadFile(filepath.Join(sandboxDir, "opencode.json"))
+	require.NoError(t, err)
+	require.Equal(t, `{"mode":"host"}`, string(data))
 }
 
 func TestSyncAgentConfig_FollowsSymlinks(t *testing.T) {
