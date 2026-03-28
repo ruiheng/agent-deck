@@ -2250,15 +2250,10 @@ func (h *Home) backgroundStatusUpdate() {
 		}
 	}
 
-	// Feed hook statuses from watcher to instances (enables hook fast path in UpdateStatus)
-	if h.hookWatcher != nil {
-		for _, inst := range instances {
-			if session.IsClaudeCompatible(inst.Tool) || inst.Tool == "codex" || inst.Tool == "gemini" {
-				if hs := h.hookWatcher.GetHookStatus(inst.ID); hs != nil {
-					inst.UpdateHookStatus(hs)
-				}
-			}
-		}
+	// Feed hook statuses from watcher to instances before status polling.
+	// Hook-bound session IDs are critical state, so persist them immediately.
+	if h.applyHookWatcherStatuses(instances) {
+		h.forceSaveInstances()
 	}
 
 	// Proactive context-% monitoring: send /clear before auto-compact triggers
@@ -2433,6 +2428,25 @@ func (h *Home) backgroundStatusUpdate() {
 			slog.Int("sessions", len(instances)))
 	}
 	h.lastFullStatusSweep.Store(time.Now().UnixNano())
+}
+
+func (h *Home) applyHookWatcherStatuses(instances []*session.Instance) bool {
+	if h.hookWatcher == nil {
+		return false
+	}
+
+	bindingChanged := false
+	for _, inst := range instances {
+		if !session.UsesHookSessionBinding(inst.Tool) {
+			continue
+		}
+		if hs := h.hookWatcher.GetHookStatus(inst.ID); hs != nil {
+			if inst.UpdateHookStatus(hs) {
+				bindingChanged = true
+			}
+		}
+	}
+	return bindingChanged
 }
 
 // syncNotificationsBackground updates the tmux notification bar directly

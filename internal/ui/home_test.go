@@ -82,6 +82,67 @@ func TestApplyCreateSessionToolOverrides_NonGeminiNoop(t *testing.T) {
 	}
 }
 
+func TestApplyHookWatcherStatuses_PersistsOpenCodeBinding(t *testing.T) {
+	origHome := os.Getenv("HOME")
+	tmpHome := t.TempDir()
+	os.Setenv("HOME", tmpHome)
+	session.ClearUserConfigCache()
+	defer func() {
+		os.Setenv("HOME", origHome)
+		session.ClearUserConfigCache()
+	}()
+
+	home := NewHome()
+	inst := session.NewInstanceWithTool("ui-opencode", "/tmp/test", "opencode")
+	home.instances = []*session.Instance{inst}
+	home.groupTree = session.NewGroupTree(home.instances)
+
+	watcher, err := session.NewStatusFileWatcher(nil)
+	if err != nil {
+		t.Fatalf("NewStatusFileWatcher() failed: %v", err)
+	}
+	home.hookWatcher = watcher
+	go watcher.Start()
+	defer watcher.Stop()
+
+	payload := `{"status":"waiting","session_id":"ses_ui_hook_123","event":"session.idle","ts":` + fmt.Sprintf("%d", time.Now().Unix()) + `}`
+	hookPath := filepath.Join(session.GetHooksDir(), inst.ID+".json")
+	if err := os.WriteFile(hookPath, []byte(payload), 0o644); err != nil {
+		t.Fatalf("WriteFile() failed: %v", err)
+	}
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if watcher.GetHookStatus(inst.ID) != nil {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if watcher.GetHookStatus(inst.ID) == nil {
+		t.Fatal("hook watcher did not observe the OpenCode hook file")
+	}
+
+	if !home.applyHookWatcherStatuses(home.instances) {
+		t.Fatal("applyHookWatcherStatuses should report a binding change")
+	}
+	home.forceSaveInstances()
+
+	if inst.OpenCodeSessionID != "ses_ui_hook_123" {
+		t.Fatalf("OpenCodeSessionID = %q, want ses_ui_hook_123", inst.OpenCodeSessionID)
+	}
+
+	lite, _, err := home.storage.LoadLite()
+	if err != nil {
+		t.Fatalf("LoadLite() failed: %v", err)
+	}
+	if len(lite) != 1 {
+		t.Fatalf("LoadLite() returned %d instances, want 1", len(lite))
+	}
+	if lite[0].OpenCodeSessionID != "ses_ui_hook_123" {
+		t.Fatalf("persisted OpenCodeSessionID = %q, want ses_ui_hook_123", lite[0].OpenCodeSessionID)
+	}
+}
+
 func TestHomeInit(t *testing.T) {
 	home := NewHome()
 	cmd := home.Init()

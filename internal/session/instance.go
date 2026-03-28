@@ -2225,11 +2225,11 @@ func (i *Instance) sendMessageWhenReady(message string) error {
 // instead of every 500ms tick, dramatically reducing subprocess spawns
 const errorRecheckInterval = 30 * time.Second
 
-func toolUsesHookSessionBinding(tool string) bool {
+func UsesHookSessionBinding(tool string) bool {
 	return IsClaudeCompatible(tool) || tool == "codex" || tool == "gemini" || tool == "opencode"
 }
 
-func toolUsesHookStatusFastPath(tool string) bool {
+func UsesHookStatusFastPath(tool string) bool {
 	return IsClaudeCompatible(tool) || tool == "codex" || tool == "gemini"
 }
 
@@ -2320,7 +2320,7 @@ func (i *Instance) UpdateStatus() error {
 
 	// COLD LOAD: CLI doesn't run StatusFileWatcher, so hookStatus is always empty.
 	// Read the hook file from disk once to give CLI the same fast path as the TUI.
-	if i.hookStatus == "" && toolUsesHookSessionBinding(i.Tool) {
+	if i.hookStatus == "" && UsesHookSessionBinding(i.Tool) {
 		if hs := readHookStatusFile(i.ID); hs != nil {
 			i.hookStatus = hs.Status
 			i.hookLastUpdate = hs.UpdatedAt
@@ -2328,7 +2328,7 @@ func (i *Instance) UpdateStatus() error {
 			// Reset stale acknowledged flag from ReconnectSessionLazy.
 			// Without this, sessions loaded from SQLite with previousStatus="idle"
 			// would report idle even when the hook file says waiting/running.
-			if toolUsesHookStatusFastPath(i.Tool) &&
+			if UsesHookStatusFastPath(i.Tool) &&
 				i.tmuxSession != nil &&
 				(hs.Status == "running" || hs.Status == "waiting") {
 				i.tmuxSession.ResetAcknowledged()
@@ -2341,7 +2341,7 @@ func (i *Instance) UpdateStatus() error {
 	// Freshness is tool- and state-specific (e.g. Codex running vs waiting).
 	// When this path is stale/missing, control naturally falls through to tmux
 	// polling and tool-specific session sync (tmux env/process-files/disk).
-	if toolUsesHookStatusFastPath(i.Tool) &&
+	if UsesHookStatusFastPath(i.Tool) &&
 		i.hookStatus != "" &&
 		time.Since(i.hookLastUpdate) < hookFastPathFreshnessForTool(i.Tool, i.hookStatus) {
 		switch i.hookStatus {
@@ -2602,9 +2602,9 @@ func (i *Instance) syncClaudeSessionFromDisk() {
 
 // UpdateHookStatus updates the instance's hook-based status fields.
 // Called by StatusFileWatcher when a hook status file changes.
-func (i *Instance) UpdateHookStatus(status *HookStatus) {
+func (i *Instance) UpdateHookStatus(status *HookStatus) bool {
 	if status == nil {
-		return
+		return false
 	}
 
 	i.mu.Lock()
@@ -2613,24 +2613,24 @@ func (i *Instance) UpdateHookStatus(status *HookStatus) {
 	i.hookStatus = status.Status
 	i.hookLastUpdate = status.UpdatedAt
 	i.hookSessionID = ResolveHookSessionID(i.ID, status.SessionID)
-	i.applyHookSessionBindingLocked(status)
+	return i.applyHookSessionBindingLocked(status)
 }
 
-func (i *Instance) applyHookSessionBindingLocked(status *HookStatus) {
-	if status == nil || !toolUsesHookSessionBinding(i.Tool) {
-		return
+func (i *Instance) applyHookSessionBindingLocked(status *HookStatus) bool {
+	if status == nil || !UsesHookSessionBinding(i.Tool) {
+		return false
 	}
 
 	sessionID := ResolveHookSessionID(i.ID, status.SessionID)
 	if sessionID == "" {
-		return
+		return false
 	}
 
 	i.hookSessionID = sessionID
 	switch {
 	case IsClaudeCompatible(i.Tool):
 		if sessionID == i.ClaudeSessionID {
-			return
+			return false
 		}
 		// Quality gate: only accept if the hook session has conversation data,
 		// OR if the current session ID is empty (first detection).
@@ -2647,10 +2647,11 @@ func (i *Instance) applyHookSessionBindingLocked(status *HookStatus) {
 			if i.tmuxSession != nil && i.tmuxSession.Exists() {
 				_ = i.tmuxSession.SetEnvironment("CLAUDE_SESSION_ID", sessionID)
 			}
+			return true
 		}
 	case i.Tool == "codex":
 		if sessionID == i.CodexSessionID {
-			return
+			return false
 		}
 		sessionLog.Debug("codex_session_update_from_hook",
 			slog.String("old_id", i.CodexSessionID),
@@ -2664,9 +2665,10 @@ func (i *Instance) applyHookSessionBindingLocked(status *HookStatus) {
 		if i.tmuxSession != nil && i.tmuxSession.Exists() {
 			_ = i.tmuxSession.SetEnvironment("CODEX_SESSION_ID", sessionID)
 		}
+		return true
 	case i.Tool == "gemini":
 		if sessionID == i.GeminiSessionID {
-			return
+			return false
 		}
 		// Quality gate: only accept when candidate session appears valid on disk,
 		// OR when current session is empty (first detection/bootstrap).
@@ -2683,10 +2685,11 @@ func (i *Instance) applyHookSessionBindingLocked(status *HookStatus) {
 			if i.tmuxSession != nil && i.tmuxSession.Exists() {
 				_ = i.tmuxSession.SetEnvironment("GEMINI_SESSION_ID", sessionID)
 			}
+			return true
 		}
 	case i.Tool == "opencode":
 		if sessionID == i.OpenCodeSessionID {
-			return
+			return false
 		}
 		sessionLog.Debug("opencode_session_update_from_hook",
 			slog.String("old_id", i.OpenCodeSessionID),
@@ -2694,7 +2697,9 @@ func (i *Instance) applyHookSessionBindingLocked(status *HookStatus) {
 			slog.String("event", status.Event),
 		)
 		i.setOpenCodeSession(sessionID)
+		return true
 	}
+	return false
 }
 
 // GetHookStatus returns the current hook-based status and its freshness.

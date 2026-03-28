@@ -102,28 +102,31 @@ func (d *TransitionDaemon) syncProfile(profile string) time.Duration {
 		return notifyPollSlow
 	}
 
-	byID := make(map[string]*Instance, len(instances))
-	hookCandidates := make(map[string]hookTransitionCandidate, len(instances))
-	for _, inst := range instances {
-		byID[inst.ID] = inst
-		if !toolUsesHookSessionBinding(inst.Tool) {
-			continue
-		}
-		if hs := d.hookStatusForInstance(inst.ID); hs != nil {
-			inst.UpdateHookStatus(hs)
-			if toolUsesHookStatusFastPath(inst.Tool) {
-				if candidate, ok := terminalHookTransitionCandidate(inst.Tool, hs); ok {
-					hookCandidates[inst.ID] = candidate
-				}
-			}
-		}
-	}
-
 	db := storage.GetDB()
 	tuiAlive := false
 	if db != nil {
 		if count, err := db.AliveInstanceCount(); err == nil && count > 0 {
 			tuiAlive = true
+		}
+	}
+
+	byID := make(map[string]*Instance, len(instances))
+	hookCandidates := make(map[string]hookTransitionCandidate, len(instances))
+	hookBindingChanged := false
+	for _, inst := range instances {
+		byID[inst.ID] = inst
+		if !UsesHookSessionBinding(inst.Tool) {
+			continue
+		}
+		if hs := d.hookStatusForInstance(inst.ID); hs != nil {
+			if inst.UpdateHookStatus(hs) {
+				hookBindingChanged = true
+			}
+			if UsesHookStatusFastPath(inst.Tool) {
+				if candidate, ok := terminalHookTransitionCandidate(inst.Tool, hs); ok {
+					hookCandidates[inst.ID] = candidate
+				}
+			}
 		}
 	}
 
@@ -151,6 +154,10 @@ func (d *TransitionDaemon) syncProfile(profile string) time.Duration {
 				_ = db.WriteStatus(inst.ID, status, inst.Tool)
 			}
 		}
+	}
+
+	if hookBindingChanged && !tuiAlive {
+		_ = storage.Save(instances)
 	}
 
 	if !d.initialized[profile] {

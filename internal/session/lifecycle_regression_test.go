@@ -331,6 +331,38 @@ func TestCLIHookColdLoad_UsesStickyAnchorWhenSessionIDMissing(t *testing.T) {
 	assert.Equal(t, "sid-anchor-123", hs.SessionID, "cold-load should recover sticky hook session binding")
 }
 
+func TestTransitionDaemon_PersistsOpenCodeHookBindingWhenTUIAbsent(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+
+	storage := newTestStorage(t)
+	inst := NewInstanceWithTool("daemon-opencode", "/tmp/test", "opencode")
+	inst.Status = StatusIdle
+	require.NoError(t, storage.Save([]*Instance{inst}))
+
+	require.NoError(t, os.MkdirAll(GetHooksDir(), 0755))
+	payload := map[string]any{
+		"status":     "waiting",
+		"session_id": "ses_daemon_persist_123",
+		"event":      "session.idle",
+		"ts":         time.Now().Unix(),
+	}
+	data, err := json.Marshal(payload)
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(filepath.Join(GetHooksDir(), inst.ID+".json"), data, 0644))
+
+	daemon := NewTransitionDaemon()
+	daemon.storages["_test"] = storage
+
+	daemon.syncProfile("_test")
+
+	lite, _, err := storage.LoadLite()
+	require.NoError(t, err)
+	require.Len(t, lite, 1)
+	assert.Equal(t, "ses_daemon_persist_123", lite[0].OpenCodeSessionID,
+		"daemon should persist hook-derived OpenCode session binding")
+}
+
 // TestThreadSafeAccessors_Concurrent verifies GetStatusThreadSafe and
 // SetStatusThreadSafe don't race when called from multiple goroutines.
 func TestThreadSafeAccessors_Concurrent(t *testing.T) {
