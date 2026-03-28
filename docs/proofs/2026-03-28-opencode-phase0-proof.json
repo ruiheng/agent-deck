@@ -1,0 +1,3304 @@
+{
+  "task": "opencode-phase0-proof",
+  "generated_at": "2026-03-28T22:48:53.934220875+08:00",
+  "project_path": "/home/ruiheng/agent-deck",
+  "prompt": "Reply with the single word proof.",
+  "mode": "both",
+  "overall_pass": true,
+  "runs": [
+    {
+      "mode": "host",
+      "instance_id": "opencode-phase0-host-1774709333934221526",
+      "pass": true,
+      "command": [
+        "opencode",
+        "run",
+        "--format",
+        "json",
+        "Reply with the single word proof."
+      ],
+      "exit_code": 0,
+      "timed_out": false,
+      "plugin_init_observed": true,
+      "instance_id_visible": true,
+      "session_event_observed": true,
+      "observed_events": [
+        "message.part.delta",
+        "message.part.updated",
+        "message.updated",
+        "server.instance.disposed",
+        "session.diff",
+        "session.idle",
+        "session.status",
+        "session.updated"
+      ],
+      "observed_session_id": "ses_2cb149b5fffeK5xKWZgyIzvpmI",
+      "observed_session_field": "properties.sessionID",
+      "hook_json_path": "/tmp/agentdeck-opencode-phase0-2693719090/host/hooks/opencode-phase0-host-1774709333934221526.json",
+      "hook_sid_path": "/tmp/agentdeck-opencode-phase0-2693719090/host/hooks/opencode-phase0-host-1774709333934221526.sid",
+      "hook_json_present": true,
+      "hook_sid_present": true,
+      "hook_status": {
+        "status": "waiting",
+        "session_id": "ses_2cb149b5fffeK5xKWZgyIzvpmI",
+        "event": "message.updated",
+        "ts": 1774709338
+      },
+      "records": [
+        {
+          "kind": "plugin_init",
+          "mode": "host",
+          "instance_id": "opencode-phase0-host-1774709333934221526",
+          "hooks_dir": "/tmp/agentdeck-opencode-phase0-2693719090/host/hooks",
+          "report_path": "/tmp/agentdeck-opencode-phase0-2693719090/host/report/plugin-events.jsonl"
+        },
+        {
+          "kind": "event",
+          "mode": "host",
+          "instance_id": "opencode-phase0-host-1774709333934221526",
+          "event_type": "message.updated",
+          "session_id": "ses_2cb149b5fffeK5xKWZgyIzvpmI",
+          "session_field": "properties.sessionID",
+          "payload": {
+            "type": "message.updated",
+            "properties": {
+              "sessionID": "ses_2cb149b5fffeK5xKWZgyIzvpmI",
+              "info": {
+                "id": "msg_d34eb655a0018r5h2L8GTU0rDq",
+                "sessionID": "ses_2cb149b5fffeK5xKWZgyIzvpmI",
+                "role": "assistant",
+                "time": {
+                  "created": 1774709335386
+                },
+                "parentID": "msg_d34eb6540001IQ92RGidATtUzJ",
+                "modelID": "glm-5",
+                "providerID": "coolyeah",
+                "mode": "build",
+                "agent": "build",
+                "path": {
+                  "cwd": "/home/ruiheng/agent-deck",
+                  "root": "/home/ruiheng/agent-deck"
+                },
+                "cost": 0,
+                "tokens": {
+                  "input": 0,
+                  "output": 0,
+                  "reasoning": 0,
+                  "cache": {
+                    "read": 0,
+                    "write": 0
+                  }
+                }
+              }
+            }
+          }
+        },
+        {
+          "kind": "event",
+          "mode": "host",
+          "instance_id": "opencode-phase0-host-1774709333934221526",
+          "event_type": "session.status",
+          "session_id": "ses_2cb149b5fffeK5xKWZgyIzvpmI",
+          "session_field": "properties.sessionID",
+          "payload": {
+            "type": "session.status",
+            "properties": {
+              "sessionID": "ses_2cb149b5fffeK5xKWZgyIzvpmI",
+              "status": {
+                "type": "busy"
+              }
+            }
+          }
+        },
+        {
+          "kind": "event",
+          "mode": "host",
+          "instance_id": "opencode-phase0-host-1774709333934221526",
+          "event_type": "session.updated",
+          "session_id": "ses_2cb149b5fffeK5xKWZgyIzvpmI",
+          "session_field": "properties.sessionID",
+          "payload": {
+            "type": "session.updated",
+            "properties": {
+              "sessionID": "ses_2cb149b5fffeK5xKWZgyIzvpmI",
+              "info": {
+                "id": "ses_2cb149b5fffeK5xKWZgyIzvpmI",
+                "slug": "stellar-circuit",
+                "projectID": "7e9234ee8bac4f3fa333b1fc0941e2cf0c6c1037",
+                "directory": "/home/ruiheng/agent-deck",
+                "title": "New session - 2026-03-28T14:48:55.200Z",
+                "version": "1.3.3",
+                "permission": [
+                  {
+                    "permission": "question",
+                    "pattern": "*",
+                    "action": "deny"
+                  },
+                  {
+                    "permission": "plan_enter",
+                    "pattern": "*",
+                    "action": "deny"
+                  },
+                  {
+                    "permission": "plan_exit",
+                    "pattern": "*",
+                    "action": "deny"
+                  }
+                ],
+                "time": {
+                  "created": 1774709335200,
+                  "updated": 1774709335371
+                }
+              }
+            }
+          }
+        },
+        {
+          "kind": "event",
+          "mode": "host",
+          "instance_id": "opencode-phase0-host-1774709333934221526",
+          "event_type": "message.part.updated",
+          "session_id": "ses_2cb149b5fffeK5xKWZgyIzvpmI",
+          "session_field": "properties.sessionID",
+          "payload": {
+            "type": "message.part.updated",
+            "properties": {
+              "sessionID": "ses_2cb149b5fffeK5xKWZgyIzvpmI",
+              "part": {
+                "id": "prt_d34eb6541001vm7T9pQQuBrMZC",
+                "sessionID": "ses_2cb149b5fffeK5xKWZgyIzvpmI",
+                "messageID": "msg_d34eb6540001IQ92RGidATtUzJ",
+                "type": "text",
+                "text": "\"Reply with the single word proof.\"\n"
+              },
+              "time": 1774709335368
+            }
+          }
+        },
+        {
+          "kind": "event",
+          "mode": "host",
+          "instance_id": "opencode-phase0-host-1774709333934221526",
+          "event_type": "message.updated",
+          "session_id": "ses_2cb149b5fffeK5xKWZgyIzvpmI",
+          "session_field": "properties.sessionID",
+          "payload": {
+            "type": "message.updated",
+            "properties": {
+              "sessionID": "ses_2cb149b5fffeK5xKWZgyIzvpmI",
+              "info": {
+                "id": "msg_d34eb6540001IQ92RGidATtUzJ",
+                "sessionID": "ses_2cb149b5fffeK5xKWZgyIzvpmI",
+                "role": "user",
+                "time": {
+                  "created": 1774709335360
+                },
+                "agent": "build",
+                "model": {
+                  "providerID": "coolyeah",
+                  "modelID": "glm-5"
+                }
+              }
+            }
+          }
+        },
+        {
+          "kind": "event",
+          "mode": "host",
+          "instance_id": "opencode-phase0-host-1774709333934221526",
+          "event_type": "session.updated",
+          "session_id": "ses_2cb149b5fffeK5xKWZgyIzvpmI",
+          "session_field": "properties.sessionID",
+          "payload": {
+            "type": "session.updated",
+            "properties": {
+              "sessionID": "ses_2cb149b5fffeK5xKWZgyIzvpmI",
+              "info": {
+                "id": "ses_2cb149b5fffeK5xKWZgyIzvpmI",
+                "slug": "stellar-circuit",
+                "projectID": "7e9234ee8bac4f3fa333b1fc0941e2cf0c6c1037",
+                "directory": "/home/ruiheng/agent-deck",
+                "title": "New session - 2026-03-28T14:48:55.200Z",
+                "version": "1.3.3",
+                "summary": {
+                  "additions": 0,
+                  "deletions": 0,
+                  "files": 0
+                },
+                "permission": [
+                  {
+                    "permission": "question",
+                    "pattern": "*",
+                    "action": "deny"
+                  },
+                  {
+                    "permission": "plan_enter",
+                    "pattern": "*",
+                    "action": "deny"
+                  },
+                  {
+                    "permission": "plan_exit",
+                    "pattern": "*",
+                    "action": "deny"
+                  }
+                ],
+                "time": {
+                  "created": 1774709335200,
+                  "updated": 1774709335425
+                }
+              }
+            }
+          }
+        },
+        {
+          "kind": "event",
+          "mode": "host",
+          "instance_id": "opencode-phase0-host-1774709333934221526",
+          "event_type": "message.updated",
+          "session_id": "ses_2cb149b5fffeK5xKWZgyIzvpmI",
+          "session_field": "properties.sessionID",
+          "payload": {
+            "type": "message.updated",
+            "properties": {
+              "sessionID": "ses_2cb149b5fffeK5xKWZgyIzvpmI",
+              "info": {
+                "id": "msg_d34eb6540001IQ92RGidATtUzJ",
+                "sessionID": "ses_2cb149b5fffeK5xKWZgyIzvpmI",
+                "role": "user",
+                "time": {
+                  "created": 1774709335360
+                },
+                "summary": {
+                  "diffs": []
+                },
+                "agent": "build",
+                "model": {
+                  "providerID": "coolyeah",
+                  "modelID": "glm-5"
+                }
+              }
+            }
+          }
+        },
+        {
+          "kind": "hook_write_attempt",
+          "mode": "host",
+          "instance_id": "opencode-phase0-host-1774709333934221526",
+          "event_type": "message.updated",
+          "session_id": "ses_2cb149b5fffeK5xKWZgyIzvpmI",
+          "hook_path": "/tmp/agentdeck-opencode-phase0-2693719090/host/hooks/opencode-phase0-host-1774709333934221526.json",
+          "sid_path": "/tmp/agentdeck-opencode-phase0-2693719090/host/hooks/opencode-phase0-host-1774709333934221526.sid"
+        },
+        {
+          "kind": "hook_write_attempt",
+          "mode": "host",
+          "instance_id": "opencode-phase0-host-1774709333934221526",
+          "event_type": "message.updated",
+          "session_id": "ses_2cb149b5fffeK5xKWZgyIzvpmI",
+          "hook_path": "/tmp/agentdeck-opencode-phase0-2693719090/host/hooks/opencode-phase0-host-1774709333934221526.json",
+          "sid_path": "/tmp/agentdeck-opencode-phase0-2693719090/host/hooks/opencode-phase0-host-1774709333934221526.sid"
+        },
+        {
+          "kind": "hook_write_attempt",
+          "mode": "host",
+          "instance_id": "opencode-phase0-host-1774709333934221526",
+          "event_type": "session.updated",
+          "session_id": "ses_2cb149b5fffeK5xKWZgyIzvpmI",
+          "hook_path": "/tmp/agentdeck-opencode-phase0-2693719090/host/hooks/opencode-phase0-host-1774709333934221526.json",
+          "sid_path": "/tmp/agentdeck-opencode-phase0-2693719090/host/hooks/opencode-phase0-host-1774709333934221526.sid"
+        },
+        {
+          "kind": "hook_write_attempt",
+          "mode": "host",
+          "instance_id": "opencode-phase0-host-1774709333934221526",
+          "event_type": "message.updated",
+          "session_id": "ses_2cb149b5fffeK5xKWZgyIzvpmI",
+          "hook_path": "/tmp/agentdeck-opencode-phase0-2693719090/host/hooks/opencode-phase0-host-1774709333934221526.json",
+          "sid_path": "/tmp/agentdeck-opencode-phase0-2693719090/host/hooks/opencode-phase0-host-1774709333934221526.sid"
+        },
+        {
+          "kind": "hook_write_attempt",
+          "mode": "host",
+          "instance_id": "opencode-phase0-host-1774709333934221526",
+          "event_type": "message.part.updated",
+          "session_id": "ses_2cb149b5fffeK5xKWZgyIzvpmI",
+          "hook_path": "/tmp/agentdeck-opencode-phase0-2693719090/host/hooks/opencode-phase0-host-1774709333934221526.json",
+          "sid_path": "/tmp/agentdeck-opencode-phase0-2693719090/host/hooks/opencode-phase0-host-1774709333934221526.sid"
+        },
+        {
+          "kind": "hook_write_attempt",
+          "mode": "host",
+          "instance_id": "opencode-phase0-host-1774709333934221526",
+          "event_type": "session.updated",
+          "session_id": "ses_2cb149b5fffeK5xKWZgyIzvpmI",
+          "hook_path": "/tmp/agentdeck-opencode-phase0-2693719090/host/hooks/opencode-phase0-host-1774709333934221526.json",
+          "sid_path": "/tmp/agentdeck-opencode-phase0-2693719090/host/hooks/opencode-phase0-host-1774709333934221526.sid"
+        },
+        {
+          "kind": "hook_write_attempt",
+          "mode": "host",
+          "instance_id": "opencode-phase0-host-1774709333934221526",
+          "event_type": "session.status",
+          "session_id": "ses_2cb149b5fffeK5xKWZgyIzvpmI",
+          "hook_path": "/tmp/agentdeck-opencode-phase0-2693719090/host/hooks/opencode-phase0-host-1774709333934221526.json",
+          "sid_path": "/tmp/agentdeck-opencode-phase0-2693719090/host/hooks/opencode-phase0-host-1774709333934221526.sid"
+        },
+        {
+          "kind": "event",
+          "mode": "host",
+          "instance_id": "opencode-phase0-host-1774709333934221526",
+          "event_type": "session.diff",
+          "session_id": "ses_2cb149b5fffeK5xKWZgyIzvpmI",
+          "session_field": "properties.sessionID",
+          "payload": {
+            "type": "session.diff",
+            "properties": {
+              "sessionID": "ses_2cb149b5fffeK5xKWZgyIzvpmI",
+              "diff": []
+            }
+          }
+        },
+        {
+          "kind": "event",
+          "mode": "host",
+          "instance_id": "opencode-phase0-host-1774709333934221526",
+          "event_type": "session.status",
+          "session_id": "ses_2cb149b5fffeK5xKWZgyIzvpmI",
+          "session_field": "properties.sessionID",
+          "payload": {
+            "type": "session.status",
+            "properties": {
+              "sessionID": "ses_2cb149b5fffeK5xKWZgyIzvpmI",
+              "status": {
+                "type": "busy"
+              }
+            }
+          }
+        },
+        {
+          "kind": "hook_write_attempt",
+          "mode": "host",
+          "instance_id": "opencode-phase0-host-1774709333934221526",
+          "event_type": "session.diff",
+          "session_id": "ses_2cb149b5fffeK5xKWZgyIzvpmI",
+          "hook_path": "/tmp/agentdeck-opencode-phase0-2693719090/host/hooks/opencode-phase0-host-1774709333934221526.json",
+          "sid_path": "/tmp/agentdeck-opencode-phase0-2693719090/host/hooks/opencode-phase0-host-1774709333934221526.sid"
+        },
+        {
+          "kind": "hook_write",
+          "mode": "host",
+          "instance_id": "opencode-phase0-host-1774709333934221526",
+          "event_type": "session.updated",
+          "session_id": "ses_2cb149b5fffeK5xKWZgyIzvpmI",
+          "hook_path": "/tmp/agentdeck-opencode-phase0-2693719090/host/hooks/opencode-phase0-host-1774709333934221526.json",
+          "sid_path": "/tmp/agentdeck-opencode-phase0-2693719090/host/hooks/opencode-phase0-host-1774709333934221526.sid"
+        },
+        {
+          "kind": "hook_write",
+          "mode": "host",
+          "instance_id": "opencode-phase0-host-1774709333934221526",
+          "event_type": "session.status",
+          "session_id": "ses_2cb149b5fffeK5xKWZgyIzvpmI",
+          "hook_path": "/tmp/agentdeck-opencode-phase0-2693719090/host/hooks/opencode-phase0-host-1774709333934221526.json",
+          "sid_path": "/tmp/agentdeck-opencode-phase0-2693719090/host/hooks/opencode-phase0-host-1774709333934221526.sid"
+        },
+        {
+          "kind": "hook_write",
+          "mode": "host",
+          "instance_id": "opencode-phase0-host-1774709333934221526",
+          "event_type": "message.part.updated",
+          "session_id": "ses_2cb149b5fffeK5xKWZgyIzvpmI",
+          "hook_path": "/tmp/agentdeck-opencode-phase0-2693719090/host/hooks/opencode-phase0-host-1774709333934221526.json",
+          "sid_path": "/tmp/agentdeck-opencode-phase0-2693719090/host/hooks/opencode-phase0-host-1774709333934221526.sid"
+        },
+        {
+          "kind": "hook_write",
+          "mode": "host",
+          "instance_id": "opencode-phase0-host-1774709333934221526",
+          "event_type": "message.updated",
+          "session_id": "ses_2cb149b5fffeK5xKWZgyIzvpmI",
+          "hook_path": "/tmp/agentdeck-opencode-phase0-2693719090/host/hooks/opencode-phase0-host-1774709333934221526.json",
+          "sid_path": "/tmp/agentdeck-opencode-phase0-2693719090/host/hooks/opencode-phase0-host-1774709333934221526.sid"
+        },
+        {
+          "kind": "hook_write",
+          "mode": "host",
+          "instance_id": "opencode-phase0-host-1774709333934221526",
+          "event_type": "message.updated",
+          "session_id": "ses_2cb149b5fffeK5xKWZgyIzvpmI",
+          "hook_path": "/tmp/agentdeck-opencode-phase0-2693719090/host/hooks/opencode-phase0-host-1774709333934221526.json",
+          "sid_path": "/tmp/agentdeck-opencode-phase0-2693719090/host/hooks/opencode-phase0-host-1774709333934221526.sid"
+        },
+        {
+          "kind": "hook_write",
+          "mode": "host",
+          "instance_id": "opencode-phase0-host-1774709333934221526",
+          "event_type": "session.updated",
+          "session_id": "ses_2cb149b5fffeK5xKWZgyIzvpmI",
+          "hook_path": "/tmp/agentdeck-opencode-phase0-2693719090/host/hooks/opencode-phase0-host-1774709333934221526.json",
+          "sid_path": "/tmp/agentdeck-opencode-phase0-2693719090/host/hooks/opencode-phase0-host-1774709333934221526.sid"
+        },
+        {
+          "kind": "hook_write",
+          "mode": "host",
+          "instance_id": "opencode-phase0-host-1774709333934221526",
+          "event_type": "message.updated",
+          "session_id": "ses_2cb149b5fffeK5xKWZgyIzvpmI",
+          "hook_path": "/tmp/agentdeck-opencode-phase0-2693719090/host/hooks/opencode-phase0-host-1774709333934221526.json",
+          "sid_path": "/tmp/agentdeck-opencode-phase0-2693719090/host/hooks/opencode-phase0-host-1774709333934221526.sid"
+        },
+        {
+          "kind": "hook_write_attempt",
+          "mode": "host",
+          "instance_id": "opencode-phase0-host-1774709333934221526",
+          "event_type": "session.status",
+          "session_id": "ses_2cb149b5fffeK5xKWZgyIzvpmI",
+          "hook_path": "/tmp/agentdeck-opencode-phase0-2693719090/host/hooks/opencode-phase0-host-1774709333934221526.json",
+          "sid_path": "/tmp/agentdeck-opencode-phase0-2693719090/host/hooks/opencode-phase0-host-1774709333934221526.sid"
+        },
+        {
+          "kind": "hook_write",
+          "mode": "host",
+          "instance_id": "opencode-phase0-host-1774709333934221526",
+          "event_type": "session.diff",
+          "session_id": "ses_2cb149b5fffeK5xKWZgyIzvpmI",
+          "hook_path": "/tmp/agentdeck-opencode-phase0-2693719090/host/hooks/opencode-phase0-host-1774709333934221526.json",
+          "sid_path": "/tmp/agentdeck-opencode-phase0-2693719090/host/hooks/opencode-phase0-host-1774709333934221526.sid"
+        },
+        {
+          "kind": "hook_write",
+          "mode": "host",
+          "instance_id": "opencode-phase0-host-1774709333934221526",
+          "event_type": "session.status",
+          "session_id": "ses_2cb149b5fffeK5xKWZgyIzvpmI",
+          "hook_path": "/tmp/agentdeck-opencode-phase0-2693719090/host/hooks/opencode-phase0-host-1774709333934221526.json",
+          "sid_path": "/tmp/agentdeck-opencode-phase0-2693719090/host/hooks/opencode-phase0-host-1774709333934221526.sid"
+        },
+        {
+          "kind": "event",
+          "mode": "host",
+          "instance_id": "opencode-phase0-host-1774709333934221526",
+          "event_type": "message.part.delta",
+          "session_id": "ses_2cb149b5fffeK5xKWZgyIzvpmI",
+          "session_field": "properties.sessionID",
+          "payload": {
+            "type": "message.part.delta",
+            "properties": {
+              "sessionID": "ses_2cb149b5fffeK5xKWZgyIzvpmI",
+              "messageID": "msg_d34eb655a0018r5h2L8GTU0rDq",
+              "partID": "prt_d34eb6f6d001uisQjSKvjSdYzm",
+              "field": "text",
+              "delta": " user"
+            }
+          }
+        },
+        {
+          "kind": "event",
+          "mode": "host",
+          "instance_id": "opencode-phase0-host-1774709333934221526",
+          "event_type": "message.part.delta",
+          "session_id": "ses_2cb149b5fffeK5xKWZgyIzvpmI",
+          "session_field": "properties.sessionID",
+          "payload": {
+            "type": "message.part.delta",
+            "properties": {
+              "sessionID": "ses_2cb149b5fffeK5xKWZgyIzvpmI",
+              "messageID": "msg_d34eb655a0018r5h2L8GTU0rDq",
+              "partID": "prt_d34eb6f6d001uisQjSKvjSdYzm",
+              "field": "text",
+              "delta": " asking"
+            }
+          }
+        },
+        {
+          "kind": "event",
+          "mode": "host",
+          "instance_id": "opencode-phase0-host-1774709333934221526",
+          "event_type": "message.part.delta",
+          "session_id": "ses_2cb149b5fffeK5xKWZgyIzvpmI",
+          "session_field": "properties.sessionID",
+          "payload": {
+            "type": "message.part.delta",
+            "properties": {
+              "sessionID": "ses_2cb149b5fffeK5xKWZgyIzvpmI",
+              "messageID": "msg_d34eb655a0018r5h2L8GTU0rDq",
+              "partID": "prt_d34eb6f6d001uisQjSKvjSdYzm",
+              "field": "text",
+              "delta": " is"
+            }
+          }
+        },
+        {
+          "kind": "event",
+          "mode": "host",
+          "instance_id": "opencode-phase0-host-1774709333934221526",
+          "event_type": "message.part.updated",
+          "session_id": "ses_2cb149b5fffeK5xKWZgyIzvpmI",
+          "session_field": "properties.sessionID",
+          "payload": {
+            "type": "message.part.updated",
+            "properties": {
+              "sessionID": "ses_2cb149b5fffeK5xKWZgyIzvpmI",
+              "part": {
+                "id": "prt_d34eb6f6d001uisQjSKvjSdYzm",
+                "sessionID": "ses_2cb149b5fffeK5xKWZgyIzvpmI",
+                "messageID": "msg_d34eb655a0018r5h2L8GTU0rDq",
+                "type": "reasoning",
+                "text": "",
+                "time": {
+                  "start": 1774709337965
+                }
+              },
+              "time": 1774709337965
+            }
+          }
+        },
+        {
+          "kind": "event",
+          "mode": "host",
+          "instance_id": "opencode-phase0-host-1774709333934221526",
+          "event_type": "message.part.updated",
+          "session_id": "ses_2cb149b5fffeK5xKWZgyIzvpmI",
+          "session_field": "properties.sessionID",
+          "payload": {
+            "type": "message.part.updated",
+            "properties": {
+              "sessionID": "ses_2cb149b5fffeK5xKWZgyIzvpmI",
+              "part": {
+                "id": "prt_d34eb6f6b00124FskAlvcp75NH",
+                "sessionID": "ses_2cb149b5fffeK5xKWZgyIzvpmI",
+                "messageID": "msg_d34eb655a0018r5h2L8GTU0rDq",
+                "type": "step-start",
+                "snapshot": "1604ae87dacab421981cf2827ba358247c452c99"
+              },
+              "time": 1774709337963
+            }
+          }
+        },
+        {
+          "kind": "event",
+          "mode": "host",
+          "instance_id": "opencode-phase0-host-1774709333934221526",
+          "event_type": "message.part.delta",
+          "session_id": "ses_2cb149b5fffeK5xKWZgyIzvpmI",
+          "session_field": "properties.sessionID",
+          "payload": {
+            "type": "message.part.delta",
+            "properties": {
+              "sessionID": "ses_2cb149b5fffeK5xKWZgyIzvpmI",
+              "messageID": "msg_d34eb655a0018r5h2L8GTU0rDq",
+              "partID": "prt_d34eb6f6d001uisQjSKvjSdYzm",
+              "field": "text",
+              "delta": "The"
+            }
+          }
+        },
+        {
+          "kind": "hook_write_attempt",
+          "mode": "host",
+          "instance_id": "opencode-phase0-host-1774709333934221526",
+          "event_type": "message.part.delta",
+          "session_id": "ses_2cb149b5fffeK5xKWZgyIzvpmI",
+          "hook_path": "/tmp/agentdeck-opencode-phase0-2693719090/host/hooks/opencode-phase0-host-1774709333934221526.json",
+          "sid_path": "/tmp/agentdeck-opencode-phase0-2693719090/host/hooks/opencode-phase0-host-1774709333934221526.sid"
+        },
+        {
+          "kind": "hook_write_attempt",
+          "mode": "host",
+          "instance_id": "opencode-phase0-host-1774709333934221526",
+          "event_type": "message.part.delta",
+          "session_id": "ses_2cb149b5fffeK5xKWZgyIzvpmI",
+          "hook_path": "/tmp/agentdeck-opencode-phase0-2693719090/host/hooks/opencode-phase0-host-1774709333934221526.json",
+          "sid_path": "/tmp/agentdeck-opencode-phase0-2693719090/host/hooks/opencode-phase0-host-1774709333934221526.sid"
+        },
+        {
+          "kind": "hook_write_attempt",
+          "mode": "host",
+          "instance_id": "opencode-phase0-host-1774709333934221526",
+          "event_type": "message.part.delta",
+          "session_id": "ses_2cb149b5fffeK5xKWZgyIzvpmI",
+          "hook_path": "/tmp/agentdeck-opencode-phase0-2693719090/host/hooks/opencode-phase0-host-1774709333934221526.json",
+          "sid_path": "/tmp/agentdeck-opencode-phase0-2693719090/host/hooks/opencode-phase0-host-1774709333934221526.sid"
+        },
+        {
+          "kind": "hook_write_attempt",
+          "mode": "host",
+          "instance_id": "opencode-phase0-host-1774709333934221526",
+          "event_type": "message.part.updated",
+          "session_id": "ses_2cb149b5fffeK5xKWZgyIzvpmI",
+          "hook_path": "/tmp/agentdeck-opencode-phase0-2693719090/host/hooks/opencode-phase0-host-1774709333934221526.json",
+          "sid_path": "/tmp/agentdeck-opencode-phase0-2693719090/host/hooks/opencode-phase0-host-1774709333934221526.sid"
+        },
+        {
+          "kind": "hook_write_attempt",
+          "mode": "host",
+          "instance_id": "opencode-phase0-host-1774709333934221526",
+          "event_type": "message.part.updated",
+          "session_id": "ses_2cb149b5fffeK5xKWZgyIzvpmI",
+          "hook_path": "/tmp/agentdeck-opencode-phase0-2693719090/host/hooks/opencode-phase0-host-1774709333934221526.json",
+          "sid_path": "/tmp/agentdeck-opencode-phase0-2693719090/host/hooks/opencode-phase0-host-1774709333934221526.sid"
+        },
+        {
+          "kind": "hook_write_attempt",
+          "mode": "host",
+          "instance_id": "opencode-phase0-host-1774709333934221526",
+          "event_type": "message.part.delta",
+          "session_id": "ses_2cb149b5fffeK5xKWZgyIzvpmI",
+          "hook_path": "/tmp/agentdeck-opencode-phase0-2693719090/host/hooks/opencode-phase0-host-1774709333934221526.json",
+          "sid_path": "/tmp/agentdeck-opencode-phase0-2693719090/host/hooks/opencode-phase0-host-1774709333934221526.sid"
+        },
+        {
+          "kind": "hook_write",
+          "mode": "host",
+          "instance_id": "opencode-phase0-host-1774709333934221526",
+          "event_type": "message.part.delta",
+          "session_id": "ses_2cb149b5fffeK5xKWZgyIzvpmI",
+          "hook_path": "/tmp/agentdeck-opencode-phase0-2693719090/host/hooks/opencode-phase0-host-1774709333934221526.json",
+          "sid_path": "/tmp/agentdeck-opencode-phase0-2693719090/host/hooks/opencode-phase0-host-1774709333934221526.sid"
+        },
+        {
+          "kind": "hook_write",
+          "mode": "host",
+          "instance_id": "opencode-phase0-host-1774709333934221526",
+          "event_type": "message.part.delta",
+          "session_id": "ses_2cb149b5fffeK5xKWZgyIzvpmI",
+          "hook_path": "/tmp/agentdeck-opencode-phase0-2693719090/host/hooks/opencode-phase0-host-1774709333934221526.json",
+          "sid_path": "/tmp/agentdeck-opencode-phase0-2693719090/host/hooks/opencode-phase0-host-1774709333934221526.sid"
+        },
+        {
+          "kind": "hook_write",
+          "mode": "host",
+          "instance_id": "opencode-phase0-host-1774709333934221526",
+          "event_type": "message.part.delta",
+          "session_id": "ses_2cb149b5fffeK5xKWZgyIzvpmI",
+          "hook_path": "/tmp/agentdeck-opencode-phase0-2693719090/host/hooks/opencode-phase0-host-1774709333934221526.json",
+          "sid_path": "/tmp/agentdeck-opencode-phase0-2693719090/host/hooks/opencode-phase0-host-1774709333934221526.sid"
+        },
+        {
+          "kind": "hook_write",
+          "mode": "host",
+          "instance_id": "opencode-phase0-host-1774709333934221526",
+          "event_type": "message.part.delta",
+          "session_id": "ses_2cb149b5fffeK5xKWZgyIzvpmI",
+          "hook_path": "/tmp/agentdeck-opencode-phase0-2693719090/host/hooks/opencode-phase0-host-1774709333934221526.json",
+          "sid_path": "/tmp/agentdeck-opencode-phase0-2693719090/host/hooks/opencode-phase0-host-1774709333934221526.sid"
+        },
+        {
+          "kind": "hook_write",
+          "mode": "host",
+          "instance_id": "opencode-phase0-host-1774709333934221526",
+          "event_type": "message.part.updated",
+          "session_id": "ses_2cb149b5fffeK5xKWZgyIzvpmI",
+          "hook_path": "/tmp/agentdeck-opencode-phase0-2693719090/host/hooks/opencode-phase0-host-1774709333934221526.json",
+          "sid_path": "/tmp/agentdeck-opencode-phase0-2693719090/host/hooks/opencode-phase0-host-1774709333934221526.sid"
+        },
+        {
+          "kind": "hook_write",
+          "mode": "host",
+          "instance_id": "opencode-phase0-host-1774709333934221526",
+          "event_type": "message.part.updated",
+          "session_id": "ses_2cb149b5fffeK5xKWZgyIzvpmI",
+          "hook_path": "/tmp/agentdeck-opencode-phase0-2693719090/host/hooks/opencode-phase0-host-1774709333934221526.json",
+          "sid_path": "/tmp/agentdeck-opencode-phase0-2693719090/host/hooks/opencode-phase0-host-1774709333934221526.sid"
+        },
+        {
+          "kind": "event",
+          "mode": "host",
+          "instance_id": "opencode-phase0-host-1774709333934221526",
+          "event_type": "message.part.delta",
+          "session_id": "ses_2cb149b5fffeK5xKWZgyIzvpmI",
+          "session_field": "properties.sessionID",
+          "payload": {
+            "type": "message.part.delta",
+            "properties": {
+              "sessionID": "ses_2cb149b5fffeK5xKWZgyIzvpmI",
+              "messageID": "msg_d34eb655a0018r5h2L8GTU0rDq",
+              "partID": "prt_d34eb6f6d001uisQjSKvjSdYzm",
+              "field": "text",
+              "delta": " reply"
+            }
+          }
+        },
+        {
+          "kind": "event",
+          "mode": "host",
+          "instance_id": "opencode-phase0-host-1774709333934221526",
+          "event_type": "message.part.delta",
+          "session_id": "ses_2cb149b5fffeK5xKWZgyIzvpmI",
+          "session_field": "properties.sessionID",
+          "payload": {
+            "type": "message.part.delta",
+            "properties": {
+              "sessionID": "ses_2cb149b5fffeK5xKWZgyIzvpmI",
+              "messageID": "msg_d34eb655a0018r5h2L8GTU0rDq",
+              "partID": "prt_d34eb6f6d001uisQjSKvjSdYzm",
+              "field": "text",
+              "delta": " to"
+            }
+          }
+        },
+        {
+          "kind": "event",
+          "mode": "host",
+          "instance_id": "opencode-phase0-host-1774709333934221526",
+          "event_type": "message.part.delta",
+          "session_id": "ses_2cb149b5fffeK5xKWZgyIzvpmI",
+          "session_field": "properties.sessionID",
+          "payload": {
+            "type": "message.part.delta",
+            "properties": {
+              "sessionID": "ses_2cb149b5fffeK5xKWZgyIzvpmI",
+              "messageID": "msg_d34eb655a0018r5h2L8GTU0rDq",
+              "partID": "prt_d34eb6f6d001uisQjSKvjSdYzm",
+              "field": "text",
+              "delta": " me"
+            }
+          }
+        },
+        {
+          "kind": "event",
+          "mode": "host",
+          "instance_id": "opencode-phase0-host-1774709333934221526",
+          "event_type": "message.part.delta",
+          "session_id": "ses_2cb149b5fffeK5xKWZgyIzvpmI",
+          "session_field": "properties.sessionID",
+          "payload": {
+            "type": "message.part.delta",
+            "properties": {
+              "sessionID": "ses_2cb149b5fffeK5xKWZgyIzvpmI",
+              "messageID": "msg_d34eb655a0018r5h2L8GTU0rDq",
+              "partID": "prt_d34eb6f6d001uisQjSKvjSdYzm",
+              "field": "text",
+              "delta": " with"
+            }
+          }
+        },
+        {
+          "kind": "hook_write_attempt",
+          "mode": "host",
+          "instance_id": "opencode-phase0-host-1774709333934221526",
+          "event_type": "message.part.delta",
+          "session_id": "ses_2cb149b5fffeK5xKWZgyIzvpmI",
+          "hook_path": "/tmp/agentdeck-opencode-phase0-2693719090/host/hooks/opencode-phase0-host-1774709333934221526.json",
+          "sid_path": "/tmp/agentdeck-opencode-phase0-2693719090/host/hooks/opencode-phase0-host-1774709333934221526.sid"
+        },
+        {
+          "kind": "hook_write_attempt",
+          "mode": "host",
+          "instance_id": "opencode-phase0-host-1774709333934221526",
+          "event_type": "message.part.delta",
+          "session_id": "ses_2cb149b5fffeK5xKWZgyIzvpmI",
+          "hook_path": "/tmp/agentdeck-opencode-phase0-2693719090/host/hooks/opencode-phase0-host-1774709333934221526.json",
+          "sid_path": "/tmp/agentdeck-opencode-phase0-2693719090/host/hooks/opencode-phase0-host-1774709333934221526.sid"
+        },
+        {
+          "kind": "hook_write_attempt",
+          "mode": "host",
+          "instance_id": "opencode-phase0-host-1774709333934221526",
+          "event_type": "message.part.delta",
+          "session_id": "ses_2cb149b5fffeK5xKWZgyIzvpmI",
+          "hook_path": "/tmp/agentdeck-opencode-phase0-2693719090/host/hooks/opencode-phase0-host-1774709333934221526.json",
+          "sid_path": "/tmp/agentdeck-opencode-phase0-2693719090/host/hooks/opencode-phase0-host-1774709333934221526.sid"
+        },
+        {
+          "kind": "hook_write_attempt",
+          "mode": "host",
+          "instance_id": "opencode-phase0-host-1774709333934221526",
+          "event_type": "message.part.delta",
+          "session_id": "ses_2cb149b5fffeK5xKWZgyIzvpmI",
+          "hook_path": "/tmp/agentdeck-opencode-phase0-2693719090/host/hooks/opencode-phase0-host-1774709333934221526.json",
+          "sid_path": "/tmp/agentdeck-opencode-phase0-2693719090/host/hooks/opencode-phase0-host-1774709333934221526.sid"
+        },
+        {
+          "kind": "hook_write",
+          "mode": "host",
+          "instance_id": "opencode-phase0-host-1774709333934221526",
+          "event_type": "message.part.delta",
+          "session_id": "ses_2cb149b5fffeK5xKWZgyIzvpmI",
+          "hook_path": "/tmp/agentdeck-opencode-phase0-2693719090/host/hooks/opencode-phase0-host-1774709333934221526.json",
+          "sid_path": "/tmp/agentdeck-opencode-phase0-2693719090/host/hooks/opencode-phase0-host-1774709333934221526.sid"
+        },
+        {
+          "kind": "hook_write",
+          "mode": "host",
+          "instance_id": "opencode-phase0-host-1774709333934221526",
+          "event_type": "message.part.delta",
+          "session_id": "ses_2cb149b5fffeK5xKWZgyIzvpmI",
+          "hook_path": "/tmp/agentdeck-opencode-phase0-2693719090/host/hooks/opencode-phase0-host-1774709333934221526.json",
+          "sid_path": "/tmp/agentdeck-opencode-phase0-2693719090/host/hooks/opencode-phase0-host-1774709333934221526.sid"
+        },
+        {
+          "kind": "hook_write",
+          "mode": "host",
+          "instance_id": "opencode-phase0-host-1774709333934221526",
+          "event_type": "message.part.delta",
+          "session_id": "ses_2cb149b5fffeK5xKWZgyIzvpmI",
+          "hook_path": "/tmp/agentdeck-opencode-phase0-2693719090/host/hooks/opencode-phase0-host-1774709333934221526.json",
+          "sid_path": "/tmp/agentdeck-opencode-phase0-2693719090/host/hooks/opencode-phase0-host-1774709333934221526.sid"
+        },
+        {
+          "kind": "hook_write",
+          "mode": "host",
+          "instance_id": "opencode-phase0-host-1774709333934221526",
+          "event_type": "message.part.delta",
+          "session_id": "ses_2cb149b5fffeK5xKWZgyIzvpmI",
+          "hook_path": "/tmp/agentdeck-opencode-phase0-2693719090/host/hooks/opencode-phase0-host-1774709333934221526.json",
+          "sid_path": "/tmp/agentdeck-opencode-phase0-2693719090/host/hooks/opencode-phase0-host-1774709333934221526.sid"
+        },
+        {
+          "kind": "event",
+          "mode": "host",
+          "instance_id": "opencode-phase0-host-1774709333934221526",
+          "event_type": "message.part.delta",
+          "session_id": "ses_2cb149b5fffeK5xKWZgyIzvpmI",
+          "session_field": "properties.sessionID",
+          "payload": {
+            "type": "message.part.delta",
+            "properties": {
+              "sessionID": "ses_2cb149b5fffeK5xKWZgyIzvpmI",
+              "messageID": "msg_d34eb655a0018r5h2L8GTU0rDq",
+              "partID": "prt_d34eb6f6d001uisQjSKvjSdYzm",
+              "field": "text",
+              "delta": " the"
+            }
+          }
+        },
+        {
+          "kind": "event",
+          "mode": "host",
+          "instance_id": "opencode-phase0-host-1774709333934221526",
+          "event_type": "message.part.delta",
+          "session_id": "ses_2cb149b5fffeK5xKWZgyIzvpmI",
+          "session_field": "properties.sessionID",
+          "payload": {
+            "type": "message.part.delta",
+            "properties": {
+              "sessionID": "ses_2cb149b5fffeK5xKWZgyIzvpmI",
+              "messageID": "msg_d34eb655a0018r5h2L8GTU0rDq",
+              "partID": "prt_d34eb6f6d001uisQjSKvjSdYzm",
+              "field": "text",
+              "delta": " single"
+            }
+          }
+        },
+        {
+          "kind": "event",
+          "mode": "host",
+          "instance_id": "opencode-phase0-host-1774709333934221526",
+          "event_type": "message.part.delta",
+          "session_id": "ses_2cb149b5fffeK5xKWZgyIzvpmI",
+          "session_field": "properties.sessionID",
+          "payload": {
+            "type": "message.part.delta",
+            "properties": {
+              "sessionID": "ses_2cb149b5fffeK5xKWZgyIzvpmI",
+              "messageID": "msg_d34eb655a0018r5h2L8GTU0rDq",
+              "partID": "prt_d34eb6f6d001uisQjSKvjSdYzm",
+              "field": "text",
+              "delta": " word"
+            }
+          }
+        },
+        {
+          "kind": "event",
+          "mode": "host",
+          "instance_id": "opencode-phase0-host-1774709333934221526",
+          "event_type": "message.part.delta",
+          "session_id": "ses_2cb149b5fffeK5xKWZgyIzvpmI",
+          "session_field": "properties.sessionID",
+          "payload": {
+            "type": "message.part.delta",
+            "properties": {
+              "sessionID": "ses_2cb149b5fffeK5xKWZgyIzvpmI",
+              "messageID": "msg_d34eb655a0018r5h2L8GTU0rDq",
+              "partID": "prt_d34eb6f6d001uisQjSKvjSdYzm",
+              "field": "text",
+              "delta": " \""
+            }
+          }
+        },
+        {
+          "kind": "hook_write_attempt",
+          "mode": "host",
+          "instance_id": "opencode-phase0-host-1774709333934221526",
+          "event_type": "message.part.delta",
+          "session_id": "ses_2cb149b5fffeK5xKWZgyIzvpmI",
+          "hook_path": "/tmp/agentdeck-opencode-phase0-2693719090/host/hooks/opencode-phase0-host-1774709333934221526.json",
+          "sid_path": "/tmp/agentdeck-opencode-phase0-2693719090/host/hooks/opencode-phase0-host-1774709333934221526.sid"
+        },
+        {
+          "kind": "hook_write_attempt",
+          "mode": "host",
+          "instance_id": "opencode-phase0-host-1774709333934221526",
+          "event_type": "message.part.delta",
+          "session_id": "ses_2cb149b5fffeK5xKWZgyIzvpmI",
+          "hook_path": "/tmp/agentdeck-opencode-phase0-2693719090/host/hooks/opencode-phase0-host-1774709333934221526.json",
+          "sid_path": "/tmp/agentdeck-opencode-phase0-2693719090/host/hooks/opencode-phase0-host-1774709333934221526.sid"
+        },
+        {
+          "kind": "hook_write_attempt",
+          "mode": "host",
+          "instance_id": "opencode-phase0-host-1774709333934221526",
+          "event_type": "message.part.delta",
+          "session_id": "ses_2cb149b5fffeK5xKWZgyIzvpmI",
+          "hook_path": "/tmp/agentdeck-opencode-phase0-2693719090/host/hooks/opencode-phase0-host-1774709333934221526.json",
+          "sid_path": "/tmp/agentdeck-opencode-phase0-2693719090/host/hooks/opencode-phase0-host-1774709333934221526.sid"
+        },
+        {
+          "kind": "hook_write_attempt",
+          "mode": "host",
+          "instance_id": "opencode-phase0-host-1774709333934221526",
+          "event_type": "message.part.delta",
+          "session_id": "ses_2cb149b5fffeK5xKWZgyIzvpmI",
+          "hook_path": "/tmp/agentdeck-opencode-phase0-2693719090/host/hooks/opencode-phase0-host-1774709333934221526.json",
+          "sid_path": "/tmp/agentdeck-opencode-phase0-2693719090/host/hooks/opencode-phase0-host-1774709333934221526.sid"
+        },
+        {
+          "kind": "hook_write",
+          "mode": "host",
+          "instance_id": "opencode-phase0-host-1774709333934221526",
+          "event_type": "message.part.delta",
+          "session_id": "ses_2cb149b5fffeK5xKWZgyIzvpmI",
+          "hook_path": "/tmp/agentdeck-opencode-phase0-2693719090/host/hooks/opencode-phase0-host-1774709333934221526.json",
+          "sid_path": "/tmp/agentdeck-opencode-phase0-2693719090/host/hooks/opencode-phase0-host-1774709333934221526.sid"
+        },
+        {
+          "kind": "hook_write",
+          "mode": "host",
+          "instance_id": "opencode-phase0-host-1774709333934221526",
+          "event_type": "message.part.delta",
+          "session_id": "ses_2cb149b5fffeK5xKWZgyIzvpmI",
+          "hook_path": "/tmp/agentdeck-opencode-phase0-2693719090/host/hooks/opencode-phase0-host-1774709333934221526.json",
+          "sid_path": "/tmp/agentdeck-opencode-phase0-2693719090/host/hooks/opencode-phase0-host-1774709333934221526.sid"
+        },
+        {
+          "kind": "hook_write",
+          "mode": "host",
+          "instance_id": "opencode-phase0-host-1774709333934221526",
+          "event_type": "message.part.delta",
+          "session_id": "ses_2cb149b5fffeK5xKWZgyIzvpmI",
+          "hook_path": "/tmp/agentdeck-opencode-phase0-2693719090/host/hooks/opencode-phase0-host-1774709333934221526.json",
+          "sid_path": "/tmp/agentdeck-opencode-phase0-2693719090/host/hooks/opencode-phase0-host-1774709333934221526.sid"
+        },
+        {
+          "kind": "hook_write",
+          "mode": "host",
+          "instance_id": "opencode-phase0-host-1774709333934221526",
+          "event_type": "message.part.delta",
+          "session_id": "ses_2cb149b5fffeK5xKWZgyIzvpmI",
+          "hook_path": "/tmp/agentdeck-opencode-phase0-2693719090/host/hooks/opencode-phase0-host-1774709333934221526.json",
+          "sid_path": "/tmp/agentdeck-opencode-phase0-2693719090/host/hooks/opencode-phase0-host-1774709333934221526.sid"
+        },
+        {
+          "kind": "event",
+          "mode": "host",
+          "instance_id": "opencode-phase0-host-1774709333934221526",
+          "event_type": "message.part.delta",
+          "session_id": "ses_2cb149b5fffeK5xKWZgyIzvpmI",
+          "session_field": "properties.sessionID",
+          "payload": {
+            "type": "message.part.delta",
+            "properties": {
+              "sessionID": "ses_2cb149b5fffeK5xKWZgyIzvpmI",
+              "messageID": "msg_d34eb655a0018r5h2L8GTU0rDq",
+              "partID": "prt_d34eb6f6d001uisQjSKvjSdYzm",
+              "field": "text",
+              "delta": "\"."
+            }
+          }
+        },
+        {
+          "kind": "event",
+          "mode": "host",
+          "instance_id": "opencode-phase0-host-1774709333934221526",
+          "event_type": "message.part.delta",
+          "session_id": "ses_2cb149b5fffeK5xKWZgyIzvpmI",
+          "session_field": "properties.sessionID",
+          "payload": {
+            "type": "message.part.delta",
+            "properties": {
+              "sessionID": "ses_2cb149b5fffeK5xKWZgyIzvpmI",
+              "messageID": "msg_d34eb655a0018r5h2L8GTU0rDq",
+              "partID": "prt_d34eb6f6d001uisQjSKvjSdYzm",
+              "field": "text",
+              "delta": " is"
+            }
+          }
+        },
+        {
+          "kind": "event",
+          "mode": "host",
+          "instance_id": "opencode-phase0-host-1774709333934221526",
+          "event_type": "message.part.delta",
+          "session_id": "ses_2cb149b5fffeK5xKWZgyIzvpmI",
+          "session_field": "properties.sessionID",
+          "payload": {
+            "type": "message.part.delta",
+            "properties": {
+              "sessionID": "ses_2cb149b5fffeK5xKWZgyIzvpmI",
+              "messageID": "msg_d34eb655a0018r5h2L8GTU0rDq",
+              "partID": "prt_d34eb6f6d001uisQjSKvjSdYzm",
+              "field": "text",
+              "delta": " This"
+            }
+          }
+        },
+        {
+          "kind": "event",
+          "mode": "host",
+          "instance_id": "opencode-phase0-host-1774709333934221526",
+          "event_type": "message.part.delta",
+          "session_id": "ses_2cb149b5fffeK5xKWZgyIzvpmI",
+          "session_field": "properties.sessionID",
+          "payload": {
+            "type": "message.part.delta",
+            "properties": {
+              "sessionID": "ses_2cb149b5fffeK5xKWZgyIzvpmI",
+              "messageID": "msg_d34eb655a0018r5h2L8GTU0rDq",
+              "partID": "prt_d34eb6f6d001uisQjSKvjSdYzm",
+              "field": "text",
+              "delta": "proof"
+            }
+          }
+        },
+        {
+          "kind": "hook_write_attempt",
+          "mode": "host",
+          "instance_id": "opencode-phase0-host-1774709333934221526",
+          "event_type": "message.part.delta",
+          "session_id": "ses_2cb149b5fffeK5xKWZgyIzvpmI",
+          "hook_path": "/tmp/agentdeck-opencode-phase0-2693719090/host/hooks/opencode-phase0-host-1774709333934221526.json",
+          "sid_path": "/tmp/agentdeck-opencode-phase0-2693719090/host/hooks/opencode-phase0-host-1774709333934221526.sid"
+        },
+        {
+          "kind": "hook_write_attempt",
+          "mode": "host",
+          "instance_id": "opencode-phase0-host-1774709333934221526",
+          "event_type": "message.part.delta",
+          "session_id": "ses_2cb149b5fffeK5xKWZgyIzvpmI",
+          "hook_path": "/tmp/agentdeck-opencode-phase0-2693719090/host/hooks/opencode-phase0-host-1774709333934221526.json",
+          "sid_path": "/tmp/agentdeck-opencode-phase0-2693719090/host/hooks/opencode-phase0-host-1774709333934221526.sid"
+        },
+        {
+          "kind": "hook_write_attempt",
+          "mode": "host",
+          "instance_id": "opencode-phase0-host-1774709333934221526",
+          "event_type": "message.part.delta",
+          "session_id": "ses_2cb149b5fffeK5xKWZgyIzvpmI",
+          "hook_path": "/tmp/agentdeck-opencode-phase0-2693719090/host/hooks/opencode-phase0-host-1774709333934221526.json",
+          "sid_path": "/tmp/agentdeck-opencode-phase0-2693719090/host/hooks/opencode-phase0-host-1774709333934221526.sid"
+        },
+        {
+          "kind": "hook_write_attempt",
+          "mode": "host",
+          "instance_id": "opencode-phase0-host-1774709333934221526",
+          "event_type": "message.part.delta",
+          "session_id": "ses_2cb149b5fffeK5xKWZgyIzvpmI",
+          "hook_path": "/tmp/agentdeck-opencode-phase0-2693719090/host/hooks/opencode-phase0-host-1774709333934221526.json",
+          "sid_path": "/tmp/agentdeck-opencode-phase0-2693719090/host/hooks/opencode-phase0-host-1774709333934221526.sid"
+        },
+        {
+          "kind": "hook_write",
+          "mode": "host",
+          "instance_id": "opencode-phase0-host-1774709333934221526",
+          "event_type": "message.part.delta",
+          "session_id": "ses_2cb149b5fffeK5xKWZgyIzvpmI",
+          "hook_path": "/tmp/agentdeck-opencode-phase0-2693719090/host/hooks/opencode-phase0-host-1774709333934221526.json",
+          "sid_path": "/tmp/agentdeck-opencode-phase0-2693719090/host/hooks/opencode-phase0-host-1774709333934221526.sid"
+        },
+        {
+          "kind": "hook_write",
+          "mode": "host",
+          "instance_id": "opencode-phase0-host-1774709333934221526",
+          "event_type": "message.part.delta",
+          "session_id": "ses_2cb149b5fffeK5xKWZgyIzvpmI",
+          "hook_path": "/tmp/agentdeck-opencode-phase0-2693719090/host/hooks/opencode-phase0-host-1774709333934221526.json",
+          "sid_path": "/tmp/agentdeck-opencode-phase0-2693719090/host/hooks/opencode-phase0-host-1774709333934221526.sid"
+        },
+        {
+          "kind": "hook_write",
+          "mode": "host",
+          "instance_id": "opencode-phase0-host-1774709333934221526",
+          "event_type": "message.part.delta",
+          "session_id": "ses_2cb149b5fffeK5xKWZgyIzvpmI",
+          "hook_path": "/tmp/agentdeck-opencode-phase0-2693719090/host/hooks/opencode-phase0-host-1774709333934221526.json",
+          "sid_path": "/tmp/agentdeck-opencode-phase0-2693719090/host/hooks/opencode-phase0-host-1774709333934221526.sid"
+        },
+        {
+          "kind": "hook_write",
+          "mode": "host",
+          "instance_id": "opencode-phase0-host-1774709333934221526",
+          "event_type": "message.part.delta",
+          "session_id": "ses_2cb149b5fffeK5xKWZgyIzvpmI",
+          "hook_path": "/tmp/agentdeck-opencode-phase0-2693719090/host/hooks/opencode-phase0-host-1774709333934221526.json",
+          "sid_path": "/tmp/agentdeck-opencode-phase0-2693719090/host/hooks/opencode-phase0-host-1774709333934221526.sid"
+        },
+        {
+          "kind": "event",
+          "mode": "host",
+          "instance_id": "opencode-phase0-host-1774709333934221526",
+          "event_type": "message.part.delta",
+          "session_id": "ses_2cb149b5fffeK5xKWZgyIzvpmI",
+          "session_field": "properties.sessionID",
+          "payload": {
+            "type": "message.part.delta",
+            "properties": {
+              "sessionID": "ses_2cb149b5fffeK5xKWZgyIzvpmI",
+              "messageID": "msg_d34eb655a0018r5h2L8GTU0rDq",
+              "partID": "prt_d34eb6f6d001uisQjSKvjSdYzm",
+              "field": "text",
+              "delta": " a"
+            }
+          }
+        },
+        {
+          "kind": "event",
+          "mode": "host",
+          "instance_id": "opencode-phase0-host-1774709333934221526",
+          "event_type": "message.part.delta",
+          "session_id": "ses_2cb149b5fffeK5xKWZgyIzvpmI",
+          "session_field": "properties.sessionID",
+          "payload": {
+            "type": "message.part.delta",
+            "properties": {
+              "sessionID": "ses_2cb149b5fffeK5xKWZgyIzvpmI",
+              "messageID": "msg_d34eb655a0018r5h2L8GTU0rDq",
+              "partID": "prt_d34eb6f6d001uisQjSKvjSdYzm",
+              "field": "text",
+              "delta": " request"
+            }
+          }
+        },
+        {
+          "kind": "event",
+          "mode": "host",
+          "instance_id": "opencode-phase0-host-1774709333934221526",
+          "event_type": "message.part.delta",
+          "session_id": "ses_2cb149b5fffeK5xKWZgyIzvpmI",
+          "session_field": "properties.sessionID",
+          "payload": {
+            "type": "message.part.delta",
+            "properties": {
+              "sessionID": "ses_2cb149b5fffeK5xKWZgyIzvpmI",
+              "messageID": "msg_d34eb655a0018r5h2L8GTU0rDq",
+              "partID": "prt_d34eb6f6d001uisQjSKvjSdYzm",
+              "field": "text",
+              "delta": " simple"
+            }
+          }
+        },
+        {
+          "kind": "hook_write_attempt",
+          "mode": "host",
+          "instance_id": "opencode-phase0-host-1774709333934221526",
+          "event_type": "message.part.delta",
+          "session_id": "ses_2cb149b5fffeK5xKWZgyIzvpmI",
+          "hook_path": "/tmp/agentdeck-opencode-phase0-2693719090/host/hooks/opencode-phase0-host-1774709333934221526.json",
+          "sid_path": "/tmp/agentdeck-opencode-phase0-2693719090/host/hooks/opencode-phase0-host-1774709333934221526.sid"
+        },
+        {
+          "kind": "hook_write_attempt",
+          "mode": "host",
+          "instance_id": "opencode-phase0-host-1774709333934221526",
+          "event_type": "message.part.delta",
+          "session_id": "ses_2cb149b5fffeK5xKWZgyIzvpmI",
+          "hook_path": "/tmp/agentdeck-opencode-phase0-2693719090/host/hooks/opencode-phase0-host-1774709333934221526.json",
+          "sid_path": "/tmp/agentdeck-opencode-phase0-2693719090/host/hooks/opencode-phase0-host-1774709333934221526.sid"
+        },
+        {
+          "kind": "hook_write_attempt",
+          "mode": "host",
+          "instance_id": "opencode-phase0-host-1774709333934221526",
+          "event_type": "message.part.delta",
+          "session_id": "ses_2cb149b5fffeK5xKWZgyIzvpmI",
+          "hook_path": "/tmp/agentdeck-opencode-phase0-2693719090/host/hooks/opencode-phase0-host-1774709333934221526.json",
+          "sid_path": "/tmp/agentdeck-opencode-phase0-2693719090/host/hooks/opencode-phase0-host-1774709333934221526.sid"
+        },
+        {
+          "kind": "hook_write",
+          "mode": "host",
+          "instance_id": "opencode-phase0-host-1774709333934221526",
+          "event_type": "message.part.delta",
+          "session_id": "ses_2cb149b5fffeK5xKWZgyIzvpmI",
+          "hook_path": "/tmp/agentdeck-opencode-phase0-2693719090/host/hooks/opencode-phase0-host-1774709333934221526.json",
+          "sid_path": "/tmp/agentdeck-opencode-phase0-2693719090/host/hooks/opencode-phase0-host-1774709333934221526.sid"
+        },
+        {
+          "kind": "hook_write",
+          "mode": "host",
+          "instance_id": "opencode-phase0-host-1774709333934221526",
+          "event_type": "message.part.delta",
+          "session_id": "ses_2cb149b5fffeK5xKWZgyIzvpmI",
+          "hook_path": "/tmp/agentdeck-opencode-phase0-2693719090/host/hooks/opencode-phase0-host-1774709333934221526.json",
+          "sid_path": "/tmp/agentdeck-opencode-phase0-2693719090/host/hooks/opencode-phase0-host-1774709333934221526.sid"
+        },
+        {
+          "kind": "hook_write",
+          "mode": "host",
+          "instance_id": "opencode-phase0-host-1774709333934221526",
+          "event_type": "message.part.delta",
+          "session_id": "ses_2cb149b5fffeK5xKWZgyIzvpmI",
+          "hook_path": "/tmp/agentdeck-opencode-phase0-2693719090/host/hooks/opencode-phase0-host-1774709333934221526.json",
+          "sid_path": "/tmp/agentdeck-opencode-phase0-2693719090/host/hooks/opencode-phase0-host-1774709333934221526.sid"
+        },
+        {
+          "kind": "event",
+          "mode": "host",
+          "instance_id": "opencode-phase0-host-1774709333934221526",
+          "event_type": "message.part.delta",
+          "session_id": "ses_2cb149b5fffeK5xKWZgyIzvpmI",
+          "session_field": "properties.sessionID",
+          "payload": {
+            "type": "message.part.delta",
+            "properties": {
+              "sessionID": "ses_2cb149b5fffeK5xKWZgyIzvpmI",
+              "messageID": "msg_d34eb655a0018r5h2L8GTU0rDq",
+              "partID": "prt_d34eb6f6d001uisQjSKvjSdYzm",
+              "field": "text",
+              "delta": " that"
+            }
+          }
+        },
+        {
+          "kind": "event",
+          "mode": "host",
+          "instance_id": "opencode-phase0-host-1774709333934221526",
+          "event_type": "message.part.delta",
+          "session_id": "ses_2cb149b5fffeK5xKWZgyIzvpmI",
+          "session_field": "properties.sessionID",
+          "payload": {
+            "type": "message.part.delta",
+            "properties": {
+              "sessionID": "ses_2cb149b5fffeK5xKWZgyIzvpmI",
+              "messageID": "msg_d34eb655a0018r5h2L8GTU0rDq",
+              "partID": "prt_d34eb6f6d001uisQjSKvjSdYzm",
+              "field": "text",
+              "delta": " doesn"
+            }
+          }
+        },
+        {
+          "kind": "event",
+          "mode": "host",
+          "instance_id": "opencode-phase0-host-1774709333934221526",
+          "event_type": "message.part.delta",
+          "session_id": "ses_2cb149b5fffeK5xKWZgyIzvpmI",
+          "session_field": "properties.sessionID",
+          "payload": {
+            "type": "message.part.delta",
+            "properties": {
+              "sessionID": "ses_2cb149b5fffeK5xKWZgyIzvpmI",
+              "messageID": "msg_d34eb655a0018r5h2L8GTU0rDq",
+              "partID": "prt_d34eb6f6d001uisQjSKvjSdYzm",
+              "field": "text",
+              "delta": "'t"
+            }
+          }
+        },
+        {
+          "kind": "hook_write_attempt",
+          "mode": "host",
+          "instance_id": "opencode-phase0-host-1774709333934221526",
+          "event_type": "message.part.delta",
+          "session_id": "ses_2cb149b5fffeK5xKWZgyIzvpmI",
+          "hook_path": "/tmp/agentdeck-opencode-phase0-2693719090/host/hooks/opencode-phase0-host-1774709333934221526.json",
+          "sid_path": "/tmp/agentdeck-opencode-phase0-2693719090/host/hooks/opencode-phase0-host-1774709333934221526.sid"
+        },
+        {
+          "kind": "hook_write_attempt",
+          "mode": "host",
+          "instance_id": "opencode-phase0-host-1774709333934221526",
+          "event_type": "message.part.delta",
+          "session_id": "ses_2cb149b5fffeK5xKWZgyIzvpmI",
+          "hook_path": "/tmp/agentdeck-opencode-phase0-2693719090/host/hooks/opencode-phase0-host-1774709333934221526.json",
+          "sid_path": "/tmp/agentdeck-opencode-phase0-2693719090/host/hooks/opencode-phase0-host-1774709333934221526.sid"
+        },
+        {
+          "kind": "hook_write_attempt",
+          "mode": "host",
+          "instance_id": "opencode-phase0-host-1774709333934221526",
+          "event_type": "message.part.delta",
+          "session_id": "ses_2cb149b5fffeK5xKWZgyIzvpmI",
+          "hook_path": "/tmp/agentdeck-opencode-phase0-2693719090/host/hooks/opencode-phase0-host-1774709333934221526.json",
+          "sid_path": "/tmp/agentdeck-opencode-phase0-2693719090/host/hooks/opencode-phase0-host-1774709333934221526.sid"
+        },
+        {
+          "kind": "hook_write",
+          "mode": "host",
+          "instance_id": "opencode-phase0-host-1774709333934221526",
+          "event_type": "message.part.delta",
+          "session_id": "ses_2cb149b5fffeK5xKWZgyIzvpmI",
+          "hook_path": "/tmp/agentdeck-opencode-phase0-2693719090/host/hooks/opencode-phase0-host-1774709333934221526.json",
+          "sid_path": "/tmp/agentdeck-opencode-phase0-2693719090/host/hooks/opencode-phase0-host-1774709333934221526.sid"
+        },
+        {
+          "kind": "hook_write",
+          "mode": "host",
+          "instance_id": "opencode-phase0-host-1774709333934221526",
+          "event_type": "message.part.delta",
+          "session_id": "ses_2cb149b5fffeK5xKWZgyIzvpmI",
+          "hook_path": "/tmp/agentdeck-opencode-phase0-2693719090/host/hooks/opencode-phase0-host-1774709333934221526.json",
+          "sid_path": "/tmp/agentdeck-opencode-phase0-2693719090/host/hooks/opencode-phase0-host-1774709333934221526.sid"
+        },
+        {
+          "kind": "hook_write",
+          "mode": "host",
+          "instance_id": "opencode-phase0-host-1774709333934221526",
+          "event_type": "message.part.delta",
+          "session_id": "ses_2cb149b5fffeK5xKWZgyIzvpmI",
+          "hook_path": "/tmp/agentdeck-opencode-phase0-2693719090/host/hooks/opencode-phase0-host-1774709333934221526.json",
+          "sid_path": "/tmp/agentdeck-opencode-phase0-2693719090/host/hooks/opencode-phase0-host-1774709333934221526.sid"
+        },
+        {
+          "kind": "event",
+          "mode": "host",
+          "instance_id": "opencode-phase0-host-1774709333934221526",
+          "event_type": "message.part.delta",
+          "session_id": "ses_2cb149b5fffeK5xKWZgyIzvpmI",
+          "session_field": "properties.sessionID",
+          "payload": {
+            "type": "message.part.delta",
+            "properties": {
+              "sessionID": "ses_2cb149b5fffeK5xKWZgyIzvpmI",
+              "messageID": "msg_d34eb655a0018r5h2L8GTU0rDq",
+              "partID": "prt_d34eb6f6d001uisQjSKvjSdYzm",
+              "field": "text",
+              "delta": " require"
+            }
+          }
+        },
+        {
+          "kind": "event",
+          "mode": "host",
+          "instance_id": "opencode-phase0-host-1774709333934221526",
+          "event_type": "message.part.delta",
+          "session_id": "ses_2cb149b5fffeK5xKWZgyIzvpmI",
+          "session_field": "properties.sessionID",
+          "payload": {
+            "type": "message.part.delta",
+            "properties": {
+              "sessionID": "ses_2cb149b5fffeK5xKWZgyIzvpmI",
+              "messageID": "msg_d34eb655a0018r5h2L8GTU0rDq",
+              "partID": "prt_d34eb6f6d001uisQjSKvjSdYzm",
+              "field": "text",
+              "delta": " tools"
+            }
+          }
+        },
+        {
+          "kind": "event",
+          "mode": "host",
+          "instance_id": "opencode-phase0-host-1774709333934221526",
+          "event_type": "message.part.delta",
+          "session_id": "ses_2cb149b5fffeK5xKWZgyIzvpmI",
+          "session_field": "properties.sessionID",
+          "payload": {
+            "type": "message.part.delta",
+            "properties": {
+              "sessionID": "ses_2cb149b5fffeK5xKWZgyIzvpmI",
+              "messageID": "msg_d34eb655a0018r5h2L8GTU0rDq",
+              "partID": "prt_d34eb6f6d001uisQjSKvjSdYzm",
+              "field": "text",
+              "delta": " any"
+            }
+          }
+        },
+        {
+          "kind": "hook_write_attempt",
+          "mode": "host",
+          "instance_id": "opencode-phase0-host-1774709333934221526",
+          "event_type": "message.part.delta",
+          "session_id": "ses_2cb149b5fffeK5xKWZgyIzvpmI",
+          "hook_path": "/tmp/agentdeck-opencode-phase0-2693719090/host/hooks/opencode-phase0-host-1774709333934221526.json",
+          "sid_path": "/tmp/agentdeck-opencode-phase0-2693719090/host/hooks/opencode-phase0-host-1774709333934221526.sid"
+        },
+        {
+          "kind": "hook_write_attempt",
+          "mode": "host",
+          "instance_id": "opencode-phase0-host-1774709333934221526",
+          "event_type": "message.part.delta",
+          "session_id": "ses_2cb149b5fffeK5xKWZgyIzvpmI",
+          "hook_path": "/tmp/agentdeck-opencode-phase0-2693719090/host/hooks/opencode-phase0-host-1774709333934221526.json",
+          "sid_path": "/tmp/agentdeck-opencode-phase0-2693719090/host/hooks/opencode-phase0-host-1774709333934221526.sid"
+        },
+        {
+          "kind": "hook_write_attempt",
+          "mode": "host",
+          "instance_id": "opencode-phase0-host-1774709333934221526",
+          "event_type": "message.part.delta",
+          "session_id": "ses_2cb149b5fffeK5xKWZgyIzvpmI",
+          "hook_path": "/tmp/agentdeck-opencode-phase0-2693719090/host/hooks/opencode-phase0-host-1774709333934221526.json",
+          "sid_path": "/tmp/agentdeck-opencode-phase0-2693719090/host/hooks/opencode-phase0-host-1774709333934221526.sid"
+        },
+        {
+          "kind": "hook_write",
+          "mode": "host",
+          "instance_id": "opencode-phase0-host-1774709333934221526",
+          "event_type": "message.part.delta",
+          "session_id": "ses_2cb149b5fffeK5xKWZgyIzvpmI",
+          "hook_path": "/tmp/agentdeck-opencode-phase0-2693719090/host/hooks/opencode-phase0-host-1774709333934221526.json",
+          "sid_path": "/tmp/agentdeck-opencode-phase0-2693719090/host/hooks/opencode-phase0-host-1774709333934221526.sid"
+        },
+        {
+          "kind": "hook_write",
+          "mode": "host",
+          "instance_id": "opencode-phase0-host-1774709333934221526",
+          "event_type": "message.part.delta",
+          "session_id": "ses_2cb149b5fffeK5xKWZgyIzvpmI",
+          "hook_path": "/tmp/agentdeck-opencode-phase0-2693719090/host/hooks/opencode-phase0-host-1774709333934221526.json",
+          "sid_path": "/tmp/agentdeck-opencode-phase0-2693719090/host/hooks/opencode-phase0-host-1774709333934221526.sid"
+        },
+        {
+          "kind": "hook_write",
+          "mode": "host",
+          "instance_id": "opencode-phase0-host-1774709333934221526",
+          "event_type": "message.part.delta",
+          "session_id": "ses_2cb149b5fffeK5xKWZgyIzvpmI",
+          "hook_path": "/tmp/agentdeck-opencode-phase0-2693719090/host/hooks/opencode-phase0-host-1774709333934221526.json",
+          "sid_path": "/tmp/agentdeck-opencode-phase0-2693719090/host/hooks/opencode-phase0-host-1774709333934221526.sid"
+        },
+        {
+          "kind": "event",
+          "mode": "host",
+          "instance_id": "opencode-phase0-host-1774709333934221526",
+          "event_type": "message.part.delta",
+          "session_id": "ses_2cb149b5fffeK5xKWZgyIzvpmI",
+          "session_field": "properties.sessionID",
+          "payload": {
+            "type": "message.part.delta",
+            "properties": {
+              "sessionID": "ses_2cb149b5fffeK5xKWZgyIzvpmI",
+              "messageID": "msg_d34eb655a0018r5h2L8GTU0rDq",
+              "partID": "prt_d34eb6f6d001uisQjSKvjSdYzm",
+              "field": "text",
+              "delta": " or"
+            }
+          }
+        },
+        {
+          "kind": "hook_write_attempt",
+          "mode": "host",
+          "instance_id": "opencode-phase0-host-1774709333934221526",
+          "event_type": "message.part.delta",
+          "session_id": "ses_2cb149b5fffeK5xKWZgyIzvpmI",
+          "hook_path": "/tmp/agentdeck-opencode-phase0-2693719090/host/hooks/opencode-phase0-host-1774709333934221526.json",
+          "sid_path": "/tmp/agentdeck-opencode-phase0-2693719090/host/hooks/opencode-phase0-host-1774709333934221526.sid"
+        },
+        {
+          "kind": "hook_write",
+          "mode": "host",
+          "instance_id": "opencode-phase0-host-1774709333934221526",
+          "event_type": "message.part.delta",
+          "session_id": "ses_2cb149b5fffeK5xKWZgyIzvpmI",
+          "hook_path": "/tmp/agentdeck-opencode-phase0-2693719090/host/hooks/opencode-phase0-host-1774709333934221526.json",
+          "sid_path": "/tmp/agentdeck-opencode-phase0-2693719090/host/hooks/opencode-phase0-host-1774709333934221526.sid"
+        },
+        {
+          "kind": "event",
+          "mode": "host",
+          "instance_id": "opencode-phase0-host-1774709333934221526",
+          "event_type": "message.part.delta",
+          "session_id": "ses_2cb149b5fffeK5xKWZgyIzvpmI",
+          "session_field": "properties.sessionID",
+          "payload": {
+            "type": "message.part.delta",
+            "properties": {
+              "sessionID": "ses_2cb149b5fffeK5xKWZgyIzvpmI",
+              "messageID": "msg_d34eb655a0018r5h2L8GTU0rDq",
+              "partID": "prt_d34eb6f6d001uisQjSKvjSdYzm",
+              "field": "text",
+              "delta": " complex"
+            }
+          }
+        },
+        {
+          "kind": "event",
+          "mode": "host",
+          "instance_id": "opencode-phase0-host-1774709333934221526",
+          "event_type": "message.part.delta",
+          "session_id": "ses_2cb149b5fffeK5xKWZgyIzvpmI",
+          "session_field": "properties.sessionID",
+          "payload": {
+            "type": "message.part.delta",
+            "properties": {
+              "sessionID": "ses_2cb149b5fffeK5xKWZgyIzvpmI",
+              "messageID": "msg_d34eb655a0018r5h2L8GTU0rDq",
+              "partID": "prt_d34eb6f6d001uisQjSKvjSdYzm",
+              "field": "text",
+              "delta": " analysis"
+            }
+          }
+        },
+        {
+          "kind": "hook_write_attempt",
+          "mode": "host",
+          "instance_id": "opencode-phase0-host-1774709333934221526",
+          "event_type": "message.part.delta",
+          "session_id": "ses_2cb149b5fffeK5xKWZgyIzvpmI",
+          "hook_path": "/tmp/agentdeck-opencode-phase0-2693719090/host/hooks/opencode-phase0-host-1774709333934221526.json",
+          "sid_path": "/tmp/agentdeck-opencode-phase0-2693719090/host/hooks/opencode-phase0-host-1774709333934221526.sid"
+        },
+        {
+          "kind": "hook_write_attempt",
+          "mode": "host",
+          "instance_id": "opencode-phase0-host-1774709333934221526",
+          "event_type": "message.part.delta",
+          "session_id": "ses_2cb149b5fffeK5xKWZgyIzvpmI",
+          "hook_path": "/tmp/agentdeck-opencode-phase0-2693719090/host/hooks/opencode-phase0-host-1774709333934221526.json",
+          "sid_path": "/tmp/agentdeck-opencode-phase0-2693719090/host/hooks/opencode-phase0-host-1774709333934221526.sid"
+        },
+        {
+          "kind": "hook_write",
+          "mode": "host",
+          "instance_id": "opencode-phase0-host-1774709333934221526",
+          "event_type": "message.part.delta",
+          "session_id": "ses_2cb149b5fffeK5xKWZgyIzvpmI",
+          "hook_path": "/tmp/agentdeck-opencode-phase0-2693719090/host/hooks/opencode-phase0-host-1774709333934221526.json",
+          "sid_path": "/tmp/agentdeck-opencode-phase0-2693719090/host/hooks/opencode-phase0-host-1774709333934221526.sid"
+        },
+        {
+          "kind": "hook_write",
+          "mode": "host",
+          "instance_id": "opencode-phase0-host-1774709333934221526",
+          "event_type": "message.part.delta",
+          "session_id": "ses_2cb149b5fffeK5xKWZgyIzvpmI",
+          "hook_path": "/tmp/agentdeck-opencode-phase0-2693719090/host/hooks/opencode-phase0-host-1774709333934221526.json",
+          "sid_path": "/tmp/agentdeck-opencode-phase0-2693719090/host/hooks/opencode-phase0-host-1774709333934221526.sid"
+        },
+        {
+          "kind": "event",
+          "mode": "host",
+          "instance_id": "opencode-phase0-host-1774709333934221526",
+          "event_type": "message.part.delta",
+          "session_id": "ses_2cb149b5fffeK5xKWZgyIzvpmI",
+          "session_field": "properties.sessionID",
+          "payload": {
+            "type": "message.part.delta",
+            "properties": {
+              "sessionID": "ses_2cb149b5fffeK5xKWZgyIzvpmI",
+              "messageID": "msg_d34eb655a0018r5h2L8GTU0rDq",
+              "partID": "prt_d34eb6f6d001uisQjSKvjSdYzm",
+              "field": "text",
+              "delta": "."
+            }
+          }
+        },
+        {
+          "kind": "hook_write_attempt",
+          "mode": "host",
+          "instance_id": "opencode-phase0-host-1774709333934221526",
+          "event_type": "message.part.delta",
+          "session_id": "ses_2cb149b5fffeK5xKWZgyIzvpmI",
+          "hook_path": "/tmp/agentdeck-opencode-phase0-2693719090/host/hooks/opencode-phase0-host-1774709333934221526.json",
+          "sid_path": "/tmp/agentdeck-opencode-phase0-2693719090/host/hooks/opencode-phase0-host-1774709333934221526.sid"
+        },
+        {
+          "kind": "hook_write",
+          "mode": "host",
+          "instance_id": "opencode-phase0-host-1774709333934221526",
+          "event_type": "message.part.delta",
+          "session_id": "ses_2cb149b5fffeK5xKWZgyIzvpmI",
+          "hook_path": "/tmp/agentdeck-opencode-phase0-2693719090/host/hooks/opencode-phase0-host-1774709333934221526.json",
+          "sid_path": "/tmp/agentdeck-opencode-phase0-2693719090/host/hooks/opencode-phase0-host-1774709333934221526.sid"
+        },
+        {
+          "kind": "event",
+          "mode": "host",
+          "instance_id": "opencode-phase0-host-1774709333934221526",
+          "event_type": "message.part.updated",
+          "session_id": "ses_2cb149b5fffeK5xKWZgyIzvpmI",
+          "session_field": "properties.sessionID",
+          "payload": {
+            "type": "message.part.updated",
+            "properties": {
+              "sessionID": "ses_2cb149b5fffeK5xKWZgyIzvpmI",
+              "part": {
+                "id": "prt_d34eb7221001G600bqF4szka5u",
+                "sessionID": "ses_2cb149b5fffeK5xKWZgyIzvpmI",
+                "messageID": "msg_d34eb655a0018r5h2L8GTU0rDq",
+                "type": "text",
+                "text": "",
+                "time": {
+                  "start": 1774709338657
+                }
+              },
+              "time": 1774709338658
+            }
+          }
+        },
+        {
+          "kind": "event",
+          "mode": "host",
+          "instance_id": "opencode-phase0-host-1774709333934221526",
+          "event_type": "message.part.delta",
+          "session_id": "ses_2cb149b5fffeK5xKWZgyIzvpmI",
+          "session_field": "properties.sessionID",
+          "payload": {
+            "type": "message.part.delta",
+            "properties": {
+              "sessionID": "ses_2cb149b5fffeK5xKWZgyIzvpmI",
+              "messageID": "msg_d34eb655a0018r5h2L8GTU0rDq",
+              "partID": "prt_d34eb7221001G600bqF4szka5u",
+              "field": "text",
+              "delta": "proof"
+            }
+          }
+        },
+        {
+          "kind": "hook_write_attempt",
+          "mode": "host",
+          "instance_id": "opencode-phase0-host-1774709333934221526",
+          "event_type": "message.part.updated",
+          "session_id": "ses_2cb149b5fffeK5xKWZgyIzvpmI",
+          "hook_path": "/tmp/agentdeck-opencode-phase0-2693719090/host/hooks/opencode-phase0-host-1774709333934221526.json",
+          "sid_path": "/tmp/agentdeck-opencode-phase0-2693719090/host/hooks/opencode-phase0-host-1774709333934221526.sid"
+        },
+        {
+          "kind": "hook_write_attempt",
+          "mode": "host",
+          "instance_id": "opencode-phase0-host-1774709333934221526",
+          "event_type": "message.part.delta",
+          "session_id": "ses_2cb149b5fffeK5xKWZgyIzvpmI",
+          "hook_path": "/tmp/agentdeck-opencode-phase0-2693719090/host/hooks/opencode-phase0-host-1774709333934221526.json",
+          "sid_path": "/tmp/agentdeck-opencode-phase0-2693719090/host/hooks/opencode-phase0-host-1774709333934221526.sid"
+        },
+        {
+          "kind": "event",
+          "mode": "host",
+          "instance_id": "opencode-phase0-host-1774709333934221526",
+          "event_type": "message.part.updated",
+          "session_id": "ses_2cb149b5fffeK5xKWZgyIzvpmI",
+          "session_field": "properties.sessionID",
+          "payload": {
+            "type": "message.part.updated",
+            "properties": {
+              "sessionID": "ses_2cb149b5fffeK5xKWZgyIzvpmI",
+              "part": {
+                "id": "prt_d34eb7221001G600bqF4szka5u",
+                "sessionID": "ses_2cb149b5fffeK5xKWZgyIzvpmI",
+                "messageID": "msg_d34eb655a0018r5h2L8GTU0rDq",
+                "type": "text",
+                "text": "proof",
+                "time": {
+                  "start": 1774709338664,
+                  "end": 1774709338664
+                }
+              },
+              "time": 1774709338664
+            }
+          }
+        },
+        {
+          "kind": "event",
+          "mode": "host",
+          "instance_id": "opencode-phase0-host-1774709333934221526",
+          "event_type": "message.part.updated",
+          "session_id": "ses_2cb149b5fffeK5xKWZgyIzvpmI",
+          "session_field": "properties.sessionID",
+          "payload": {
+            "type": "message.part.updated",
+            "properties": {
+              "sessionID": "ses_2cb149b5fffeK5xKWZgyIzvpmI",
+              "part": {
+                "id": "prt_d34eb6f6d001uisQjSKvjSdYzm",
+                "sessionID": "ses_2cb149b5fffeK5xKWZgyIzvpmI",
+                "messageID": "msg_d34eb655a0018r5h2L8GTU0rDq",
+                "type": "reasoning",
+                "text": "The user is asking me to reply with the single word \"proof\". This is a simple request that doesn't require any tools or complex analysis.",
+                "time": {
+                  "start": 1774709337965,
+                  "end": 1774709338662
+                }
+              },
+              "time": 1774709338663
+            }
+          }
+        },
+        {
+          "kind": "hook_write_attempt",
+          "mode": "host",
+          "instance_id": "opencode-phase0-host-1774709333934221526",
+          "event_type": "message.part.updated",
+          "session_id": "ses_2cb149b5fffeK5xKWZgyIzvpmI",
+          "hook_path": "/tmp/agentdeck-opencode-phase0-2693719090/host/hooks/opencode-phase0-host-1774709333934221526.json",
+          "sid_path": "/tmp/agentdeck-opencode-phase0-2693719090/host/hooks/opencode-phase0-host-1774709333934221526.sid"
+        },
+        {
+          "kind": "hook_write_attempt",
+          "mode": "host",
+          "instance_id": "opencode-phase0-host-1774709333934221526",
+          "event_type": "message.part.updated",
+          "session_id": "ses_2cb149b5fffeK5xKWZgyIzvpmI",
+          "hook_path": "/tmp/agentdeck-opencode-phase0-2693719090/host/hooks/opencode-phase0-host-1774709333934221526.json",
+          "sid_path": "/tmp/agentdeck-opencode-phase0-2693719090/host/hooks/opencode-phase0-host-1774709333934221526.sid"
+        },
+        {
+          "kind": "hook_write",
+          "mode": "host",
+          "instance_id": "opencode-phase0-host-1774709333934221526",
+          "event_type": "message.part.delta",
+          "session_id": "ses_2cb149b5fffeK5xKWZgyIzvpmI",
+          "hook_path": "/tmp/agentdeck-opencode-phase0-2693719090/host/hooks/opencode-phase0-host-1774709333934221526.json",
+          "sid_path": "/tmp/agentdeck-opencode-phase0-2693719090/host/hooks/opencode-phase0-host-1774709333934221526.sid"
+        },
+        {
+          "kind": "hook_write",
+          "mode": "host",
+          "instance_id": "opencode-phase0-host-1774709333934221526",
+          "event_type": "message.part.updated",
+          "session_id": "ses_2cb149b5fffeK5xKWZgyIzvpmI",
+          "hook_path": "/tmp/agentdeck-opencode-phase0-2693719090/host/hooks/opencode-phase0-host-1774709333934221526.json",
+          "sid_path": "/tmp/agentdeck-opencode-phase0-2693719090/host/hooks/opencode-phase0-host-1774709333934221526.sid"
+        },
+        {
+          "kind": "hook_write",
+          "mode": "host",
+          "instance_id": "opencode-phase0-host-1774709333934221526",
+          "event_type": "message.part.updated",
+          "session_id": "ses_2cb149b5fffeK5xKWZgyIzvpmI",
+          "hook_path": "/tmp/agentdeck-opencode-phase0-2693719090/host/hooks/opencode-phase0-host-1774709333934221526.json",
+          "sid_path": "/tmp/agentdeck-opencode-phase0-2693719090/host/hooks/opencode-phase0-host-1774709333934221526.sid"
+        },
+        {
+          "kind": "hook_write",
+          "mode": "host",
+          "instance_id": "opencode-phase0-host-1774709333934221526",
+          "event_type": "message.part.updated",
+          "session_id": "ses_2cb149b5fffeK5xKWZgyIzvpmI",
+          "hook_path": "/tmp/agentdeck-opencode-phase0-2693719090/host/hooks/opencode-phase0-host-1774709333934221526.json",
+          "sid_path": "/tmp/agentdeck-opencode-phase0-2693719090/host/hooks/opencode-phase0-host-1774709333934221526.sid"
+        },
+        {
+          "kind": "event",
+          "mode": "host",
+          "instance_id": "opencode-phase0-host-1774709333934221526",
+          "event_type": "message.part.updated",
+          "session_id": "ses_2cb149b5fffeK5xKWZgyIzvpmI",
+          "session_field": "properties.sessionID",
+          "payload": {
+            "type": "message.part.updated",
+            "properties": {
+              "sessionID": "ses_2cb149b5fffeK5xKWZgyIzvpmI",
+              "part": {
+                "id": "prt_d34eb722c001Kmtwm2J10JM2Wp",
+                "sessionID": "ses_2cb149b5fffeK5xKWZgyIzvpmI",
+                "messageID": "msg_d34eb655a0018r5h2L8GTU0rDq",
+                "type": "step-finish",
+                "reason": "stop",
+                "snapshot": "1604ae87dacab421981cf2827ba358247c452c99",
+                "cost": 0,
+                "tokens": {
+                  "total": 12202,
+                  "input": 12106,
+                  "output": 32,
+                  "reasoning": 0,
+                  "cache": {
+                    "read": 64,
+                    "write": 0
+                  }
+                }
+              },
+              "time": 1774709338696
+            }
+          }
+        },
+        {
+          "kind": "event",
+          "mode": "host",
+          "instance_id": "opencode-phase0-host-1774709333934221526",
+          "event_type": "message.updated",
+          "session_id": "ses_2cb149b5fffeK5xKWZgyIzvpmI",
+          "session_field": "properties.sessionID",
+          "payload": {
+            "type": "message.updated",
+            "properties": {
+              "sessionID": "ses_2cb149b5fffeK5xKWZgyIzvpmI",
+              "info": {
+                "id": "msg_d34eb655a0018r5h2L8GTU0rDq",
+                "sessionID": "ses_2cb149b5fffeK5xKWZgyIzvpmI",
+                "role": "assistant",
+                "time": {
+                  "created": 1774709335386
+                },
+                "parentID": "msg_d34eb6540001IQ92RGidATtUzJ",
+                "modelID": "glm-5",
+                "providerID": "coolyeah",
+                "mode": "build",
+                "agent": "build",
+                "path": {
+                  "cwd": "/home/ruiheng/agent-deck",
+                  "root": "/home/ruiheng/agent-deck"
+                },
+                "cost": 0,
+                "tokens": {
+                  "total": 12202,
+                  "input": 12106,
+                  "output": 32,
+                  "reasoning": 0,
+                  "cache": {
+                    "read": 64,
+                    "write": 0
+                  }
+                },
+                "finish": "stop"
+              }
+            }
+          }
+        },
+        {
+          "kind": "hook_write_attempt",
+          "mode": "host",
+          "instance_id": "opencode-phase0-host-1774709333934221526",
+          "event_type": "message.part.updated",
+          "session_id": "ses_2cb149b5fffeK5xKWZgyIzvpmI",
+          "hook_path": "/tmp/agentdeck-opencode-phase0-2693719090/host/hooks/opencode-phase0-host-1774709333934221526.json",
+          "sid_path": "/tmp/agentdeck-opencode-phase0-2693719090/host/hooks/opencode-phase0-host-1774709333934221526.sid"
+        },
+        {
+          "kind": "hook_write_attempt",
+          "mode": "host",
+          "instance_id": "opencode-phase0-host-1774709333934221526",
+          "event_type": "message.updated",
+          "session_id": "ses_2cb149b5fffeK5xKWZgyIzvpmI",
+          "hook_path": "/tmp/agentdeck-opencode-phase0-2693719090/host/hooks/opencode-phase0-host-1774709333934221526.json",
+          "sid_path": "/tmp/agentdeck-opencode-phase0-2693719090/host/hooks/opencode-phase0-host-1774709333934221526.sid"
+        },
+        {
+          "kind": "hook_write",
+          "mode": "host",
+          "instance_id": "opencode-phase0-host-1774709333934221526",
+          "event_type": "message.part.updated",
+          "session_id": "ses_2cb149b5fffeK5xKWZgyIzvpmI",
+          "hook_path": "/tmp/agentdeck-opencode-phase0-2693719090/host/hooks/opencode-phase0-host-1774709333934221526.json",
+          "sid_path": "/tmp/agentdeck-opencode-phase0-2693719090/host/hooks/opencode-phase0-host-1774709333934221526.sid"
+        },
+        {
+          "kind": "hook_write",
+          "mode": "host",
+          "instance_id": "opencode-phase0-host-1774709333934221526",
+          "event_type": "message.updated",
+          "session_id": "ses_2cb149b5fffeK5xKWZgyIzvpmI",
+          "hook_path": "/tmp/agentdeck-opencode-phase0-2693719090/host/hooks/opencode-phase0-host-1774709333934221526.json",
+          "sid_path": "/tmp/agentdeck-opencode-phase0-2693719090/host/hooks/opencode-phase0-host-1774709333934221526.sid"
+        },
+        {
+          "kind": "event",
+          "mode": "host",
+          "instance_id": "opencode-phase0-host-1774709333934221526",
+          "event_type": "message.updated",
+          "session_id": "ses_2cb149b5fffeK5xKWZgyIzvpmI",
+          "session_field": "properties.sessionID",
+          "payload": {
+            "type": "message.updated",
+            "properties": {
+              "sessionID": "ses_2cb149b5fffeK5xKWZgyIzvpmI",
+              "info": {
+                "id": "msg_d34eb655a0018r5h2L8GTU0rDq",
+                "sessionID": "ses_2cb149b5fffeK5xKWZgyIzvpmI",
+                "role": "assistant",
+                "time": {
+                  "created": 1774709335386,
+                  "completed": 1774709338728
+                },
+                "parentID": "msg_d34eb6540001IQ92RGidATtUzJ",
+                "modelID": "glm-5",
+                "providerID": "coolyeah",
+                "mode": "build",
+                "agent": "build",
+                "path": {
+                  "cwd": "/home/ruiheng/agent-deck",
+                  "root": "/home/ruiheng/agent-deck"
+                },
+                "cost": 0,
+                "tokens": {
+                  "total": 12202,
+                  "input": 12106,
+                  "output": 32,
+                  "reasoning": 0,
+                  "cache": {
+                    "read": 64,
+                    "write": 0
+                  }
+                },
+                "finish": "stop"
+              }
+            }
+          }
+        },
+        {
+          "kind": "event",
+          "mode": "host",
+          "instance_id": "opencode-phase0-host-1774709333934221526",
+          "event_type": "session.status",
+          "session_id": "ses_2cb149b5fffeK5xKWZgyIzvpmI",
+          "session_field": "properties.sessionID",
+          "payload": {
+            "type": "session.status",
+            "properties": {
+              "sessionID": "ses_2cb149b5fffeK5xKWZgyIzvpmI",
+              "status": {
+                "type": "busy"
+              }
+            }
+          }
+        },
+        {
+          "kind": "event",
+          "mode": "host",
+          "instance_id": "opencode-phase0-host-1774709333934221526",
+          "event_type": "session.status",
+          "session_id": "ses_2cb149b5fffeK5xKWZgyIzvpmI",
+          "session_field": "properties.sessionID",
+          "payload": {
+            "type": "session.status",
+            "properties": {
+              "sessionID": "ses_2cb149b5fffeK5xKWZgyIzvpmI",
+              "status": {
+                "type": "idle"
+              }
+            }
+          }
+        },
+        {
+          "kind": "event",
+          "mode": "host",
+          "instance_id": "opencode-phase0-host-1774709333934221526",
+          "event_type": "server.instance.disposed",
+          "payload": {
+            "type": "server.instance.disposed",
+            "properties": {
+              "directory": "/home/ruiheng/agent-deck"
+            }
+          }
+        },
+        {
+          "kind": "event",
+          "mode": "host",
+          "instance_id": "opencode-phase0-host-1774709333934221526",
+          "event_type": "session.idle",
+          "session_id": "ses_2cb149b5fffeK5xKWZgyIzvpmI",
+          "session_field": "properties.sessionID",
+          "payload": {
+            "type": "session.idle",
+            "properties": {
+              "sessionID": "ses_2cb149b5fffeK5xKWZgyIzvpmI"
+            }
+          }
+        }
+      ],
+      "stdout_tail": "{\"type\":\"step_start\",\"timestamp\":1774709337967,\"sessionID\":\"ses_2cb149b5fffeK5xKWZgyIzvpmI\",\"part\":{\"id\":\"prt_d34eb6f6b00124FskAlvcp75NH\",\"sessionID\":\"ses_2cb149b5fffeK5xKWZgyIzvpmI\",\"messageID\":\"msg_d34eb655a0018r5h2L8GTU0rDq\",\"type\":\"step-start\",\"snapshot\":\"1604ae87dacab421981cf2827ba358247c452c99\"}}\n{\"type\":\"text\",\"timestamp\":1774709338669,\"sessionID\":\"ses_2cb149b5fffeK5xKWZgyIzvpmI\",\"part\":{\"id\":\"prt_d34eb7221001G600bqF4szka5u\",\"sessionID\":\"ses_2cb149b5fffeK5xKWZgyIzvpmI\",\"messageID\":\"msg_d34eb655a0018r5h2L8GTU0rDq\",\"type\":\"text\",\"text\":\"proof\",\"time\":{\"start\":1774709338664,\"end\":1774709338664}}}\n{\"type\":\"step_finish\",\"timestamp\":1774709338699,\"sessionID\":\"ses_2cb149b5fffeK5xKWZgyIzvpmI\",\"part\":{\"id\":\"prt_d34eb722c001Kmtwm2J10JM2Wp\",\"sessionID\":\"ses_2cb149b5fffeK5xKWZgyIzvpmI\",\"messageID\":\"msg_d34eb655a0018r5h2L8GTU0rDq\",\"type\":\"step-finish\",\"reason\":\"stop\",\"snapshot\":\"1604ae87dacab421981cf2827ba358247c452c99\",\"cost\":0,\"tokens\":{\"total\":12202,\"input\":12106,\"output\":32,\"reasoning\":0,\"cache\":{\"read\":64,\"write\":0}}}}",
+      "work_dir": "/home/ruiheng/agent-deck",
+      "temp_dir": "/tmp/agentdeck-opencode-phase0-2693719090/host"
+    },
+    {
+      "mode": "sandbox",
+      "instance_id": "opencode-phase0-sandbox-1774709338766061684",
+      "pass": true,
+      "command": [
+        "docker",
+        "run",
+        "--rm",
+        "--workdir",
+        "/workspace",
+        "-e",
+        "HOME=/root",
+        "-e",
+        "XDG_CONFIG_HOME=/root/.config",
+        "-e",
+        "XDG_DATA_HOME=/root/.local/share",
+        "-e",
+        "XDG_CACHE_HOME=/root/.cache",
+        "-e",
+        "XDG_STATE_HOME=/root/.local/state",
+        "-e",
+        "OPENCODE_DISABLE_AUTOUPDATE=1",
+        "-e",
+        "OPENCODE_DISABLE_MODELS_FETCH=1",
+        "-e",
+        "OPENCODE_DISABLE_LSP_DOWNLOAD=1",
+        "-e",
+        "AGENTDECK_INSTANCE_ID=opencode-phase0-sandbox-1774709338766061684",
+        "-e",
+        "AGENTDECK_PROOF_MODE=sandbox",
+        "-e",
+        "AGENTDECK_HOOKS_DIR=/root/.agent-deck/hooks",
+        "-e",
+        "AGENTDECK_PROOF_REPORT_PATH=/tmp/agentdeck-phase0/plugin-events.jsonl",
+        "-v",
+        "/home/ruiheng/agent-deck:/workspace",
+        "-v",
+        "/tmp/agentdeck-opencode-phase0-2693719090/.config/opencode:/root/.config/opencode",
+        "-v",
+        "/tmp/agentdeck-opencode-phase0-2693719090/.local/share/opencode:/root/.local/share/opencode",
+        "-v",
+        "/tmp/agentdeck-opencode-phase0-2693719090/.cache/opencode:/root/.cache/opencode",
+        "-v",
+        "/tmp/agentdeck-opencode-phase0-2693719090/.local/state/opencode:/root/.local/state/opencode",
+        "-v",
+        "/tmp/agentdeck-opencode-phase0-2693719090/sandbox/hooks:/root/.agent-deck/hooks",
+        "-v",
+        "/tmp/agentdeck-opencode-phase0-2693719090/sandbox/report:/tmp/agentdeck-phase0",
+        "--user",
+        "1000:1000",
+        "agent-deck-opencode-phase0:latest",
+        "opencode",
+        "run",
+        "--format",
+        "json",
+        "Reply with the single word proof."
+      ],
+      "exit_code": 0,
+      "timed_out": false,
+      "plugin_init_observed": true,
+      "instance_id_visible": true,
+      "session_event_observed": true,
+      "observed_events": [
+        "message.part.delta",
+        "message.part.updated",
+        "message.updated",
+        "server.instance.disposed",
+        "session.diff",
+        "session.idle",
+        "session.status",
+        "session.updated"
+      ],
+      "observed_session_id": "ses_2cb14884dffeulPA52fBUYAEPI",
+      "observed_session_field": "properties.sessionID",
+      "hook_json_path": "/tmp/agentdeck-opencode-phase0-2693719090/sandbox/hooks/opencode-phase0-sandbox-1774709338766061684.json",
+      "hook_sid_path": "/tmp/agentdeck-opencode-phase0-2693719090/sandbox/hooks/opencode-phase0-sandbox-1774709338766061684.sid",
+      "hook_json_present": true,
+      "hook_sid_present": true,
+      "hook_status": {
+        "status": "waiting",
+        "session_id": "ses_2cb14884dffeulPA52fBUYAEPI",
+        "event": "message.part.updated",
+        "ts": 1774709341
+      },
+      "records": [
+        {
+          "kind": "plugin_init",
+          "mode": "sandbox",
+          "instance_id": "opencode-phase0-sandbox-1774709338766061684",
+          "hooks_dir": "/root/.agent-deck/hooks",
+          "report_path": "/tmp/agentdeck-phase0/plugin-events.jsonl"
+        },
+        {
+          "kind": "event",
+          "mode": "sandbox",
+          "instance_id": "opencode-phase0-sandbox-1774709338766061684",
+          "event_type": "message.updated",
+          "session_id": "ses_2cb14884dffeulPA52fBUYAEPI",
+          "session_field": "properties.sessionID",
+          "payload": {
+            "type": "message.updated",
+            "properties": {
+              "sessionID": "ses_2cb14884dffeulPA52fBUYAEPI",
+              "info": {
+                "id": "msg_d34eb78300015PsYQHnnHq391Y",
+                "sessionID": "ses_2cb14884dffeulPA52fBUYAEPI",
+                "role": "assistant",
+                "time": {
+                  "created": 1774709340208
+                },
+                "parentID": "msg_d34eb7816001NQJsrCKRae7Ne0",
+                "modelID": "glm-5",
+                "providerID": "coolyeah",
+                "mode": "build",
+                "agent": "build",
+                "path": {
+                  "cwd": "/workspace",
+                  "root": "/workspace"
+                },
+                "cost": 0,
+                "tokens": {
+                  "input": 0,
+                  "output": 0,
+                  "reasoning": 0,
+                  "cache": {
+                    "read": 0,
+                    "write": 0
+                  }
+                }
+              }
+            }
+          }
+        },
+        {
+          "kind": "event",
+          "mode": "sandbox",
+          "instance_id": "opencode-phase0-sandbox-1774709338766061684",
+          "event_type": "session.updated",
+          "session_id": "ses_2cb14884dffeulPA52fBUYAEPI",
+          "session_field": "properties.sessionID",
+          "payload": {
+            "type": "session.updated",
+            "properties": {
+              "sessionID": "ses_2cb14884dffeulPA52fBUYAEPI",
+              "info": {
+                "id": "ses_2cb14884dffeulPA52fBUYAEPI",
+                "slug": "gentle-wizard",
+                "projectID": "7e9234ee8bac4f3fa333b1fc0941e2cf0c6c1037",
+                "directory": "/workspace",
+                "title": "New session - 2026-03-28T14:49:00.082Z",
+                "version": "1.3.3",
+                "permission": [
+                  {
+                    "permission": "question",
+                    "pattern": "*",
+                    "action": "deny"
+                  },
+                  {
+                    "permission": "plan_enter",
+                    "pattern": "*",
+                    "action": "deny"
+                  },
+                  {
+                    "permission": "plan_exit",
+                    "pattern": "*",
+                    "action": "deny"
+                  }
+                ],
+                "time": {
+                  "created": 1774709340083,
+                  "updated": 1774709340197
+                }
+              }
+            }
+          }
+        },
+        {
+          "kind": "event",
+          "mode": "sandbox",
+          "instance_id": "opencode-phase0-sandbox-1774709338766061684",
+          "event_type": "message.part.updated",
+          "session_id": "ses_2cb14884dffeulPA52fBUYAEPI",
+          "session_field": "properties.sessionID",
+          "payload": {
+            "type": "message.part.updated",
+            "properties": {
+              "sessionID": "ses_2cb14884dffeulPA52fBUYAEPI",
+              "part": {
+                "id": "prt_d34eb781e001DvtcrqcdZXJ4ex",
+                "sessionID": "ses_2cb14884dffeulPA52fBUYAEPI",
+                "messageID": "msg_d34eb7816001NQJsrCKRae7Ne0",
+                "type": "text",
+                "text": "\"Reply with the single word proof.\"\n"
+              },
+              "time": 1774709340196
+            }
+          }
+        },
+        {
+          "kind": "event",
+          "mode": "sandbox",
+          "instance_id": "opencode-phase0-sandbox-1774709338766061684",
+          "event_type": "session.status",
+          "session_id": "ses_2cb14884dffeulPA52fBUYAEPI",
+          "session_field": "properties.sessionID",
+          "payload": {
+            "type": "session.status",
+            "properties": {
+              "sessionID": "ses_2cb14884dffeulPA52fBUYAEPI",
+              "status": {
+                "type": "busy"
+              }
+            }
+          }
+        },
+        {
+          "kind": "event",
+          "mode": "sandbox",
+          "instance_id": "opencode-phase0-sandbox-1774709338766061684",
+          "event_type": "message.updated",
+          "session_id": "ses_2cb14884dffeulPA52fBUYAEPI",
+          "session_field": "properties.sessionID",
+          "payload": {
+            "type": "message.updated",
+            "properties": {
+              "sessionID": "ses_2cb14884dffeulPA52fBUYAEPI",
+              "info": {
+                "id": "msg_d34eb7816001NQJsrCKRae7Ne0",
+                "sessionID": "ses_2cb14884dffeulPA52fBUYAEPI",
+                "role": "user",
+                "time": {
+                  "created": 1774709340182
+                },
+                "agent": "build",
+                "model": {
+                  "providerID": "coolyeah",
+                  "modelID": "glm-5"
+                }
+              }
+            }
+          }
+        },
+        {
+          "kind": "event",
+          "mode": "sandbox",
+          "instance_id": "opencode-phase0-sandbox-1774709338766061684",
+          "event_type": "message.updated",
+          "session_id": "ses_2cb14884dffeulPA52fBUYAEPI",
+          "session_field": "properties.sessionID",
+          "payload": {
+            "type": "message.updated",
+            "properties": {
+              "sessionID": "ses_2cb14884dffeulPA52fBUYAEPI",
+              "info": {
+                "id": "msg_d34eb7816001NQJsrCKRae7Ne0",
+                "sessionID": "ses_2cb14884dffeulPA52fBUYAEPI",
+                "role": "user",
+                "time": {
+                  "created": 1774709340182
+                },
+                "summary": {
+                  "diffs": []
+                },
+                "agent": "build",
+                "model": {
+                  "providerID": "coolyeah",
+                  "modelID": "glm-5"
+                }
+              }
+            }
+          }
+        },
+        {
+          "kind": "event",
+          "mode": "sandbox",
+          "instance_id": "opencode-phase0-sandbox-1774709338766061684",
+          "event_type": "session.updated",
+          "session_id": "ses_2cb14884dffeulPA52fBUYAEPI",
+          "session_field": "properties.sessionID",
+          "payload": {
+            "type": "session.updated",
+            "properties": {
+              "sessionID": "ses_2cb14884dffeulPA52fBUYAEPI",
+              "info": {
+                "id": "ses_2cb14884dffeulPA52fBUYAEPI",
+                "slug": "gentle-wizard",
+                "projectID": "7e9234ee8bac4f3fa333b1fc0941e2cf0c6c1037",
+                "directory": "/workspace",
+                "title": "New session - 2026-03-28T14:49:00.082Z",
+                "version": "1.3.3",
+                "summary": {
+                  "additions": 0,
+                  "deletions": 0,
+                  "files": 0
+                },
+                "permission": [
+                  {
+                    "permission": "question",
+                    "pattern": "*",
+                    "action": "deny"
+                  },
+                  {
+                    "permission": "plan_enter",
+                    "pattern": "*",
+                    "action": "deny"
+                  },
+                  {
+                    "permission": "plan_exit",
+                    "pattern": "*",
+                    "action": "deny"
+                  }
+                ],
+                "time": {
+                  "created": 1774709340083,
+                  "updated": 1774709340233
+                }
+              }
+            }
+          }
+        },
+        {
+          "kind": "event",
+          "mode": "sandbox",
+          "instance_id": "opencode-phase0-sandbox-1774709338766061684",
+          "event_type": "session.status",
+          "session_id": "ses_2cb14884dffeulPA52fBUYAEPI",
+          "session_field": "properties.sessionID",
+          "payload": {
+            "type": "session.status",
+            "properties": {
+              "sessionID": "ses_2cb14884dffeulPA52fBUYAEPI",
+              "status": {
+                "type": "busy"
+              }
+            }
+          }
+        },
+        {
+          "kind": "event",
+          "mode": "sandbox",
+          "instance_id": "opencode-phase0-sandbox-1774709338766061684",
+          "event_type": "session.diff",
+          "session_id": "ses_2cb14884dffeulPA52fBUYAEPI",
+          "session_field": "properties.sessionID",
+          "payload": {
+            "type": "session.diff",
+            "properties": {
+              "sessionID": "ses_2cb14884dffeulPA52fBUYAEPI",
+              "diff": []
+            }
+          }
+        },
+        {
+          "kind": "hook_write_attempt",
+          "mode": "sandbox",
+          "instance_id": "opencode-phase0-sandbox-1774709338766061684",
+          "event_type": "session.status",
+          "session_id": "ses_2cb14884dffeulPA52fBUYAEPI",
+          "hook_path": "/root/.agent-deck/hooks/opencode-phase0-sandbox-1774709338766061684.json",
+          "sid_path": "/root/.agent-deck/hooks/opencode-phase0-sandbox-1774709338766061684.sid"
+        },
+        {
+          "kind": "hook_write_attempt",
+          "mode": "sandbox",
+          "instance_id": "opencode-phase0-sandbox-1774709338766061684",
+          "event_type": "message.updated",
+          "session_id": "ses_2cb14884dffeulPA52fBUYAEPI",
+          "hook_path": "/root/.agent-deck/hooks/opencode-phase0-sandbox-1774709338766061684.json",
+          "sid_path": "/root/.agent-deck/hooks/opencode-phase0-sandbox-1774709338766061684.sid"
+        },
+        {
+          "kind": "hook_write_attempt",
+          "mode": "sandbox",
+          "instance_id": "opencode-phase0-sandbox-1774709338766061684",
+          "event_type": "message.updated",
+          "session_id": "ses_2cb14884dffeulPA52fBUYAEPI",
+          "hook_path": "/root/.agent-deck/hooks/opencode-phase0-sandbox-1774709338766061684.json",
+          "sid_path": "/root/.agent-deck/hooks/opencode-phase0-sandbox-1774709338766061684.sid"
+        },
+        {
+          "kind": "hook_write_attempt",
+          "mode": "sandbox",
+          "instance_id": "opencode-phase0-sandbox-1774709338766061684",
+          "event_type": "session.updated",
+          "session_id": "ses_2cb14884dffeulPA52fBUYAEPI",
+          "hook_path": "/root/.agent-deck/hooks/opencode-phase0-sandbox-1774709338766061684.json",
+          "sid_path": "/root/.agent-deck/hooks/opencode-phase0-sandbox-1774709338766061684.sid"
+        },
+        {
+          "kind": "hook_write_attempt",
+          "mode": "sandbox",
+          "instance_id": "opencode-phase0-sandbox-1774709338766061684",
+          "event_type": "message.part.updated",
+          "session_id": "ses_2cb14884dffeulPA52fBUYAEPI",
+          "hook_path": "/root/.agent-deck/hooks/opencode-phase0-sandbox-1774709338766061684.json",
+          "sid_path": "/root/.agent-deck/hooks/opencode-phase0-sandbox-1774709338766061684.sid"
+        },
+        {
+          "kind": "hook_write_attempt",
+          "mode": "sandbox",
+          "instance_id": "opencode-phase0-sandbox-1774709338766061684",
+          "event_type": "session.updated",
+          "session_id": "ses_2cb14884dffeulPA52fBUYAEPI",
+          "hook_path": "/root/.agent-deck/hooks/opencode-phase0-sandbox-1774709338766061684.json",
+          "sid_path": "/root/.agent-deck/hooks/opencode-phase0-sandbox-1774709338766061684.sid"
+        },
+        {
+          "kind": "hook_write_attempt",
+          "mode": "sandbox",
+          "instance_id": "opencode-phase0-sandbox-1774709338766061684",
+          "event_type": "message.updated",
+          "session_id": "ses_2cb14884dffeulPA52fBUYAEPI",
+          "hook_path": "/root/.agent-deck/hooks/opencode-phase0-sandbox-1774709338766061684.json",
+          "sid_path": "/root/.agent-deck/hooks/opencode-phase0-sandbox-1774709338766061684.sid"
+        },
+        {
+          "kind": "hook_write_attempt",
+          "mode": "sandbox",
+          "instance_id": "opencode-phase0-sandbox-1774709338766061684",
+          "event_type": "session.status",
+          "session_id": "ses_2cb14884dffeulPA52fBUYAEPI",
+          "hook_path": "/root/.agent-deck/hooks/opencode-phase0-sandbox-1774709338766061684.json",
+          "sid_path": "/root/.agent-deck/hooks/opencode-phase0-sandbox-1774709338766061684.sid"
+        },
+        {
+          "kind": "hook_write_attempt",
+          "mode": "sandbox",
+          "instance_id": "opencode-phase0-sandbox-1774709338766061684",
+          "event_type": "session.diff",
+          "session_id": "ses_2cb14884dffeulPA52fBUYAEPI",
+          "hook_path": "/root/.agent-deck/hooks/opencode-phase0-sandbox-1774709338766061684.json",
+          "sid_path": "/root/.agent-deck/hooks/opencode-phase0-sandbox-1774709338766061684.sid"
+        },
+        {
+          "kind": "hook_write",
+          "mode": "sandbox",
+          "instance_id": "opencode-phase0-sandbox-1774709338766061684",
+          "event_type": "session.updated",
+          "session_id": "ses_2cb14884dffeulPA52fBUYAEPI",
+          "hook_path": "/root/.agent-deck/hooks/opencode-phase0-sandbox-1774709338766061684.json",
+          "sid_path": "/root/.agent-deck/hooks/opencode-phase0-sandbox-1774709338766061684.sid"
+        },
+        {
+          "kind": "hook_write",
+          "mode": "sandbox",
+          "instance_id": "opencode-phase0-sandbox-1774709338766061684",
+          "event_type": "message.updated",
+          "session_id": "ses_2cb14884dffeulPA52fBUYAEPI",
+          "hook_path": "/root/.agent-deck/hooks/opencode-phase0-sandbox-1774709338766061684.json",
+          "sid_path": "/root/.agent-deck/hooks/opencode-phase0-sandbox-1774709338766061684.sid"
+        },
+        {
+          "kind": "hook_write",
+          "mode": "sandbox",
+          "instance_id": "opencode-phase0-sandbox-1774709338766061684",
+          "event_type": "session.updated",
+          "session_id": "ses_2cb14884dffeulPA52fBUYAEPI",
+          "hook_path": "/root/.agent-deck/hooks/opencode-phase0-sandbox-1774709338766061684.json",
+          "sid_path": "/root/.agent-deck/hooks/opencode-phase0-sandbox-1774709338766061684.sid"
+        },
+        {
+          "kind": "hook_write",
+          "mode": "sandbox",
+          "instance_id": "opencode-phase0-sandbox-1774709338766061684",
+          "event_type": "session.status",
+          "session_id": "ses_2cb14884dffeulPA52fBUYAEPI",
+          "hook_path": "/root/.agent-deck/hooks/opencode-phase0-sandbox-1774709338766061684.json",
+          "sid_path": "/root/.agent-deck/hooks/opencode-phase0-sandbox-1774709338766061684.sid"
+        },
+        {
+          "kind": "hook_write",
+          "mode": "sandbox",
+          "instance_id": "opencode-phase0-sandbox-1774709338766061684",
+          "event_type": "message.updated",
+          "session_id": "ses_2cb14884dffeulPA52fBUYAEPI",
+          "hook_path": "/root/.agent-deck/hooks/opencode-phase0-sandbox-1774709338766061684.json",
+          "sid_path": "/root/.agent-deck/hooks/opencode-phase0-sandbox-1774709338766061684.sid"
+        },
+        {
+          "kind": "hook_write",
+          "mode": "sandbox",
+          "instance_id": "opencode-phase0-sandbox-1774709338766061684",
+          "event_type": "session.status",
+          "session_id": "ses_2cb14884dffeulPA52fBUYAEPI",
+          "hook_path": "/root/.agent-deck/hooks/opencode-phase0-sandbox-1774709338766061684.json",
+          "sid_path": "/root/.agent-deck/hooks/opencode-phase0-sandbox-1774709338766061684.sid"
+        },
+        {
+          "kind": "hook_write",
+          "mode": "sandbox",
+          "instance_id": "opencode-phase0-sandbox-1774709338766061684",
+          "event_type": "message.part.updated",
+          "session_id": "ses_2cb14884dffeulPA52fBUYAEPI",
+          "hook_path": "/root/.agent-deck/hooks/opencode-phase0-sandbox-1774709338766061684.json",
+          "sid_path": "/root/.agent-deck/hooks/opencode-phase0-sandbox-1774709338766061684.sid"
+        },
+        {
+          "kind": "hook_write",
+          "mode": "sandbox",
+          "instance_id": "opencode-phase0-sandbox-1774709338766061684",
+          "event_type": "message.updated",
+          "session_id": "ses_2cb14884dffeulPA52fBUYAEPI",
+          "hook_path": "/root/.agent-deck/hooks/opencode-phase0-sandbox-1774709338766061684.json",
+          "sid_path": "/root/.agent-deck/hooks/opencode-phase0-sandbox-1774709338766061684.sid"
+        },
+        {
+          "kind": "hook_write",
+          "mode": "sandbox",
+          "instance_id": "opencode-phase0-sandbox-1774709338766061684",
+          "event_type": "session.diff",
+          "session_id": "ses_2cb14884dffeulPA52fBUYAEPI",
+          "hook_path": "/root/.agent-deck/hooks/opencode-phase0-sandbox-1774709338766061684.json",
+          "sid_path": "/root/.agent-deck/hooks/opencode-phase0-sandbox-1774709338766061684.sid"
+        },
+        {
+          "kind": "event",
+          "mode": "sandbox",
+          "instance_id": "opencode-phase0-sandbox-1774709338766061684",
+          "event_type": "message.part.updated",
+          "session_id": "ses_2cb14884dffeulPA52fBUYAEPI",
+          "session_field": "properties.sessionID",
+          "payload": {
+            "type": "message.part.updated",
+            "properties": {
+              "sessionID": "ses_2cb14884dffeulPA52fBUYAEPI",
+              "part": {
+                "id": "prt_d34eb7ee5001bc6SLniyr7SwjL",
+                "sessionID": "ses_2cb14884dffeulPA52fBUYAEPI",
+                "messageID": "msg_d34eb78300015PsYQHnnHq391Y",
+                "type": "step-start",
+                "snapshot": "1604ae87dacab421981cf2827ba358247c452c99"
+              },
+              "time": 1774709341926
+            }
+          }
+        },
+        {
+          "kind": "event",
+          "mode": "sandbox",
+          "instance_id": "opencode-phase0-sandbox-1774709338766061684",
+          "event_type": "message.part.updated",
+          "session_id": "ses_2cb14884dffeulPA52fBUYAEPI",
+          "session_field": "properties.sessionID",
+          "payload": {
+            "type": "message.part.updated",
+            "properties": {
+              "sessionID": "ses_2cb14884dffeulPA52fBUYAEPI",
+              "part": {
+                "id": "prt_d34eb7ee7001s4EP51Q4gdAjc2",
+                "sessionID": "ses_2cb14884dffeulPA52fBUYAEPI",
+                "messageID": "msg_d34eb78300015PsYQHnnHq391Y",
+                "type": "reasoning",
+                "text": "",
+                "time": {
+                  "start": 1774709341927
+                }
+              },
+              "time": 1774709341928
+            }
+          }
+        },
+        {
+          "kind": "event",
+          "mode": "sandbox",
+          "instance_id": "opencode-phase0-sandbox-1774709338766061684",
+          "event_type": "message.part.delta",
+          "session_id": "ses_2cb14884dffeulPA52fBUYAEPI",
+          "session_field": "properties.sessionID",
+          "payload": {
+            "type": "message.part.delta",
+            "properties": {
+              "sessionID": "ses_2cb14884dffeulPA52fBUYAEPI",
+              "messageID": "msg_d34eb78300015PsYQHnnHq391Y",
+              "partID": "prt_d34eb7ee7001s4EP51Q4gdAjc2",
+              "field": "text",
+              "delta": "The"
+            }
+          }
+        },
+        {
+          "kind": "event",
+          "mode": "sandbox",
+          "instance_id": "opencode-phase0-sandbox-1774709338766061684",
+          "event_type": "message.part.updated",
+          "session_id": "ses_2cb14884dffeulPA52fBUYAEPI",
+          "session_field": "properties.sessionID",
+          "payload": {
+            "type": "message.part.updated",
+            "properties": {
+              "sessionID": "ses_2cb14884dffeulPA52fBUYAEPI",
+              "part": {
+                "id": "prt_d34eb7eed001dG2nMwMAF2sL8p",
+                "sessionID": "ses_2cb14884dffeulPA52fBUYAEPI",
+                "messageID": "msg_d34eb78300015PsYQHnnHq391Y",
+                "type": "text",
+                "text": "",
+                "time": {
+                  "start": 1774709341934
+                }
+              },
+              "time": 1774709341934
+            }
+          }
+        },
+        {
+          "kind": "event",
+          "mode": "sandbox",
+          "instance_id": "opencode-phase0-sandbox-1774709338766061684",
+          "event_type": "message.part.delta",
+          "session_id": "ses_2cb14884dffeulPA52fBUYAEPI",
+          "session_field": "properties.sessionID",
+          "payload": {
+            "type": "message.part.delta",
+            "properties": {
+              "sessionID": "ses_2cb14884dffeulPA52fBUYAEPI",
+              "messageID": "msg_d34eb78300015PsYQHnnHq391Y",
+              "partID": "prt_d34eb7ee7001s4EP51Q4gdAjc2",
+              "field": "text",
+              "delta": "\". This"
+            }
+          }
+        },
+        {
+          "kind": "event",
+          "mode": "sandbox",
+          "instance_id": "opencode-phase0-sandbox-1774709338766061684",
+          "event_type": "message.part.delta",
+          "session_id": "ses_2cb14884dffeulPA52fBUYAEPI",
+          "session_field": "properties.sessionID",
+          "payload": {
+            "type": "message.part.delta",
+            "properties": {
+              "sessionID": "ses_2cb14884dffeulPA52fBUYAEPI",
+              "messageID": "msg_d34eb78300015PsYQHnnHq391Y",
+              "partID": "prt_d34eb7ee7001s4EP51Q4gdAjc2",
+              "field": "text",
+              "delta": " direct request."
+            }
+          }
+        },
+        {
+          "kind": "event",
+          "mode": "sandbox",
+          "instance_id": "opencode-phase0-sandbox-1774709338766061684",
+          "event_type": "message.part.delta",
+          "session_id": "ses_2cb14884dffeulPA52fBUYAEPI",
+          "session_field": "properties.sessionID",
+          "payload": {
+            "type": "message.part.delta",
+            "properties": {
+              "sessionID": "ses_2cb14884dffeulPA52fBUYAEPI",
+              "messageID": "msg_d34eb78300015PsYQHnnHq391Y",
+              "partID": "prt_d34eb7ee7001s4EP51Q4gdAjc2",
+              "field": "text",
+              "delta": " \"proof"
+            }
+          }
+        },
+        {
+          "kind": "event",
+          "mode": "sandbox",
+          "instance_id": "opencode-phase0-sandbox-1774709338766061684",
+          "event_type": "message.part.delta",
+          "session_id": "ses_2cb14884dffeulPA52fBUYAEPI",
+          "session_field": "properties.sessionID",
+          "payload": {
+            "type": "message.part.delta",
+            "properties": {
+              "sessionID": "ses_2cb14884dffeulPA52fBUYAEPI",
+              "messageID": "msg_d34eb78300015PsYQHnnHq391Y",
+              "partID": "prt_d34eb7ee7001s4EP51Q4gdAjc2",
+              "field": "text",
+              "delta": " the word"
+            }
+          }
+        },
+        {
+          "kind": "event",
+          "mode": "sandbox",
+          "instance_id": "opencode-phase0-sandbox-1774709338766061684",
+          "event_type": "message.part.delta",
+          "session_id": "ses_2cb14884dffeulPA52fBUYAEPI",
+          "session_field": "properties.sessionID",
+          "payload": {
+            "type": "message.part.delta",
+            "properties": {
+              "sessionID": "ses_2cb14884dffeulPA52fBUYAEPI",
+              "messageID": "msg_d34eb78300015PsYQHnnHq391Y",
+              "partID": "prt_d34eb7ee7001s4EP51Q4gdAjc2",
+              "field": "text",
+              "delta": " just"
+            }
+          }
+        },
+        {
+          "kind": "event",
+          "mode": "sandbox",
+          "instance_id": "opencode-phase0-sandbox-1774709338766061684",
+          "event_type": "message.part.delta",
+          "session_id": "ses_2cb14884dffeulPA52fBUYAEPI",
+          "session_field": "properties.sessionID",
+          "payload": {
+            "type": "message.part.delta",
+            "properties": {
+              "sessionID": "ses_2cb14884dffeulPA52fBUYAEPI",
+              "messageID": "msg_d34eb78300015PsYQHnnHq391Y",
+              "partID": "prt_d34eb7ee7001s4EP51Q4gdAjc2",
+              "field": "text",
+              "delta": " user is asking me"
+            }
+          }
+        },
+        {
+          "kind": "event",
+          "mode": "sandbox",
+          "instance_id": "opencode-phase0-sandbox-1774709338766061684",
+          "event_type": "message.part.delta",
+          "session_id": "ses_2cb14884dffeulPA52fBUYAEPI",
+          "session_field": "properties.sessionID",
+          "payload": {
+            "type": "message.part.delta",
+            "properties": {
+              "sessionID": "ses_2cb14884dffeulPA52fBUYAEPI",
+              "messageID": "msg_d34eb78300015PsYQHnnHq391Y",
+              "partID": "prt_d34eb7ee7001s4EP51Q4gdAjc2",
+              "field": "text",
+              "delta": " to reply with"
+            }
+          }
+        },
+        {
+          "kind": "event",
+          "mode": "sandbox",
+          "instance_id": "opencode-phase0-sandbox-1774709338766061684",
+          "event_type": "message.part.updated",
+          "session_id": "ses_2cb14884dffeulPA52fBUYAEPI",
+          "session_field": "properties.sessionID",
+          "payload": {
+            "type": "message.part.updated",
+            "properties": {
+              "sessionID": "ses_2cb14884dffeulPA52fBUYAEPI",
+              "part": {
+                "id": "prt_d34eb7ee7001s4EP51Q4gdAjc2",
+                "sessionID": "ses_2cb14884dffeulPA52fBUYAEPI",
+                "messageID": "msg_d34eb78300015PsYQHnnHq391Y",
+                "type": "reasoning",
+                "text": "The user is asking me to reply with just the word \"proof\". This is a simple, direct request.",
+                "time": {
+                  "start": 1774709341927,
+                  "end": 1774709341937
+                }
+              },
+              "time": 1774709341937
+            }
+          }
+        },
+        {
+          "kind": "event",
+          "mode": "sandbox",
+          "instance_id": "opencode-phase0-sandbox-1774709338766061684",
+          "event_type": "message.part.delta",
+          "session_id": "ses_2cb14884dffeulPA52fBUYAEPI",
+          "session_field": "properties.sessionID",
+          "payload": {
+            "type": "message.part.delta",
+            "properties": {
+              "sessionID": "ses_2cb14884dffeulPA52fBUYAEPI",
+              "messageID": "msg_d34eb78300015PsYQHnnHq391Y",
+              "partID": "prt_d34eb7eed001dG2nMwMAF2sL8p",
+              "field": "text",
+              "delta": "proof"
+            }
+          }
+        },
+        {
+          "kind": "event",
+          "mode": "sandbox",
+          "instance_id": "opencode-phase0-sandbox-1774709338766061684",
+          "event_type": "message.part.updated",
+          "session_id": "ses_2cb14884dffeulPA52fBUYAEPI",
+          "session_field": "properties.sessionID",
+          "payload": {
+            "type": "message.part.updated",
+            "properties": {
+              "sessionID": "ses_2cb14884dffeulPA52fBUYAEPI",
+              "part": {
+                "id": "prt_d34eb7eed001dG2nMwMAF2sL8p",
+                "sessionID": "ses_2cb14884dffeulPA52fBUYAEPI",
+                "messageID": "msg_d34eb78300015PsYQHnnHq391Y",
+                "type": "text",
+                "text": "proof",
+                "time": {
+                  "start": 1774709341939,
+                  "end": 1774709341939
+                }
+              },
+              "time": 1774709341939
+            }
+          }
+        },
+        {
+          "kind": "event",
+          "mode": "sandbox",
+          "instance_id": "opencode-phase0-sandbox-1774709338766061684",
+          "event_type": "message.part.delta",
+          "session_id": "ses_2cb14884dffeulPA52fBUYAEPI",
+          "session_field": "properties.sessionID",
+          "payload": {
+            "type": "message.part.delta",
+            "properties": {
+              "sessionID": "ses_2cb14884dffeulPA52fBUYAEPI",
+              "messageID": "msg_d34eb78300015PsYQHnnHq391Y",
+              "partID": "prt_d34eb7ee7001s4EP51Q4gdAjc2",
+              "field": "text",
+              "delta": " is a simple,"
+            }
+          }
+        },
+        {
+          "kind": "hook_write_attempt",
+          "mode": "sandbox",
+          "instance_id": "opencode-phase0-sandbox-1774709338766061684",
+          "event_type": "message.part.updated",
+          "session_id": "ses_2cb14884dffeulPA52fBUYAEPI",
+          "hook_path": "/root/.agent-deck/hooks/opencode-phase0-sandbox-1774709338766061684.json",
+          "sid_path": "/root/.agent-deck/hooks/opencode-phase0-sandbox-1774709338766061684.sid"
+        },
+        {
+          "kind": "hook_write_attempt",
+          "mode": "sandbox",
+          "instance_id": "opencode-phase0-sandbox-1774709338766061684",
+          "event_type": "message.part.updated",
+          "session_id": "ses_2cb14884dffeulPA52fBUYAEPI",
+          "hook_path": "/root/.agent-deck/hooks/opencode-phase0-sandbox-1774709338766061684.json",
+          "sid_path": "/root/.agent-deck/hooks/opencode-phase0-sandbox-1774709338766061684.sid"
+        },
+        {
+          "kind": "hook_write_attempt",
+          "mode": "sandbox",
+          "instance_id": "opencode-phase0-sandbox-1774709338766061684",
+          "event_type": "message.part.delta",
+          "session_id": "ses_2cb14884dffeulPA52fBUYAEPI",
+          "hook_path": "/root/.agent-deck/hooks/opencode-phase0-sandbox-1774709338766061684.json",
+          "sid_path": "/root/.agent-deck/hooks/opencode-phase0-sandbox-1774709338766061684.sid"
+        },
+        {
+          "kind": "hook_write_attempt",
+          "mode": "sandbox",
+          "instance_id": "opencode-phase0-sandbox-1774709338766061684",
+          "event_type": "message.part.delta",
+          "session_id": "ses_2cb14884dffeulPA52fBUYAEPI",
+          "hook_path": "/root/.agent-deck/hooks/opencode-phase0-sandbox-1774709338766061684.json",
+          "sid_path": "/root/.agent-deck/hooks/opencode-phase0-sandbox-1774709338766061684.sid"
+        },
+        {
+          "kind": "hook_write_attempt",
+          "mode": "sandbox",
+          "instance_id": "opencode-phase0-sandbox-1774709338766061684",
+          "event_type": "message.part.delta",
+          "session_id": "ses_2cb14884dffeulPA52fBUYAEPI",
+          "hook_path": "/root/.agent-deck/hooks/opencode-phase0-sandbox-1774709338766061684.json",
+          "sid_path": "/root/.agent-deck/hooks/opencode-phase0-sandbox-1774709338766061684.sid"
+        },
+        {
+          "kind": "hook_write_attempt",
+          "mode": "sandbox",
+          "instance_id": "opencode-phase0-sandbox-1774709338766061684",
+          "event_type": "message.part.delta",
+          "session_id": "ses_2cb14884dffeulPA52fBUYAEPI",
+          "hook_path": "/root/.agent-deck/hooks/opencode-phase0-sandbox-1774709338766061684.json",
+          "sid_path": "/root/.agent-deck/hooks/opencode-phase0-sandbox-1774709338766061684.sid"
+        },
+        {
+          "kind": "hook_write_attempt",
+          "mode": "sandbox",
+          "instance_id": "opencode-phase0-sandbox-1774709338766061684",
+          "event_type": "message.part.updated",
+          "session_id": "ses_2cb14884dffeulPA52fBUYAEPI",
+          "hook_path": "/root/.agent-deck/hooks/opencode-phase0-sandbox-1774709338766061684.json",
+          "sid_path": "/root/.agent-deck/hooks/opencode-phase0-sandbox-1774709338766061684.sid"
+        },
+        {
+          "kind": "hook_write_attempt",
+          "mode": "sandbox",
+          "instance_id": "opencode-phase0-sandbox-1774709338766061684",
+          "event_type": "message.part.delta",
+          "session_id": "ses_2cb14884dffeulPA52fBUYAEPI",
+          "hook_path": "/root/.agent-deck/hooks/opencode-phase0-sandbox-1774709338766061684.json",
+          "sid_path": "/root/.agent-deck/hooks/opencode-phase0-sandbox-1774709338766061684.sid"
+        },
+        {
+          "kind": "hook_write_attempt",
+          "mode": "sandbox",
+          "instance_id": "opencode-phase0-sandbox-1774709338766061684",
+          "event_type": "message.part.delta",
+          "session_id": "ses_2cb14884dffeulPA52fBUYAEPI",
+          "hook_path": "/root/.agent-deck/hooks/opencode-phase0-sandbox-1774709338766061684.json",
+          "sid_path": "/root/.agent-deck/hooks/opencode-phase0-sandbox-1774709338766061684.sid"
+        },
+        {
+          "kind": "hook_write_attempt",
+          "mode": "sandbox",
+          "instance_id": "opencode-phase0-sandbox-1774709338766061684",
+          "event_type": "message.part.updated",
+          "session_id": "ses_2cb14884dffeulPA52fBUYAEPI",
+          "hook_path": "/root/.agent-deck/hooks/opencode-phase0-sandbox-1774709338766061684.json",
+          "sid_path": "/root/.agent-deck/hooks/opencode-phase0-sandbox-1774709338766061684.sid"
+        },
+        {
+          "kind": "hook_write_attempt",
+          "mode": "sandbox",
+          "instance_id": "opencode-phase0-sandbox-1774709338766061684",
+          "event_type": "message.part.delta",
+          "session_id": "ses_2cb14884dffeulPA52fBUYAEPI",
+          "hook_path": "/root/.agent-deck/hooks/opencode-phase0-sandbox-1774709338766061684.json",
+          "sid_path": "/root/.agent-deck/hooks/opencode-phase0-sandbox-1774709338766061684.sid"
+        },
+        {
+          "kind": "hook_write_attempt",
+          "mode": "sandbox",
+          "instance_id": "opencode-phase0-sandbox-1774709338766061684",
+          "event_type": "message.part.updated",
+          "session_id": "ses_2cb14884dffeulPA52fBUYAEPI",
+          "hook_path": "/root/.agent-deck/hooks/opencode-phase0-sandbox-1774709338766061684.json",
+          "sid_path": "/root/.agent-deck/hooks/opencode-phase0-sandbox-1774709338766061684.sid"
+        },
+        {
+          "kind": "hook_write_attempt",
+          "mode": "sandbox",
+          "instance_id": "opencode-phase0-sandbox-1774709338766061684",
+          "event_type": "message.part.delta",
+          "session_id": "ses_2cb14884dffeulPA52fBUYAEPI",
+          "hook_path": "/root/.agent-deck/hooks/opencode-phase0-sandbox-1774709338766061684.json",
+          "sid_path": "/root/.agent-deck/hooks/opencode-phase0-sandbox-1774709338766061684.sid"
+        },
+        {
+          "kind": "hook_write_attempt",
+          "mode": "sandbox",
+          "instance_id": "opencode-phase0-sandbox-1774709338766061684",
+          "event_type": "message.part.delta",
+          "session_id": "ses_2cb14884dffeulPA52fBUYAEPI",
+          "hook_path": "/root/.agent-deck/hooks/opencode-phase0-sandbox-1774709338766061684.json",
+          "sid_path": "/root/.agent-deck/hooks/opencode-phase0-sandbox-1774709338766061684.sid"
+        },
+        {
+          "kind": "hook_write_attempt",
+          "mode": "sandbox",
+          "instance_id": "opencode-phase0-sandbox-1774709338766061684",
+          "event_type": "message.part.delta",
+          "session_id": "ses_2cb14884dffeulPA52fBUYAEPI",
+          "hook_path": "/root/.agent-deck/hooks/opencode-phase0-sandbox-1774709338766061684.json",
+          "sid_path": "/root/.agent-deck/hooks/opencode-phase0-sandbox-1774709338766061684.sid"
+        },
+        {
+          "kind": "hook_write",
+          "mode": "sandbox",
+          "instance_id": "opencode-phase0-sandbox-1774709338766061684",
+          "event_type": "message.part.delta",
+          "session_id": "ses_2cb14884dffeulPA52fBUYAEPI",
+          "hook_path": "/root/.agent-deck/hooks/opencode-phase0-sandbox-1774709338766061684.json",
+          "sid_path": "/root/.agent-deck/hooks/opencode-phase0-sandbox-1774709338766061684.sid"
+        },
+        {
+          "kind": "hook_write",
+          "mode": "sandbox",
+          "instance_id": "opencode-phase0-sandbox-1774709338766061684",
+          "event_type": "message.part.delta",
+          "session_id": "ses_2cb14884dffeulPA52fBUYAEPI",
+          "hook_path": "/root/.agent-deck/hooks/opencode-phase0-sandbox-1774709338766061684.json",
+          "sid_path": "/root/.agent-deck/hooks/opencode-phase0-sandbox-1774709338766061684.sid"
+        },
+        {
+          "kind": "hook_write",
+          "mode": "sandbox",
+          "instance_id": "opencode-phase0-sandbox-1774709338766061684",
+          "event_type": "message.part.updated",
+          "session_id": "ses_2cb14884dffeulPA52fBUYAEPI",
+          "hook_path": "/root/.agent-deck/hooks/opencode-phase0-sandbox-1774709338766061684.json",
+          "sid_path": "/root/.agent-deck/hooks/opencode-phase0-sandbox-1774709338766061684.sid"
+        },
+        {
+          "kind": "hook_write",
+          "mode": "sandbox",
+          "instance_id": "opencode-phase0-sandbox-1774709338766061684",
+          "event_type": "message.part.delta",
+          "session_id": "ses_2cb14884dffeulPA52fBUYAEPI",
+          "hook_path": "/root/.agent-deck/hooks/opencode-phase0-sandbox-1774709338766061684.json",
+          "sid_path": "/root/.agent-deck/hooks/opencode-phase0-sandbox-1774709338766061684.sid"
+        },
+        {
+          "kind": "hook_write",
+          "mode": "sandbox",
+          "instance_id": "opencode-phase0-sandbox-1774709338766061684",
+          "event_type": "message.part.updated",
+          "session_id": "ses_2cb14884dffeulPA52fBUYAEPI",
+          "hook_path": "/root/.agent-deck/hooks/opencode-phase0-sandbox-1774709338766061684.json",
+          "sid_path": "/root/.agent-deck/hooks/opencode-phase0-sandbox-1774709338766061684.sid"
+        },
+        {
+          "kind": "hook_write",
+          "mode": "sandbox",
+          "instance_id": "opencode-phase0-sandbox-1774709338766061684",
+          "event_type": "message.part.updated",
+          "session_id": "ses_2cb14884dffeulPA52fBUYAEPI",
+          "hook_path": "/root/.agent-deck/hooks/opencode-phase0-sandbox-1774709338766061684.json",
+          "sid_path": "/root/.agent-deck/hooks/opencode-phase0-sandbox-1774709338766061684.sid"
+        },
+        {
+          "kind": "hook_write",
+          "mode": "sandbox",
+          "instance_id": "opencode-phase0-sandbox-1774709338766061684",
+          "event_type": "message.part.delta",
+          "session_id": "ses_2cb14884dffeulPA52fBUYAEPI",
+          "hook_path": "/root/.agent-deck/hooks/opencode-phase0-sandbox-1774709338766061684.json",
+          "sid_path": "/root/.agent-deck/hooks/opencode-phase0-sandbox-1774709338766061684.sid"
+        },
+        {
+          "kind": "hook_write",
+          "mode": "sandbox",
+          "instance_id": "opencode-phase0-sandbox-1774709338766061684",
+          "event_type": "message.part.delta",
+          "session_id": "ses_2cb14884dffeulPA52fBUYAEPI",
+          "hook_path": "/root/.agent-deck/hooks/opencode-phase0-sandbox-1774709338766061684.json",
+          "sid_path": "/root/.agent-deck/hooks/opencode-phase0-sandbox-1774709338766061684.sid"
+        },
+        {
+          "kind": "hook_write",
+          "mode": "sandbox",
+          "instance_id": "opencode-phase0-sandbox-1774709338766061684",
+          "event_type": "message.part.delta",
+          "session_id": "ses_2cb14884dffeulPA52fBUYAEPI",
+          "hook_path": "/root/.agent-deck/hooks/opencode-phase0-sandbox-1774709338766061684.json",
+          "sid_path": "/root/.agent-deck/hooks/opencode-phase0-sandbox-1774709338766061684.sid"
+        },
+        {
+          "kind": "hook_write",
+          "mode": "sandbox",
+          "instance_id": "opencode-phase0-sandbox-1774709338766061684",
+          "event_type": "message.part.delta",
+          "session_id": "ses_2cb14884dffeulPA52fBUYAEPI",
+          "hook_path": "/root/.agent-deck/hooks/opencode-phase0-sandbox-1774709338766061684.json",
+          "sid_path": "/root/.agent-deck/hooks/opencode-phase0-sandbox-1774709338766061684.sid"
+        },
+        {
+          "kind": "hook_write",
+          "mode": "sandbox",
+          "instance_id": "opencode-phase0-sandbox-1774709338766061684",
+          "event_type": "message.part.delta",
+          "session_id": "ses_2cb14884dffeulPA52fBUYAEPI",
+          "hook_path": "/root/.agent-deck/hooks/opencode-phase0-sandbox-1774709338766061684.json",
+          "sid_path": "/root/.agent-deck/hooks/opencode-phase0-sandbox-1774709338766061684.sid"
+        },
+        {
+          "kind": "hook_write",
+          "mode": "sandbox",
+          "instance_id": "opencode-phase0-sandbox-1774709338766061684",
+          "event_type": "message.part.updated",
+          "session_id": "ses_2cb14884dffeulPA52fBUYAEPI",
+          "hook_path": "/root/.agent-deck/hooks/opencode-phase0-sandbox-1774709338766061684.json",
+          "sid_path": "/root/.agent-deck/hooks/opencode-phase0-sandbox-1774709338766061684.sid"
+        },
+        {
+          "kind": "hook_write",
+          "mode": "sandbox",
+          "instance_id": "opencode-phase0-sandbox-1774709338766061684",
+          "event_type": "message.part.updated",
+          "session_id": "ses_2cb14884dffeulPA52fBUYAEPI",
+          "hook_path": "/root/.agent-deck/hooks/opencode-phase0-sandbox-1774709338766061684.json",
+          "sid_path": "/root/.agent-deck/hooks/opencode-phase0-sandbox-1774709338766061684.sid"
+        },
+        {
+          "kind": "hook_write",
+          "mode": "sandbox",
+          "instance_id": "opencode-phase0-sandbox-1774709338766061684",
+          "event_type": "message.part.delta",
+          "session_id": "ses_2cb14884dffeulPA52fBUYAEPI",
+          "hook_path": "/root/.agent-deck/hooks/opencode-phase0-sandbox-1774709338766061684.json",
+          "sid_path": "/root/.agent-deck/hooks/opencode-phase0-sandbox-1774709338766061684.sid"
+        },
+        {
+          "kind": "hook_write",
+          "mode": "sandbox",
+          "instance_id": "opencode-phase0-sandbox-1774709338766061684",
+          "event_type": "message.part.delta",
+          "session_id": "ses_2cb14884dffeulPA52fBUYAEPI",
+          "hook_path": "/root/.agent-deck/hooks/opencode-phase0-sandbox-1774709338766061684.json",
+          "sid_path": "/root/.agent-deck/hooks/opencode-phase0-sandbox-1774709338766061684.sid"
+        },
+        {
+          "kind": "event",
+          "mode": "sandbox",
+          "instance_id": "opencode-phase0-sandbox-1774709338766061684",
+          "event_type": "message.updated",
+          "session_id": "ses_2cb14884dffeulPA52fBUYAEPI",
+          "session_field": "properties.sessionID",
+          "payload": {
+            "type": "message.updated",
+            "properties": {
+              "sessionID": "ses_2cb14884dffeulPA52fBUYAEPI",
+              "info": {
+                "id": "msg_d34eb78300015PsYQHnnHq391Y",
+                "sessionID": "ses_2cb14884dffeulPA52fBUYAEPI",
+                "role": "assistant",
+                "time": {
+                  "created": 1774709340208
+                },
+                "parentID": "msg_d34eb7816001NQJsrCKRae7Ne0",
+                "modelID": "glm-5",
+                "providerID": "coolyeah",
+                "mode": "build",
+                "agent": "build",
+                "path": {
+                  "cwd": "/workspace",
+                  "root": "/workspace"
+                },
+                "cost": 0,
+                "tokens": {
+                  "total": 9974,
+                  "input": 9949,
+                  "output": 25,
+                  "reasoning": 0,
+                  "cache": {
+                    "read": 0,
+                    "write": 0
+                  }
+                },
+                "finish": "stop"
+              }
+            }
+          }
+        },
+        {
+          "kind": "event",
+          "mode": "sandbox",
+          "instance_id": "opencode-phase0-sandbox-1774709338766061684",
+          "event_type": "message.part.updated",
+          "session_id": "ses_2cb14884dffeulPA52fBUYAEPI",
+          "session_field": "properties.sessionID",
+          "payload": {
+            "type": "message.part.updated",
+            "properties": {
+              "sessionID": "ses_2cb14884dffeulPA52fBUYAEPI",
+              "part": {
+                "id": "prt_d34eb7ef6001O4dAC5JurB2JgC",
+                "sessionID": "ses_2cb14884dffeulPA52fBUYAEPI",
+                "messageID": "msg_d34eb78300015PsYQHnnHq391Y",
+                "type": "step-finish",
+                "reason": "stop",
+                "snapshot": "1604ae87dacab421981cf2827ba358247c452c99",
+                "cost": 0,
+                "tokens": {
+                  "total": 9974,
+                  "input": 9949,
+                  "output": 25,
+                  "reasoning": 0,
+                  "cache": {
+                    "read": 0,
+                    "write": 0
+                  }
+                }
+              },
+              "time": 1774709341970
+            }
+          }
+        },
+        {
+          "kind": "hook_write_attempt",
+          "mode": "sandbox",
+          "instance_id": "opencode-phase0-sandbox-1774709338766061684",
+          "event_type": "message.updated",
+          "session_id": "ses_2cb14884dffeulPA52fBUYAEPI",
+          "hook_path": "/root/.agent-deck/hooks/opencode-phase0-sandbox-1774709338766061684.json",
+          "sid_path": "/root/.agent-deck/hooks/opencode-phase0-sandbox-1774709338766061684.sid"
+        },
+        {
+          "kind": "hook_write_attempt",
+          "mode": "sandbox",
+          "instance_id": "opencode-phase0-sandbox-1774709338766061684",
+          "event_type": "message.part.updated",
+          "session_id": "ses_2cb14884dffeulPA52fBUYAEPI",
+          "hook_path": "/root/.agent-deck/hooks/opencode-phase0-sandbox-1774709338766061684.json",
+          "sid_path": "/root/.agent-deck/hooks/opencode-phase0-sandbox-1774709338766061684.sid"
+        },
+        {
+          "kind": "hook_write",
+          "mode": "sandbox",
+          "instance_id": "opencode-phase0-sandbox-1774709338766061684",
+          "event_type": "message.updated",
+          "session_id": "ses_2cb14884dffeulPA52fBUYAEPI",
+          "hook_path": "/root/.agent-deck/hooks/opencode-phase0-sandbox-1774709338766061684.json",
+          "sid_path": "/root/.agent-deck/hooks/opencode-phase0-sandbox-1774709338766061684.sid"
+        },
+        {
+          "kind": "hook_write",
+          "mode": "sandbox",
+          "instance_id": "opencode-phase0-sandbox-1774709338766061684",
+          "event_type": "message.part.updated",
+          "session_id": "ses_2cb14884dffeulPA52fBUYAEPI",
+          "hook_path": "/root/.agent-deck/hooks/opencode-phase0-sandbox-1774709338766061684.json",
+          "sid_path": "/root/.agent-deck/hooks/opencode-phase0-sandbox-1774709338766061684.sid"
+        },
+        {
+          "kind": "event",
+          "mode": "sandbox",
+          "instance_id": "opencode-phase0-sandbox-1774709338766061684",
+          "event_type": "server.instance.disposed",
+          "payload": {
+            "type": "server.instance.disposed",
+            "properties": {
+              "directory": "/workspace"
+            }
+          }
+        },
+        {
+          "kind": "event",
+          "mode": "sandbox",
+          "instance_id": "opencode-phase0-sandbox-1774709338766061684",
+          "event_type": "session.status",
+          "session_id": "ses_2cb14884dffeulPA52fBUYAEPI",
+          "session_field": "properties.sessionID",
+          "payload": {
+            "type": "session.status",
+            "properties": {
+              "sessionID": "ses_2cb14884dffeulPA52fBUYAEPI",
+              "status": {
+                "type": "busy"
+              }
+            }
+          }
+        },
+        {
+          "kind": "event",
+          "mode": "sandbox",
+          "instance_id": "opencode-phase0-sandbox-1774709338766061684",
+          "event_type": "session.status",
+          "session_id": "ses_2cb14884dffeulPA52fBUYAEPI",
+          "session_field": "properties.sessionID",
+          "payload": {
+            "type": "session.status",
+            "properties": {
+              "sessionID": "ses_2cb14884dffeulPA52fBUYAEPI",
+              "status": {
+                "type": "idle"
+              }
+            }
+          }
+        },
+        {
+          "kind": "event",
+          "mode": "sandbox",
+          "instance_id": "opencode-phase0-sandbox-1774709338766061684",
+          "event_type": "message.updated",
+          "session_id": "ses_2cb14884dffeulPA52fBUYAEPI",
+          "session_field": "properties.sessionID",
+          "payload": {
+            "type": "message.updated",
+            "properties": {
+              "sessionID": "ses_2cb14884dffeulPA52fBUYAEPI",
+              "info": {
+                "id": "msg_d34eb78300015PsYQHnnHq391Y",
+                "sessionID": "ses_2cb14884dffeulPA52fBUYAEPI",
+                "role": "assistant",
+                "time": {
+                  "created": 1774709340208,
+                  "completed": 1774709342003
+                },
+                "parentID": "msg_d34eb7816001NQJsrCKRae7Ne0",
+                "modelID": "glm-5",
+                "providerID": "coolyeah",
+                "mode": "build",
+                "agent": "build",
+                "path": {
+                  "cwd": "/workspace",
+                  "root": "/workspace"
+                },
+                "cost": 0,
+                "tokens": {
+                  "total": 9974,
+                  "input": 9949,
+                  "output": 25,
+                  "reasoning": 0,
+                  "cache": {
+                    "read": 0,
+                    "write": 0
+                  }
+                },
+                "finish": "stop"
+              }
+            }
+          }
+        },
+        {
+          "kind": "event",
+          "mode": "sandbox",
+          "instance_id": "opencode-phase0-sandbox-1774709338766061684",
+          "event_type": "session.idle",
+          "session_id": "ses_2cb14884dffeulPA52fBUYAEPI",
+          "session_field": "properties.sessionID",
+          "payload": {
+            "type": "session.idle",
+            "properties": {
+              "sessionID": "ses_2cb14884dffeulPA52fBUYAEPI"
+            }
+          }
+        }
+      ],
+      "stdout_tail": "{\"type\":\"step_start\",\"timestamp\":1774709341930,\"sessionID\":\"ses_2cb14884dffeulPA52fBUYAEPI\",\"part\":{\"id\":\"prt_d34eb7ee5001bc6SLniyr7SwjL\",\"sessionID\":\"ses_2cb14884dffeulPA52fBUYAEPI\",\"messageID\":\"msg_d34eb78300015PsYQHnnHq391Y\",\"type\":\"step-start\",\"snapshot\":\"1604ae87dacab421981cf2827ba358247c452c99\"}}\n{\"type\":\"text\",\"timestamp\":1774709341943,\"sessionID\":\"ses_2cb14884dffeulPA52fBUYAEPI\",\"part\":{\"id\":\"prt_d34eb7eed001dG2nMwMAF2sL8p\",\"sessionID\":\"ses_2cb14884dffeulPA52fBUYAEPI\",\"messageID\":\"msg_d34eb78300015PsYQHnnHq391Y\",\"type\":\"text\",\"text\":\"proof\",\"time\":{\"start\":1774709341939,\"end\":1774709341939}}}\n{\"type\":\"step_finish\",\"timestamp\":1774709341974,\"sessionID\":\"ses_2cb14884dffeulPA52fBUYAEPI\",\"part\":{\"id\":\"prt_d34eb7ef6001O4dAC5JurB2JgC\",\"sessionID\":\"ses_2cb14884dffeulPA52fBUYAEPI\",\"messageID\":\"msg_d34eb78300015PsYQHnnHq391Y\",\"type\":\"step-finish\",\"reason\":\"stop\",\"snapshot\":\"1604ae87dacab421981cf2827ba358247c452c99\",\"cost\":0,\"tokens\":{\"total\":9974,\"input\":9949,\"output\":25,\"reasoning\":0,\"cache\":{\"read\":0,\"write\":0}}}}",
+      "work_dir": "/home/ruiheng/agent-deck",
+      "temp_dir": "/tmp/agentdeck-opencode-phase0-2693719090/sandbox"
+    }
+  ]
+}
