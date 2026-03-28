@@ -151,6 +151,32 @@ func TestSyncAgentConfig_CopyDirsRecursive(t *testing.T) {
 	require.True(t, os.IsNotExist(err))
 }
 
+func TestSyncAgentConfig_OpenCodeCopiesPluginsOnly(t *testing.T) {
+	t.Parallel()
+
+	homeDir := t.TempDir()
+	hostDir := filepath.Join(homeDir, ".config", "opencode")
+	require.NoError(t, os.MkdirAll(filepath.Join(hostDir, "plugins"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(hostDir, "opencode.json"), []byte(`{"mode":"host"}`), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(hostDir, "plugins", "agentdeck.js"), []byte("plugin"), 0o755))
+
+	mount := AgentConfigMount{
+		hostRel:     ".config/opencode",
+		skipEntries: []string{"sandbox"},
+		copyDirs:    []string{"plugins"},
+		skipFiles:   true,
+	}
+	sandboxDir, err := SyncAgentConfig(homeDir, mount)
+	require.NoError(t, err)
+
+	_, err = os.Stat(filepath.Join(sandboxDir, "opencode.json"))
+	require.True(t, os.IsNotExist(err))
+
+	data, err := os.ReadFile(filepath.Join(sandboxDir, "plugins", "agentdeck.js"))
+	require.NoError(t, err)
+	require.Equal(t, "plugin", string(data))
+}
+
 func TestSyncAgentConfig_FollowsSymlinks(t *testing.T) {
 	t.Parallel()
 

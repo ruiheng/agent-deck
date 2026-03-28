@@ -116,6 +116,12 @@ func handleOpenCodePlugin(args []string) {
 	switch args[0] {
 	case "help", "--help", "-h":
 		printOpenCodePluginUsage(os.Stdout)
+	case "install":
+		handleOpenCodePluginInstall()
+	case "uninstall":
+		handleOpenCodePluginUninstall()
+	case "status":
+		handleOpenCodePluginStatus()
 	case "phase0-proof":
 		handleOpenCodePluginPhase0(args[1:])
 	default:
@@ -123,15 +129,6 @@ func handleOpenCodePlugin(args []string) {
 		printOpenCodePluginUsage(os.Stderr)
 		os.Exit(1)
 	}
-}
-
-func printOpenCodePluginUsage(w io.Writer) {
-	fmt.Fprintln(w, "Usage: agent-deck opencode-plugin <command>")
-	fmt.Fprintln(w)
-	fmt.Fprintln(w, "OpenCode plugin proof tooling.")
-	fmt.Fprintln(w)
-	fmt.Fprintln(w, "Commands:")
-	fmt.Fprintln(w, "  phase0-proof   Run the Phase 0 proof spike for OpenCode session binding")
 }
 
 func handleOpenCodePluginPhase0(args []string) {

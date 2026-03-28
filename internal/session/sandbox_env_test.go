@@ -1,6 +1,8 @@
 package session
 
 import (
+	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"testing"
@@ -178,5 +180,39 @@ func TestCommandBuilders_NewClaude_LiteralUUID(t *testing.T) {
 		if !uuidLiteralRE.MatchString(candidate) {
 			t.Errorf("--session-id argument %q is not a literal UUID (must be pre-generated in Go):\n  cmd: %q", candidate, cmd)
 		}
+	}
+}
+
+func TestBuildOpenCodeCommand_InjectsAgentDeckInstanceID(t *testing.T) {
+	inst := &Instance{
+		ID:                "test-inst-id",
+		Tool:              "opencode",
+		OpenCodeSessionID: "ses_ABC123",
+	}
+
+	cmd := inst.buildOpenCodeCommand("opencode")
+	if !strings.Contains(cmd, "AGENTDECK_INSTANCE_ID='test-inst-id'") {
+		t.Fatalf("OpenCode command missing AGENTDECK_INSTANCE_ID injection: %q", cmd)
+	}
+	if !strings.Contains(cmd, "opencode -s ses_ABC123") {
+		t.Fatalf("OpenCode command missing resume flag: %q", cmd)
+	}
+}
+
+func TestPrepareOpenCodeSandboxMounts(t *testing.T) {
+	homeDir := t.TempDir()
+
+	mounts, err := prepareOpenCodeSandboxMounts(homeDir)
+	if err != nil {
+		t.Fatalf("prepareOpenCodeSandboxMounts() error = %v", err)
+	}
+	if len(mounts) != 1 {
+		t.Fatalf("expected 1 mount, got %d", len(mounts))
+	}
+	if _, err := os.Stat(filepath.Join(homeDir, ".config", "opencode")); err != nil {
+		t.Fatalf("opencode config dir not created: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(homeDir, ".agent-deck", "hooks")); err != nil {
+		t.Fatalf("hooks dir not created: %v", err)
 	}
 }

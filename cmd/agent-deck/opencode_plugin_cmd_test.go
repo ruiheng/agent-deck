@@ -202,3 +202,81 @@ func TestCopyDirTree_SkipsPluginsTopLevel(t *testing.T) {
 		t.Fatalf("expected opencode.json to be copied: %v", err)
 	}
 }
+
+func TestEnsureOpenCodeRuntimePluginInstalled(t *testing.T) {
+	homeDir := t.TempDir()
+	t.Setenv("HOME", homeDir)
+
+	pluginPath, installed, err := ensureOpenCodeRuntimePluginInstalled()
+	if err != nil {
+		t.Fatalf("ensureOpenCodeRuntimePluginInstalled() error = %v", err)
+	}
+	if !installed {
+		t.Fatal("expected first install to report installed=true")
+	}
+
+	data, err := os.ReadFile(pluginPath)
+	if err != nil {
+		t.Fatalf("read plugin file: %v", err)
+	}
+	content := string(data)
+	if !strings.Contains(content, "export const AgentDeckSessionBinding") {
+		t.Fatalf("plugin content missing export: %s", content)
+	}
+	if !strings.Contains(content, ".agent-deck") {
+		t.Fatalf("plugin content missing hooks path logic: %s", content)
+	}
+
+	_, installed, err = ensureOpenCodeRuntimePluginInstalled()
+	if err != nil {
+		t.Fatalf("second ensureOpenCodeRuntimePluginInstalled() error = %v", err)
+	}
+	if installed {
+		t.Fatal("expected second install to report installed=false")
+	}
+}
+
+func TestOpenCodeRuntimePluginStatusAndRemove(t *testing.T) {
+	homeDir := t.TempDir()
+	t.Setenv("HOME", homeDir)
+
+	status, err := getOpenCodeRuntimePluginStatus()
+	if err != nil {
+		t.Fatalf("getOpenCodeRuntimePluginStatus() error = %v", err)
+	}
+	if status.Installed {
+		t.Fatal("expected plugin to start uninstalled")
+	}
+
+	pluginPath, installed, err := ensureOpenCodeRuntimePluginInstalled()
+	if err != nil {
+		t.Fatalf("ensureOpenCodeRuntimePluginInstalled() error = %v", err)
+	}
+	if !installed {
+		t.Fatal("expected install to create plugin")
+	}
+
+	status, err = getOpenCodeRuntimePluginStatus()
+	if err != nil {
+		t.Fatalf("getOpenCodeRuntimePluginStatus() after install error = %v", err)
+	}
+	if !status.Installed || status.Path != pluginPath {
+		t.Fatalf("unexpected status after install: %+v", status)
+	}
+
+	removedPath, removed, err := removeOpenCodeRuntimePlugin()
+	if err != nil {
+		t.Fatalf("removeOpenCodeRuntimePlugin() error = %v", err)
+	}
+	if !removed || removedPath != pluginPath {
+		t.Fatalf("unexpected remove result path=%q removed=%t", removedPath, removed)
+	}
+
+	status, err = getOpenCodeRuntimePluginStatus()
+	if err != nil {
+		t.Fatalf("getOpenCodeRuntimePluginStatus() after remove error = %v", err)
+	}
+	if status.Installed {
+		t.Fatal("expected plugin to be uninstalled after remove")
+	}
+}

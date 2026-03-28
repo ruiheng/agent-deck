@@ -733,7 +733,7 @@ func (i *Instance) buildOpenCodeCommand(baseCommand string) string {
 		return baseCommand
 	}
 
-	envPrefix := i.buildEnvSourceCommand()
+	envPrefix := i.buildEnvSourceCommand() + i.buildOpenCodeRuntimeEnvPrefix()
 
 	// If baseCommand is just "opencode", handle specially
 	if baseCommand == "opencode" {
@@ -752,6 +752,13 @@ func (i *Instance) buildOpenCodeCommand(baseCommand string) string {
 
 	// For custom commands (e.g., fork commands), return as-is
 	return envPrefix + baseCommand
+}
+
+func (i *Instance) buildOpenCodeRuntimeEnvPrefix() string {
+	if i.Tool != "opencode" || i.ID == "" {
+		return ""
+	}
+	return "AGENTDECK_INSTANCE_ID=" + shellQuote(i.ID) + " "
 }
 
 // buildOpenCodeExtraFlags returns extra CLI flags from OpenCodeOptions (model, agent).
@@ -3811,9 +3818,9 @@ func (i *Instance) Restart() error {
 		var rawCmd string
 		if i.OpenCodeSessionID != "" {
 			// OPENCODE_SESSION_ID is propagated via host-side SetEnvironment after tmux start.
-			rawCmd = fmt.Sprintf("opencode -s %s", i.OpenCodeSessionID)
+			rawCmd = i.buildOpenCodeRuntimeEnvPrefix() + fmt.Sprintf("opencode -s %s", i.OpenCodeSessionID)
 		} else {
-			rawCmd = "opencode"
+			rawCmd = i.buildOpenCodeRuntimeEnvPrefix() + "opencode"
 			i.OpenCodeStartedAt = time.Now().UnixMilli()
 		}
 		resumeCmd, containerName, err := i.prepareCommand(rawCmd)
@@ -3963,7 +3970,7 @@ func (i *Instance) Restart() error {
 		command = i.buildGeminiCommand("gemini")
 	} else if i.Tool == "opencode" && i.OpenCodeSessionID != "" {
 		// OPENCODE_SESSION_ID is propagated via host-side SetEnvironment after tmux start.
-		command = fmt.Sprintf("opencode -s %s", i.OpenCodeSessionID)
+		command = i.buildOpenCodeRuntimeEnvPrefix() + fmt.Sprintf("opencode -s %s", i.OpenCodeSessionID)
 	} else if i.Tool == "codex" && i.CodexSessionID != "" {
 		command = i.buildCodexCommand("codex")
 	} else {
@@ -4352,7 +4359,7 @@ func (i *Instance) ForkOpenCodeWithOptions(newTitle, newGroupPath string, opts *
 	}
 
 	workDir := i.ProjectPath
-	envPrefix := i.buildEnvSourceCommand()
+	envPrefix := i.buildEnvSourceCommand() + i.buildOpenCodeRuntimeEnvPrefix()
 
 	// Build extra flags from options (for fork, exclude session mode flags)
 	var extraFlags string
@@ -5022,7 +5029,16 @@ func ensureSandboxContainer(inst *Instance, userCfg *UserConfig, toolCommand str
 	var bindMounts []docker.VolumeMount
 	var homeMounts []docker.VolumeMount
 	if homeDir != "" {
-		bindMounts, homeMounts = docker.RefreshAgentConfigs(homeDir, "")
+		if inst.Tool == "opencode" {
+			openCodeMounts, err := prepareOpenCodeSandboxMounts(homeDir)
+			if err != nil {
+				return "", "", err
+			}
+			bindMounts = append(bindMounts, openCodeMounts...)
+		}
+		refreshedBindMounts, refreshedHomeMounts := docker.RefreshAgentConfigs(homeDir, "")
+		bindMounts = append(bindMounts, refreshedBindMounts...)
+		homeMounts = refreshedHomeMounts
 	}
 
 	if err := ensureContainerRunning(ctx, inst, ctr, userCfg, homeDir, bindMounts, homeMounts); err != nil {
@@ -5030,6 +5046,26 @@ func ensureSandboxContainer(inst *Instance, userCfg *UserConfig, toolCommand str
 	}
 
 	return buildExecCommand(ctr, userCfg, toolCommand), containerName, nil
+}
+
+func prepareOpenCodeSandboxMounts(homeDir string) ([]docker.VolumeMount, error) {
+	if strings.TrimSpace(homeDir) == "" {
+		return nil, nil
+	}
+
+	configDir := filepath.Join(homeDir, ".config", "opencode")
+	if err := os.MkdirAll(configDir, 0o755); err != nil {
+		return nil, fmt.Errorf("creating opencode config dir: %w", err)
+	}
+
+	hooksDir := filepath.Join(homeDir, ".agent-deck", "hooks")
+	if err := os.MkdirAll(hooksDir, 0o755); err != nil {
+		return nil, fmt.Errorf("creating opencode hooks dir: %w", err)
+	}
+
+	return []docker.VolumeMount{
+		docker.NewVolumeMount(hooksDir, "/root/.agent-deck/hooks", false),
+	}, nil
 }
 
 // ensureContainerRunning creates and starts the container if it doesn't exist or is stopped.

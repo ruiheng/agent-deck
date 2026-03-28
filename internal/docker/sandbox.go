@@ -115,6 +115,10 @@ func SyncAgentConfig(homeDir string, mount AgentConfigMount) (string, error) {
 			continue
 		}
 
+		if mount.skipFiles {
+			continue
+		}
+
 		// Skip preserved files that already exist in the sandbox.
 		dest := filepath.Join(sandboxDir, name)
 		if preserveSet[name] {

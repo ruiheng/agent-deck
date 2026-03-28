@@ -44,6 +44,13 @@ var agentConfigMounts = []AgentConfigMount{
 		},
 	},
 	{
+		hostRel:         ".config/opencode",
+		containerSuffix: ".config/opencode",
+		skipEntries:     []string{"sandbox"},
+		copyDirs:        []string{"plugins"},
+		skipFiles:       true,
+	},
+	{
 		hostRel:         ".local/share/opencode",
 		containerSuffix: ".local/share/opencode",
 		skipEntries:     []string{"sandbox"},
@@ -117,6 +124,15 @@ type VolumeMount struct {
 	readOnly      bool
 }
 
+// NewVolumeMount constructs a bind mount description for container config assembly.
+func NewVolumeMount(hostPath, containerPath string, readOnly bool) VolumeMount {
+	return VolumeMount{
+		hostPath:      hostPath,
+		containerPath: containerPath,
+		readOnly:      readOnly,
+	}
+}
+
 // ContainerConfig holds settings for container creation.
 // All fields are unexported to enforce construction via NewContainerConfig and the
 // options pattern (WithGitConfig, WithSSH, etc.), preventing partially initialized configs.
@@ -158,6 +174,9 @@ type AgentConfigMount struct {
 	skipEntries []string
 	// copyDirs are directories to recursively copy into the sandbox.
 	copyDirs []string
+	// skipFiles suppresses copying top-level regular files from the host dir.
+	// Use this when only specific subdirectories should be exposed in sandbox.
+	skipFiles bool
 	// seedFiles are files written only if absent (write-once) to preserve container state (name → content).
 	seedFiles map[string]string
 	// homeSeedFiles are files to seed at the container home level, outside the config dir (name → content).
