@@ -41,21 +41,22 @@ Overall result: PASS
 
 Host mode:
 - Plugin initialized and observed `AGENTDECK_INSTANCE_ID`
-- Observed session ID: `ses_2cb149b5fffeK5xKWZgyIzvpmI`
+- Observed session ID: `ses_2cb0a3699ffegZuiTaRRy184RW`
 - Extracted session ID field: `properties.sessionID`
-- Host-visible hook JSON and `.sid` anchor were written successfully
+- Host-visible hook JSON and `.sid` anchor were written successfully and matched the observed session ID
 
 Sandbox mode:
 - Plugin initialized and observed `AGENTDECK_INSTANCE_ID`
-- Observed session ID: `ses_2cb14884dffeulPA52fBUYAEPI`
+- Observed session ID: `ses_2cb0a251fffeOSfCtjoHtLBGG1`
 - Extracted session ID field: `properties.sessionID`
-- Host-visible hook JSON and `.sid` anchor were written successfully through the container mount
+- Host-visible hook JSON and `.sid` anchor were written successfully through the container mount and matched the observed session ID
 
 ## Key Findings
 
 - In these proof runs, the useful OpenCode events were `session.updated`, `session.idle`, `session.status`, `message.updated`, and `message.part.*`.
 - The proof did not need a `session.created` event to bind the session reliably.
 - The stable session ID location observed in both host and sandbox runs was `properties.sessionID`.
+- Host and sandbox proofs now start from separate clones of the same prepared OpenCode seed tree, so `--mode both` does not reuse mutated state across the boundary.
 - Direct plugin file writes to a host-visible hooks directory work in both host and sandbox modes.
 - Sandbox mode needs an explicit writable state path when the container runs as the host UID. The proof command now mounts and exports `XDG_STATE_HOME` accordingly.
 - Concurrent plugin events need unique temporary filenames for atomic writes. The proof harness now uses per-write temp paths instead of a shared `*.tmp` file to avoid rename races.

@@ -66,6 +66,9 @@ type openCodePluginPhase0Run struct {
 	HookSIDPath          string                        `json:"hook_sid_path"`
 	HookJSONPresent      bool                          `json:"hook_json_present"`
 	HookSIDPresent       bool                          `json:"hook_sid_present"`
+	HookSIDValue         string                        `json:"hook_sid_value,omitempty"`
+	HookJSONMatches      bool                          `json:"hook_json_matches_observed"`
+	HookSIDMatches       bool                          `json:"hook_sid_matches_observed"`
 	HookStatus           *openCodePluginHookStatusFile `json:"hook_status,omitempty"`
 	Records              []openCodePluginPhase0Record  `json:"records,omitempty"`
 	StdoutTail           string                        `json:"stdout_tail,omitempty"`
@@ -317,6 +320,10 @@ func prepareOpenCodePluginPhase0Env() (*openCodePluginPhase0PreparedEnv, error) 
 func runOpenCodePluginPhase0Mode(prepared *openCodePluginPhase0PreparedEnv, opts *openCodePluginPhase0Options, mode string) (openCodePluginPhase0Run, error) {
 	instanceID := fmt.Sprintf("opencode-phase0-%s-%d", mode, time.Now().UnixNano())
 	runDir := filepath.Join(prepared.tempRoot, mode)
+	runEnv, err := cloneOpenCodePluginPhase0Env(prepared, runDir)
+	if err != nil {
+		return openCodePluginPhase0Run{}, err
+	}
 	reportDir := filepath.Join(runDir, "report")
 	hooksDir := filepath.Join(runDir, "hooks")
 	if err := os.MkdirAll(reportDir, 0o755); err != nil {
@@ -334,9 +341,9 @@ func runOpenCodePluginPhase0Mode(prepared *openCodePluginPhase0PreparedEnv, opts
 	var cmd *exec.Cmd
 	switch mode {
 	case "host":
-		cmd = buildOpenCodePluginPhase0HostCommand(prepared, opts, instanceID, reportPath, hooksDir, commandArgs)
+		cmd = buildOpenCodePluginPhase0HostCommand(runEnv, opts, instanceID, reportPath, hooksDir, commandArgs)
 	case "sandbox":
-		cmd = buildOpenCodePluginPhase0SandboxCommand(prepared, opts, instanceID, reportDir, hooksDir, commandArgs)
+		cmd = buildOpenCodePluginPhase0SandboxCommand(runEnv, opts, instanceID, reportDir, hooksDir, commandArgs)
 	default:
 		return openCodePluginPhase0Run{}, fmt.Errorf("unsupported mode %q", mode)
 	}
@@ -362,7 +369,7 @@ func runOpenCodePluginPhase0Mode(prepared *openCodePluginPhase0PreparedEnv, opts
 		cmd.Env = append(cmd.Env, buildOpenCodePluginPhase0SandboxEnv()...)
 	}
 
-	err := cmd.Run()
+	err = cmd.Run()
 	exitCode := exitCodeFromError(err)
 	timedOut := errors.Is(ctx.Err(), context.DeadlineExceeded)
 
@@ -386,6 +393,7 @@ func runOpenCodePluginPhase0Mode(prepared *openCodePluginPhase0PreparedEnv, opts
 	}
 	if sidData, sidErr := os.ReadFile(hookSIDPath); sidErr == nil && strings.TrimSpace(string(sidData)) != "" {
 		run.HookSIDPresent = true
+		run.HookSIDValue = strings.TrimSpace(string(sidData))
 	}
 
 	records, _ := readOpenCodePluginPhase0Records(reportPath)
@@ -396,6 +404,30 @@ func runOpenCodePluginPhase0Mode(prepared *openCodePluginPhase0PreparedEnv, opts
 		return run, errors.New(strings.Join(run.FailureReasons, "; "))
 	}
 	return run, nil
+}
+
+func cloneOpenCodePluginPhase0Env(prepared *openCodePluginPhase0PreparedEnv, runRoot string) (*openCodePluginPhase0PreparedEnv, error) {
+	runEnv := &openCodePluginPhase0PreparedEnv{
+		tempRoot:      runRoot,
+		tempConfigDir: filepath.Join(runRoot, ".config", "opencode"),
+		tempDataDir:   filepath.Join(runRoot, ".local", "share", "opencode"),
+		tempCacheDir:  filepath.Join(runRoot, ".cache", "opencode"),
+		tempStateDir:  filepath.Join(runRoot, ".local", "state", "opencode"),
+	}
+	for _, dirCopy := range []struct {
+		src string
+		dst string
+	}{
+		{src: prepared.tempConfigDir, dst: runEnv.tempConfigDir},
+		{src: prepared.tempDataDir, dst: runEnv.tempDataDir},
+		{src: prepared.tempCacheDir, dst: runEnv.tempCacheDir},
+		{src: prepared.tempStateDir, dst: runEnv.tempStateDir},
+	} {
+		if err := copyDirTree(dirCopy.src, dirCopy.dst, nil); err != nil {
+			return nil, err
+		}
+	}
+	return runEnv, nil
 }
 
 func buildOpenCodePluginPhase0CommandArgs(opts *openCodePluginPhase0Options) []string {
@@ -493,11 +525,9 @@ func summarizeOpenCodePluginPhase0Run(run *openCodePluginPhase0Run) {
 			}
 			if record.EventType != "" {
 				eventSet[record.EventType] = true
-				if record.EventType == "session.created" || record.EventType == "session.idle" {
-					run.SessionEventObserved = true
-				}
 			}
 			if record.SessionID != "" && run.ObservedSessionID == "" {
+				run.SessionEventObserved = true
 				run.ObservedSessionID = record.SessionID
 				run.ObservedSessionField = record.SessionField
 			}
@@ -517,18 +547,26 @@ func summarizeOpenCodePluginPhase0Run(run *openCodePluginPhase0Run) {
 		failures = append(failures, "plugin did not observe AGENTDECK_INSTANCE_ID")
 	}
 	if !run.SessionEventObserved {
-		failures = append(failures, "plugin did not observe session.created or session.idle")
+		failures = append(failures, "plugin did not observe an event carrying a usable sessionID")
 	}
 	if run.ObservedSessionID == "" {
 		failures = append(failures, "plugin did not extract a usable sessionID")
 	}
 	if !run.HookJSONPresent {
 		failures = append(failures, "hook JSON was not written to the host-visible path")
+	} else if run.HookStatus == nil || strings.TrimSpace(run.HookStatus.SessionID) != run.ObservedSessionID {
+		failures = append(failures, "hook JSON session_id does not match observed sessionID")
+	} else {
+		run.HookJSONMatches = true
 	}
 	if !run.HookSIDPresent {
 		failures = append(failures, ".sid anchor was not written to the host-visible path")
+	} else if run.HookSIDValue != run.ObservedSessionID {
+		failures = append(failures, ".sid anchor does not match observed sessionID")
+	} else {
+		run.HookSIDMatches = true
 	}
-	if run.ExitCode != 0 && (!run.SessionEventObserved || run.ObservedSessionID == "" || !run.HookJSONPresent || !run.HookSIDPresent) {
+	if run.ExitCode != 0 && (!run.SessionEventObserved || run.ObservedSessionID == "" || !run.HookJSONMatches || !run.HookSIDMatches) {
 		failures = append(failures, fmt.Sprintf("opencode exited with code %d", run.ExitCode))
 	}
 	if run.TimedOut {
