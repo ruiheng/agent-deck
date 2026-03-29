@@ -4381,7 +4381,9 @@ func (i *Instance) buildOpenCodeForkCommand(childInstanceID string, opts *OpenCo
 	workDir := i.ProjectPath
 	envPrefix := i.buildEnvSourceCommand()
 	if strings.TrimSpace(childInstanceID) != "" {
-		envPrefix += "AGENTDECK_INSTANCE_ID=" + shellQuote(childInstanceID) + " "
+		envPrefix += "export AGENTDECK_INSTANCE_ID=" + shellQuote(childInstanceID)
+	} else {
+		envPrefix = strings.TrimSuffix(envPrefix, " && ")
 	}
 
 	// Build extra flags from options (for fork, exclude session mode flags)

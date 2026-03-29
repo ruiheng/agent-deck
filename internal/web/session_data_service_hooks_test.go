@@ -50,6 +50,32 @@ func TestDefaultLoadHookStatuses(t *testing.T) {
 	}
 }
 
+func TestDefaultLoadHookStatuses_UsesStickyAnchorWhenSessionIDMissing(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	hooksDir := session.GetHooksDir()
+	if err := os.MkdirAll(hooksDir, 0o755); err != nil {
+		t.Fatalf("mkdir hooks dir: %v", err)
+	}
+
+	session.WriteHookSessionAnchor("inst-opencode", "anchor-opencode-1")
+
+	valid := `{"status":"waiting","session_id":"","event":"session.idle","ts":1735689600}`
+	if err := os.WriteFile(filepath.Join(hooksDir, "inst-opencode.json"), []byte(valid), 0o644); err != nil {
+		t.Fatalf("write valid hook file: %v", err)
+	}
+
+	statuses := defaultLoadHookStatuses()
+	got := statuses["inst-opencode"]
+	if got == nil {
+		t.Fatalf("expected hook status for inst-opencode")
+	}
+	if got.SessionID != "anchor-opencode-1" {
+		t.Fatalf("expected sticky anchor session id, got %q", got.SessionID)
+	}
+}
+
 func TestSessionDataServiceRefreshStatusesAppliesHookData(t *testing.T) {
 	inst := &session.Instance{
 		ID: "sess-1",

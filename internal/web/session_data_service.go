@@ -198,7 +198,7 @@ func defaultLoadHookStatuses() map[string]*session.HookStatus {
 
 		hooksByInstance[instanceID] = &session.HookStatus{
 			Status:    parsed.Status,
-			SessionID: parsed.SessionID,
+			SessionID: session.ResolveHookSessionID(instanceID, parsed.SessionID),
 			Event:     parsed.Event,
 			UpdatedAt: updatedAt,
 		}

@@ -1612,7 +1612,7 @@ func TestInstance_CreateForkedOpenCodeInstance_UsesChildInstanceID(t *testing.T)
 	if strings.Contains(script, "AGENTDECK_INSTANCE_ID='"+inst.ID+"'") {
 		t.Fatalf("fork script leaked parent instance ID: %s", script)
 	}
-	if !strings.Contains(script, "AGENTDECK_INSTANCE_ID='"+forked.ID+"'") {
+	if !strings.Contains(script, "export AGENTDECK_INSTANCE_ID='"+forked.ID+"'") {
 		t.Fatalf("fork script missing child instance ID %q: %s", forked.ID, script)
 	}
 }
