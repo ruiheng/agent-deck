@@ -243,6 +243,23 @@ func registerSessionInCache(name string) {
 	sessionCacheData[name] = time.Now().Unix()
 }
 
+// unregisterSessionFromCache removes a killed session from the in-memory caches.
+// This prevents Exists() and title/window lookups from seeing stale data during
+// the cache TTL window after tmux has already removed the session.
+func unregisterSessionFromCache(name string) {
+	sessionCacheMu.Lock()
+	if sessionCacheData != nil {
+		delete(sessionCacheData, name)
+	}
+	sessionCacheMu.Unlock()
+
+	windowCacheMu.Lock()
+	if windowCacheData != nil {
+		delete(windowCacheData, name)
+	}
+	windowCacheMu.Unlock()
+}
+
 // sessionActivityFromCache gets session activity timestamp from cache
 // Returns (activity, cacheValid) - if cache is stale/empty, cacheValid is false
 func sessionActivityFromCache(name string) (int64, bool) {
@@ -420,6 +437,23 @@ func GetTerminalInfo() TerminalInfo {
 	}
 
 	return info
+}
+
+// currentTrueColorTerminalFeature returns a tmux terminal-features entry for the
+// current outer terminal when the environment explicitly advertises true color.
+// Example: TERM=foot + COLORTERM=truecolor => "foot:RGB".
+func currentTrueColorTerminalFeature() string {
+	term := strings.TrimSpace(os.Getenv("TERM"))
+	if term == "" {
+		return ""
+	}
+
+	colorterm := strings.ToLower(strings.TrimSpace(os.Getenv("COLORTERM")))
+	if colorterm != "truecolor" && colorterm != "24bit" {
+		return ""
+	}
+
+	return term + ":RGB"
 }
 
 // SupportsHyperlinks returns true if the current terminal supports OSC 8 hyperlinks
@@ -1241,6 +1275,10 @@ func (s *Session) Start(command string) error {
 		"set", "-sq", "extended-keys", "on", ";",
 		"set", "-asq", "terminal-features", ",*:hyperlinks:extkeys").Run()
 
+	if rgbFeature := currentTrueColorTerminalFeature(); rgbFeature != "" {
+		_ = exec.Command("tmux", "set", "-asq", "terminal-features", ","+rgbFeature).Run()
+	}
+
 	// Bind Ctrl+Q to detach at the tmux level as fallback for terminals where
 	// XON/XOFF flow control intercepts the key before it reaches the PTY stdin
 	// reader (e.g. iTerm2 on macOS). Only binds on agentdeck-managed sessions.
@@ -1484,6 +1522,9 @@ func (s *Session) Kill() error {
 	// Kill the tmux session
 	cmd := exec.Command("tmux", "kill-session", "-t", s.Name)
 	err := cmd.Run()
+	if err == nil {
+		unregisterSessionFromCache(s.Name)
+	}
 
 	// Verify old processes are dead; escalate to SIGKILL if needed
 	if len(oldPIDs) > 0 {

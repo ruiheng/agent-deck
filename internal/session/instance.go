@@ -2163,9 +2163,13 @@ func (i *Instance) sendMessageWhenReady(message string) error {
 				time.Sleep(verifyDelay)
 
 				unsentPromptDetected := false
+				hasVisibleComposerInput := false
 				if rawContent, captureErr := i.tmuxSession.CapturePaneFresh(); captureErr == nil {
 					content := tmux.StripANSI(rawContent)
 					unsentPromptDetected = send.HasUnsentPastedPrompt(content) || send.HasUnsentComposerPrompt(content, message)
+					if promptBody, hasPrompt := send.CurrentComposerPrompt(content); hasPrompt && send.NormalizePromptText(promptBody) != "" {
+						hasVisibleComposerInput = true
+					}
 				}
 				verifiedStatus, statusErr := i.tmuxSession.GetStatus()
 
@@ -2195,6 +2199,10 @@ func (i *Instance) sendMessageWhenReady(message string) error {
 						}
 					} else {
 						waitingNoMarkerChecks = 0
+						if hasVisibleComposerInput {
+							_ = i.tmuxSession.SendEnter()
+							continue
+						}
 						// We haven't observed any post-send activity yet.
 						// Nudge Enter aggressively in the early window (every
 						// iteration for first 5 retries) then every 2nd iteration.
