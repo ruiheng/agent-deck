@@ -374,11 +374,10 @@ func writeCostEvent(instanceID string, rawPayload []byte) {
 		logCostDebug("rejected transcript_path with path traversal: %s", stop.TranscriptPath)
 		return
 	}
-	home, homeErr := os.UserHomeDir()
-	if homeErr == nil {
-		claudeDir := filepath.Join(home, ".claude")
-		if !strings.HasPrefix(cleanPath, claudeDir) {
-			logCostDebug("rejected transcript_path outside ~/.claude: %s", stop.TranscriptPath)
+	claudeDir := getClaudeConfigDirForHooks()
+	if claudeDir != "" {
+		if !pathWithinBase(cleanPath, claudeDir) {
+			logCostDebug("rejected transcript_path outside Claude config dir %s: %s", claudeDir, stop.TranscriptPath)
 			return
 		}
 	}
@@ -445,6 +444,21 @@ func writeCostEvent(instanceID string, rawPayload []byte) {
 		return
 	}
 	logCostDebug("wrote cost event: %s model=%s in=%d out=%d", finalPath, cf.Model, cf.InputTokens, cf.OutputTokens)
+}
+
+func pathWithinBase(path, base string) bool {
+	rel, err := filepath.Rel(base, path)
+	if err != nil {
+		return false
+	}
+	rel = filepath.Clean(rel)
+	if rel == "." {
+		return true
+	}
+	if rel == ".." || strings.HasPrefix(rel, ".."+string(os.PathSeparator)) {
+		return false
+	}
+	return true
 }
 
 // readLastLine reads the last non-empty line from a file.

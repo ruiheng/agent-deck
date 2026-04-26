@@ -33,7 +33,7 @@ type Config struct {
 
 // GetAgentDeckDir returns the base agent-deck directory (~/.agent-deck)
 func GetAgentDeckDir() (string, error) {
-	homeDir, err := os.UserHomeDir()
+	homeDir, err := userHomeDir()
 	if err != nil {
 		return "", fmt.Errorf("failed to get home directory: %w", err)
 	}

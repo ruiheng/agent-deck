@@ -3,6 +3,7 @@ package main
 import (
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -27,6 +28,20 @@ func TestMain(m *testing.M) {
 
 	// Force _test profile for all tests in this package
 	os.Setenv("AGENTDECK_PROFILE", "_test")
+	os.Setenv("AGENTDECK_TEST_USE_HOME", "1")
+
+	testHome, err := os.MkdirTemp("", "agentdeck-cmd-home-")
+	if err != nil {
+		panic(err)
+	}
+	_ = os.Setenv("HOME", testHome)
+	_ = os.Setenv("USERPROFILE", testHome)
+	if vol := filepath.VolumeName(testHome); vol != "" {
+		_ = os.Setenv("HOMEDRIVE", vol)
+		if rest := strings.TrimPrefix(testHome, vol); rest != "" {
+			_ = os.Setenv("HOMEPATH", rest)
+		}
+	}
 
 	// Run tests
 	code := m.Run()
@@ -35,6 +50,7 @@ func TestMain(m *testing.M) {
 	// This prevents RAM waste from lingering test sessions
 	// See CLAUDE.md: "2026-01-20 Incident: 20+ Test-Skip-Regen sessions orphaned, wasting ~3GB RAM"
 	cleanupTestSessions()
+	_ = os.RemoveAll(testHome)
 
 	os.Exit(code)
 }

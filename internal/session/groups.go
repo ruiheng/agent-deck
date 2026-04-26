@@ -1171,7 +1171,7 @@ func resolveGroupDefaultPath(defaultPath string) string {
 
 	// Expand ~ for user-supplied paths.
 	if defaultPath == "~" || strings.HasPrefix(defaultPath, "~/") {
-		if home, err := os.UserHomeDir(); err == nil {
+		if home, err := userHomeDir(); err == nil {
 			if defaultPath == "~" {
 				defaultPath = home
 			} else {

@@ -33,6 +33,7 @@ import (
 	"github.com/asheshgoplani/agent-deck/internal/git"
 	"github.com/asheshgoplani/agent-deck/internal/logging"
 	"github.com/asheshgoplani/agent-deck/internal/session"
+	"github.com/asheshgoplani/agent-deck/internal/sessionbackend"
 	"github.com/asheshgoplani/agent-deck/internal/statedb"
 	"github.com/asheshgoplani/agent-deck/internal/sysinfo"
 	"github.com/asheshgoplani/agent-deck/internal/tmux"
@@ -553,6 +554,7 @@ type refreshMsg struct{}
 type statusUpdateMsg struct {
 	attachedSessionID string // Session that just returned from attach (if local attach)
 	attachedWorkDir   string // pane_current_path captured after attach returns
+	err               error
 } // Triggers immediate status update without reloading
 
 type attachReturnRefreshMsg struct{}
@@ -2582,7 +2584,7 @@ func (h *Home) refreshSessionRenderSnapshot(instances []*session.Instance) {
 			continue
 		}
 		state := sessionRenderState{
-			status: inst.GetStatusThreadSafe(),
+			status: effectiveDisplayStatus(inst, inst.GetStatusThreadSafe()),
 			tool:   inst.GetToolThreadSafe(),
 		}
 		// Look up pane title from the already-refreshed tmux cache.
@@ -2607,7 +2609,7 @@ func (h *Home) getSessionRenderState(inst *session.Instance) sessionRenderState 
 	}
 	// Fallback for newly-added sessions before snapshot refresh.
 	return sessionRenderState{
-		status: inst.GetStatusThreadSafe(),
+		status: effectiveDisplayStatus(inst, inst.GetStatusThreadSafe()),
 		tool:   inst.GetToolThreadSafe(),
 	}
 }
@@ -4169,6 +4171,10 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 		h.isAttaching.Store(false) // Atomic store for thread safety
 		now := time.Now()
 		h.beginAttachReturnGrace(now)
+		if msg.err != nil {
+			h.setError(fmt.Errorf("attach failed: %w", msg.err))
+			return h, tea.EnableMouseCellMotion
+		}
 
 		selectedBefore := h.captureSelectedItemIdentity()
 		h.rebuildFlatItemsPreservingSelection(selectedBefore)
@@ -5717,16 +5723,7 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if h.cursor < len(h.flatItems) {
 			item := h.flatItems[h.cursor]
 			if item.Type == session.ItemTypeSession && item.Session != nil {
-				if item.Session.Exists() {
-					// Pane dead (process exited) — restart instead of attaching to dead pane.
-					tmuxSess := item.Session.GetTmuxSession()
-					if tmuxSess != nil && tmuxSess.IsPaneDead() {
-						if !h.hasActiveAnimation(item.Session.ID) {
-							h.resumingSessions[item.Session.ID] = time.Now()
-							return h, h.restartSession(item.Session)
-						}
-						return h, nil
-					}
+				if shouldAttachExistingSession(item.Session) {
 					return h, h.attachSession(item.Session)
 				}
 				// Session exited (tmux session gone) — auto-restart it.
@@ -5773,7 +5770,7 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 						}
 
 						h.isAttaching.Store(true)
-						return h, tea.Exec(attachWindowCmd{session: tmuxSess, windowIndex: item.WindowIndex, detachByte: h.detachByte()}, func(err error) tea.Msg {
+						return h, tea.Exec(attachWindowCmd{session: parentInst.GetSessionBackend(), windowIndex: item.WindowIndex, detachByte: h.detachByte()}, func(err error) tea.Msg {
 							h.isAttaching.Store(false)
 							parentInst.MarkAccessed()
 							return statusUpdateMsg{}
@@ -6129,7 +6126,7 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			}
 			termSession := &tmux.Session{Name: tmuxName}
 			h.isAttaching.Store(true)
-			return h, tea.Exec(attachCmd{session: termSession, detachByte: h.detachByte()}, func(err error) tea.Msg {
+			return h, tea.Exec(attachCmd{session: sessionbackend.NewBackend(termSession), detachByte: h.detachByte()}, func(err error) tea.Msg {
 				h.isAttaching.Store(false)
 				return statusUpdateMsg{}
 			})
@@ -8644,7 +8641,7 @@ func (h *Home) attachSession(inst *session.Instance) tea.Cmd {
 	// On return, immediately update all session statuses (don't reload from storage
 	// which would lose the tmux session state)
 	h.isAttaching.Store(true) // Prevent View() output only during actual attach transition
-	return tea.Exec(attachCmd{session: tmuxSess, detachByte: h.detachByte()}, func(err error) tea.Msg {
+	return tea.Exec(attachCmd{session: inst.GetSessionBackend(), detachByte: h.detachByte()}, func(err error) tea.Msg {
 		// CRITICAL: Set isAttaching to false BEFORE returning the message
 		// This prevents a race condition where View() could be called with
 		// isAttaching=true before Update() processes statusUpdateMsg,
@@ -8661,6 +8658,10 @@ func (h *Home) attachSession(inst *session.Instance) tea.Cmd {
 		// NOTE: We don't acknowledge on detach anymore.
 		// Acknowledgment happens on ATTACH (only if session was waiting/yellow).
 		// This lets running sessions stay green through attach/detach cycles.
+
+		if err != nil {
+			return statusUpdateMsg{attachedSessionID: inst.ID, err: err}
+		}
 
 		// Capture current pane CWD after attach returns for optional path follow.
 		currentWorkDir := strings.TrimSpace(tmuxSess.GetWorkDir())
@@ -8723,7 +8724,7 @@ func (h *Home) followAttachReturnCwd(msg statusUpdateMsg) {
 
 // attachCmd implements tea.ExecCommand for custom PTY attach
 type attachCmd struct {
-	session    *tmux.Session
+	session    sessionbackend.SessionBackend
 	detachByte byte
 }
 
@@ -8784,7 +8785,7 @@ func (r remoteCreateAndAttachCmd) SetStderr(writer io.Writer) {}
 
 // attachWindowCmd implements tea.ExecCommand for attaching to a specific tmux window
 type attachWindowCmd struct {
-	session     *tmux.Session
+	session     sessionbackend.SessionBackend
 	windowIndex int
 	detachByte  byte
 }
@@ -8812,7 +8813,7 @@ func (h *Home) attachRemoteSession(remoteName, sessionID string) tea.Cmd {
 	h.isAttaching.Store(true)
 	return tea.Exec(remoteAttachCmd{runner: runner, sessionID: sessionID}, func(err error) tea.Msg {
 		h.isAttaching.Store(false)
-		return statusUpdateMsg{}
+		return statusUpdateMsg{err: err}
 	})
 }
 
@@ -11890,7 +11891,7 @@ func (h *Home) renderPreviewPane(width, height int) string {
 
 	// Session info header box
 	// Cache status once to avoid races with background status updates
-	selectedStatus := selected.GetStatusThreadSafe()
+	selectedStatus := effectiveDisplayStatus(selected, selected.GetStatusThreadSafe())
 	statusIcon := "○"
 	statusColor := ColorTextDim
 	switch selectedStatus {
@@ -12485,8 +12486,10 @@ func (h *Home) renderPreviewPane(width, height int) string {
 		return content
 	}
 
-	// Special handling for error state - crash/unexpected failure with diagnostic guidance
-	if selectedStatus == session.StatusError {
+	// Special handling for error state - crash/unexpected failure with diagnostic guidance.
+	// Status persistence can lag behind the real tmux/psmux runtime on Windows,
+	// so only show the missing-session panel when the session is actually gone.
+	if shouldRenderMissingTmuxError(selected, selectedStatus) {
 		errorHeader := renderSectionDivider("Session Error", width-4)
 		b.WriteString(errorHeader)
 		b.WriteString("\n\n")
@@ -12754,12 +12757,11 @@ func (h *Home) renderPreviewPane(width, height int) string {
 		headerLines := strings.Count(currentContent, "\n") + 1 // +1 for the current line
 		lines := strings.Split(preview, "\n")
 
-		// Strip trailing empty lines BEFORE truncation
-		// This ensures we show actual content, not empty trailing lines when space is limited
-		// (Terminal output often ends with empty lines at cursor position)
-		for len(lines) > 0 && strings.TrimSpace(lines[len(lines)-1]) == "" {
-			lines = lines[:len(lines)-1]
-		}
+		// Strip trailing visually empty lines BEFORE truncation.
+		// Some tools (notably Codex) leave background-colored spacer rows that are
+		// non-empty at the raw ANSI layer but render as blank lines. If we keep
+		// them, the preview can collapse to only the "N more lines above" marker.
+		lines = trimTrailingVisuallyEmptyLines(lines)
 
 		// If all lines were empty, show empty indicator
 		if len(lines) == 0 {
@@ -13582,6 +13584,113 @@ func (h *Home) getOtherActiveSessions(excludeID string) []*session.Instance {
 		result = append(result, inst)
 	}
 	return result
+}
+
+func shouldAttachExistingSession(inst *session.Instance) bool {
+	if inst == nil {
+		return false
+	}
+	displayStatus := effectiveDisplayStatus(inst, inst.GetStatusThreadSafe())
+	if displayStatus == session.StatusStopped {
+		return false
+	}
+	if hasConnectedConversation(inst) {
+		tmuxSess := inst.GetTmuxSession()
+		return tmuxSess == nil || !tmuxSess.IsPaneDead()
+	}
+	if shouldRenderMissingTmuxError(inst, displayStatus) {
+		return false
+	}
+
+	// For ordinary sessions, prefer attach over restart even if Exists()
+	// momentarily reports false. Windows + psmux can produce transient false
+	// negatives here, and attach itself is the more authoritative operation.
+	tmuxSess := inst.GetTmuxSession()
+	if tmuxSess != nil && tmuxSess.IsPaneDead() {
+		return false
+	}
+	return true
+}
+
+func shouldRenderMissingTmuxError(inst *session.Instance, status session.Status) bool {
+	if status != session.StatusError || inst == nil {
+		return false
+	}
+	if shouldTreatConnectedSessionAsTemporarilyAlive(inst) {
+		return false
+	}
+	return !inst.Exists()
+}
+
+func effectiveDisplayStatus(inst *session.Instance, status session.Status) session.Status {
+	if status != session.StatusError || inst == nil {
+		return status
+	}
+	if shouldTreatConnectedSessionAsTemporarilyAlive(inst) {
+		return session.StatusWaiting
+	}
+	return status
+}
+
+func hasConnectedConversation(inst *session.Instance) bool {
+	if inst == nil {
+		return false
+	}
+	if session.IsClaudeCompatible(inst.Tool) && inst.ClaudeSessionID != "" {
+		return true
+	}
+	if inst.GeminiSessionID != "" || inst.OpenCodeSessionID != "" || inst.CodexSessionID != "" {
+		return true
+	}
+	return false
+}
+
+func shouldTreatConnectedSessionAsTemporarilyAlive(inst *session.Instance) bool {
+	if inst == nil || !hasConnectedConversation(inst) {
+		return false
+	}
+	tmuxSess := inst.GetTmuxSession()
+	if tmuxSess == nil {
+		return false
+	}
+	if tmuxSess.IsPaneDead() || !tmuxSess.ExistsWithConfirmation() {
+		return false
+	}
+
+	if hookStatus, fresh := inst.GetHookStatus(); fresh {
+		switch hookStatus {
+		case "running", "waiting", "idle":
+			return true
+		case "dead":
+			return false
+		}
+	}
+
+	const recentDetectionGrace = 20 * time.Second
+	var detectedAt time.Time
+	switch {
+	case session.IsClaudeCompatible(inst.Tool):
+		detectedAt = inst.ClaudeDetectedAt
+	case inst.Tool == "gemini":
+		detectedAt = inst.GeminiDetectedAt
+	case inst.Tool == "opencode":
+		detectedAt = inst.OpenCodeDetectedAt
+	case inst.Tool == "codex":
+		detectedAt = inst.CodexDetectedAt
+	}
+
+	return !detectedAt.IsZero() && time.Since(detectedAt) < recentDetectionGrace
+}
+
+func trimTrailingVisuallyEmptyLines(lines []string) []string {
+	for len(lines) > 0 {
+		last := stripControlCharsPreserveANSI(lines[len(lines)-1])
+		if strings.TrimSpace(ansi.Strip(last)) != "" {
+			break
+		}
+		lines = lines[:len(lines)-1]
+	}
+	return lines
 }
 
 // getSessionContent retrieves displayable content from a session.

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -311,6 +312,9 @@ func TestImportChannels_RejectsSymlink(t *testing.T) {
 	// Create a symlink to it
 	linkPath := filepath.Join(dir, "link-channels.json")
 	if err := os.Symlink(realPath, linkPath); err != nil {
+		if runtime.GOOS == "windows" {
+			t.Skipf("symlink creation unavailable in this Windows test environment: %v", err)
+		}
 		t.Fatalf("create symlink: %v", err)
 	}
 
@@ -494,6 +498,12 @@ func TestWatcherInstallSkill_DirMode(t *testing.T) {
 		if err != nil {
 			t.Fatalf("stat %s: %v", d, err)
 		}
+		if runtime.GOOS == "windows" {
+			if !info.IsDir() {
+				t.Errorf("%s should be a directory", d)
+			}
+			continue
+		}
 		mode := info.Mode().Perm()
 		if mode != 0o700 {
 			t.Errorf("dir %s has mode %04o, want 0700", d, mode)
@@ -506,6 +516,12 @@ func TestWatcherInstallSkill_DirMode(t *testing.T) {
 		info, err := os.Stat(filepath.Join(poolDir, f))
 		if err != nil {
 			t.Fatalf("stat %s: %v", f, err)
+		}
+		if runtime.GOOS == "windows" {
+			if info.IsDir() {
+				t.Errorf("%s should be a file", f)
+			}
+			continue
 		}
 		mode := info.Mode().Perm()
 		if mode != 0o644 {

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"time"
 )
@@ -53,6 +54,10 @@ func defaultState() *State {
 // Inlined here to avoid importing internal/session, which is a heavyweight
 // package and would create a circular import risk if session ever imports feedback.
 func agentDeckDir() (string, error) {
+	if home := os.Getenv("HOME"); home != "" &&
+		(runtime.GOOS != "windows" || os.Getenv("AGENTDECK_TEST_USE_HOME") == "1") {
+		return filepath.Join(home, ".agent-deck"), nil
+	}
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return "", fmt.Errorf("feedback: get home dir: %w", err)

@@ -273,6 +273,14 @@ func ResolveSession(identifier string, instances []*session.Instance) (*session.
 	return nil, fmt.Sprintf("session '%s' not found", identifier), ErrCodeNotFound
 }
 
+// currentTmuxClientCommand intentionally preserves TMUX/PSMUX_SESSION so
+// display-message without an explicit -t still resolves against the currently
+// attached client/session. This is required for commands like `session current`
+// when running inside a live Windows psmux session.
+func currentTmuxClientCommand(args ...string) *exec.Cmd {
+	return exec.Command("tmux", args...)
+}
+
 // GetCurrentSessionID detects the current agent-deck session from tmux environment
 // Returns session ID or empty string if not in an agent-deck session
 func GetCurrentSessionID() string {
@@ -282,7 +290,7 @@ func GetCurrentSessionID() string {
 	}
 
 	// Get current tmux session name
-	cmd := exec.Command("tmux", "display-message", "-p", "#S")
+	cmd := currentTmuxClientCommand("display-message", "-p", "#S")
 	output, err := cmd.Output()
 	if err != nil {
 		return ""

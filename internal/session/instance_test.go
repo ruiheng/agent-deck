@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"regexp"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -97,6 +98,29 @@ func TestInstance_UpdateClaudeSession(t *testing.T) {
 
 	// After update with no Claude running, should have no session ID
 	// (In integration test, would verify actual detection)
+}
+
+func TestShouldAdoptDetectedTool(t *testing.T) {
+	tests := []struct {
+		name         string
+		currentTool  string
+		detectedTool string
+		want         bool
+	}{
+		{name: "empty adopts codex", currentTool: "", detectedTool: "codex", want: true},
+		{name: "codex keeps codex", currentTool: "codex", detectedTool: "codex", want: true},
+		{name: "shell stays shell when codex seen in content", currentTool: "shell", detectedTool: "codex", want: false},
+		{name: "shell may remain shell", currentTool: "shell", detectedTool: "shell", want: true},
+		{name: "custom tool ignores shell fallback", currentTool: "openclaw", detectedTool: "shell", want: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := shouldAdoptDetectedTool(tt.currentTool, tt.detectedTool); got != tt.want {
+				t.Fatalf("shouldAdoptDetectedTool(%q, %q) = %v, want %v", tt.currentTool, tt.detectedTool, got, tt.want)
+			}
+		})
+	}
 }
 
 // TestInstance_Fork tests the Fork method
@@ -443,7 +467,11 @@ func TestBuildClaudeCommand_ExplicitConfig(t *testing.T) {
 
 	// When CLAUDE_CONFIG_DIR IS explicitly configured via env var,
 	// the command SHOULD include it (and use default "claude" command)
-	if !strings.Contains(cmd, "CLAUDE_CONFIG_DIR=/tmp/test-claude-config") {
+	if runtime.GOOS == "windows" {
+		if !strings.Contains(cmd, "$env:CLAUDE_CONFIG_DIR='/tmp/test-claude-config'") {
+			t.Errorf("Should contain Windows PowerShell CLAUDE_CONFIG_DIR when explicitly configured, got: %s", cmd)
+		}
+	} else if !strings.Contains(cmd, "CLAUDE_CONFIG_DIR=/tmp/test-claude-config") {
 		t.Errorf("Should contain CLAUDE_CONFIG_DIR when explicitly configured, got: %s", cmd)
 	}
 
@@ -458,12 +486,25 @@ func TestBuildClaudeCommand_ExplicitConfig(t *testing.T) {
 	if strings.Contains(cmd, "uuidgen") {
 		t.Errorf("Should NOT use shell uuidgen (replaced with Go-side UUID), got: %s", cmd)
 	}
+
+	if runtime.GOOS == "windows" {
+		if !strings.Contains(cmd, "$env:AGENTDECK_INSTANCE_ID=") {
+			t.Errorf("Windows Claude command should set AGENTDECK_INSTANCE_ID via PowerShell env assignment, got: %s", cmd)
+		}
+		if strings.Contains(cmd, "export AGENTDECK_INSTANCE_ID") || strings.Contains(cmd, "exec claude") {
+			t.Errorf("Windows Claude command should not contain POSIX launch fragments, got: %s", cmd)
+		}
+	}
 }
 
 func TestBuildClaudeCommand_CustomAlias(t *testing.T) {
 	origHome := os.Getenv("HOME")
+	origUserProfile := os.Getenv("USERPROFILE")
 	tmpDir := t.TempDir()
 	os.Setenv("HOME", tmpDir)
+	if runtime.GOOS == "windows" {
+		os.Setenv("USERPROFILE", tmpDir)
+	}
 
 	// Create ~/.agent-deck/config.toml with custom command
 	configDir := filepath.Join(tmpDir, ".agent-deck")
@@ -481,6 +522,9 @@ config_dir = "~/.claude-work"
 	ClearUserConfigCache()
 	defer func() {
 		os.Setenv("HOME", origHome)
+		if runtime.GOOS == "windows" {
+			os.Setenv("USERPROFILE", origUserProfile)
+		}
 		ClearUserConfigCache()
 	}()
 
@@ -491,8 +535,12 @@ config_dir = "~/.claude-work"
 		t.Errorf("Should use custom command 'cdw' from config, got: %s", cmd)
 	}
 
-	// Should include CLAUDE_CONFIG_DIR since config_dir is explicitly set
-	if !strings.Contains(cmd, "CLAUDE_CONFIG_DIR=") {
+	// Custom commands should not be forced to use CLAUDE_CONFIG_DIR inline on Windows.
+	if runtime.GOOS == "windows" {
+		if strings.Contains(cmd, "CLAUDE_CONFIG_DIR=") || strings.Contains(cmd, "$env:CLAUDE_CONFIG_DIR=") {
+			t.Errorf("Windows custom Claude command should not force CLAUDE_CONFIG_DIR, got: %s", cmd)
+		}
+	} else if !strings.Contains(cmd, "CLAUDE_CONFIG_DIR=") {
 		t.Errorf("Should include CLAUDE_CONFIG_DIR for capture-resume commands, got: %s", cmd)
 	}
 
@@ -502,6 +550,74 @@ config_dir = "~/.claude-work"
 	}
 	if strings.Contains(cmd, `--session-id "$session_id"`) {
 		t.Errorf("Should NOT use shell variable for session ID, got: %s", cmd)
+	}
+
+	if runtime.GOOS == "windows" {
+		if strings.Contains(cmd, "$env:CLAUDE_CONFIG_DIR") {
+			t.Errorf("Windows custom Claude command should not force CLAUDE_CONFIG_DIR, got: %s", cmd)
+		}
+	}
+}
+
+func TestBuildClaudeCommand_WindowsWrappedSessionKeepsPosixPrefix(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("windows-specific behavior")
+	}
+
+	origHome := os.Getenv("HOME")
+	tmpDir := t.TempDir()
+	os.Setenv("HOME", tmpDir)
+	os.Setenv("CLAUDE_CONFIG_DIR", "/tmp/test-claude-config")
+	ClearUserConfigCache()
+	defer func() {
+		os.Unsetenv("CLAUDE_CONFIG_DIR")
+		os.Setenv("HOME", origHome)
+		ClearUserConfigCache()
+	}()
+
+	inst := NewInstanceWithTool("wrapped", "/tmp/test", "claude")
+	inst.Wrapper = "{command}"
+	cmd := inst.buildClaudeCommand("claude")
+
+	if !strings.Contains(cmd, "AGENTDECK_INSTANCE_ID=") {
+		t.Fatalf("wrapped Windows Claude command should retain POSIX inline env prefix, got: %s", cmd)
+	}
+	if strings.Contains(cmd, "$env:AGENTDECK_INSTANCE_ID") {
+		t.Fatalf("wrapped Windows Claude command should not use PowerShell env prefix, got: %s", cmd)
+	}
+}
+
+func TestBuildClaudeCommand_WindowsSSHSessionKeepsPosixPrefix(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("windows-specific behavior")
+	}
+
+	inst := NewInstanceWithTool("ssh", "/tmp/test", "claude")
+	inst.SSHHost = "user@example.com"
+	cmd := inst.buildClaudeCommand("claude")
+
+	if !strings.Contains(cmd, "AGENTDECK_INSTANCE_ID=") {
+		t.Fatalf("SSH Windows Claude command should retain POSIX inline env prefix, got: %s", cmd)
+	}
+	if strings.Contains(cmd, "$env:AGENTDECK_INSTANCE_ID") {
+		t.Fatalf("SSH Windows Claude command should not use PowerShell env prefix, got: %s", cmd)
+	}
+}
+
+func TestBuildClaudeCommand_WindowsSandboxSessionKeepsPosixPrefix(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("windows-specific behavior")
+	}
+
+	inst := NewInstanceWithTool("sandbox", "/tmp/test", "claude")
+	inst.Sandbox = &SandboxConfig{Enabled: true, Image: "busybox"}
+	cmd := inst.buildClaudeCommand("claude")
+
+	if !strings.Contains(cmd, "AGENTDECK_INSTANCE_ID=") {
+		t.Fatalf("sandbox Windows Claude command should retain POSIX inline env prefix, got: %s", cmd)
+	}
+	if strings.Contains(cmd, "$env:AGENTDECK_INSTANCE_ID") {
+		t.Fatalf("sandbox Windows Claude command should not use PowerShell env prefix, got: %s", cmd)
 	}
 }
 
@@ -2464,6 +2580,59 @@ func TestCollectDockerEnvVars_ColorFGBGFallback(t *testing.T) {
 	require.NotEmpty(t, result["COLORFGBG"])
 }
 
+func TestPrepareCommand_WindowsWrapperUsesPowerShell(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("windows-specific wrapper behavior")
+	}
+
+	inst := &Instance{
+		Tool:    "shell",
+		Wrapper: "{command}",
+	}
+
+	wrapped, _, err := inst.prepareCommand("echo hi")
+	if err != nil {
+		t.Fatalf("prepareCommand() unexpected error: %v", err)
+	}
+	if !strings.Contains(wrapped, "bash -c") {
+		t.Fatalf("prepareCommand() should preserve POSIX bash wrapper on Windows, got %q", wrapped)
+	}
+}
+
+func TestPrepareCommand_WindowsSSHWrapperUsesBash(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("windows-specific wrapper behavior")
+	}
+
+	inst := &Instance{
+		Tool:    "shell",
+		Wrapper: "{command}",
+		SSHHost: "user@example.com",
+	}
+
+	wrapped, _, err := inst.prepareCommand("echo hi")
+	if err != nil {
+		t.Fatalf("prepareCommand() unexpected error: %v", err)
+	}
+	if !strings.Contains(wrapped, "bash -c") {
+		t.Fatalf("prepareCommand() should preserve POSIX bash wrapper for SSH, got %q", wrapped)
+	}
+	if strings.Contains(wrapped, "EncodedCommand") {
+		t.Fatalf("prepareCommand() should not use PowerShell wrapping for SSH, got %q", wrapped)
+	}
+}
+
+func TestShouldRunCommandAsInitialProcess_WindowsClaudeFalse(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("windows-specific behavior")
+	}
+
+	inst := &Instance{Tool: "claude"}
+	if inst.shouldRunCommandAsInitialProcess() {
+		t.Fatal("shouldRunCommandAsInitialProcess() = true, want false for Claude on Windows")
+	}
+}
+
 func TestNewSandboxConfig(t *testing.T) {
 	t.Parallel()
 
@@ -2567,7 +2736,7 @@ func TestBuildClaudeCommand_ExportsInstanceID(t *testing.T) {
 	cmd := inst.buildClaudeCommand("claude")
 
 	// AGENTDECK_INSTANCE_ID should be in the command as an env var prefix
-	expectedPrefix := "AGENTDECK_INSTANCE_ID=" + inst.ID
+	expectedPrefix := shellSetEnvCommand("AGENTDECK_INSTANCE_ID", inst.ID)
 	if !strings.Contains(cmd, expectedPrefix) {
 		t.Errorf("Command should contain %q, got: %s", expectedPrefix, cmd)
 	}
@@ -2594,7 +2763,7 @@ func TestBuildClaudeResumeCommand_ExportsInstanceID(t *testing.T) {
 
 	cmd := inst.buildClaudeResumeCommand()
 
-	expectedPrefix := "AGENTDECK_INSTANCE_ID=" + inst.ID
+	expectedPrefix := shellSetEnvCommand("AGENTDECK_INSTANCE_ID", inst.ID)
 	if !strings.Contains(cmd, expectedPrefix) {
 		t.Errorf("Resume command should contain %q, got: %s", expectedPrefix, cmd)
 	}
@@ -2782,6 +2951,36 @@ func writeCodexSessionFile(t *testing.T, codexHome, sessionID, cwd string) strin
 		t.Fatalf("write session file: %v", err)
 	}
 	return filePath
+}
+
+func TestNormalizePath_WindowsPreservesCase(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("Windows-only path normalization")
+	}
+
+	got := normalizePath(`C:\Users\Test\Proj`)
+	want := `C:\Users\Test\Proj`
+	if got != want {
+		t.Fatalf("normalizePath() = %q, want %q", got, want)
+	}
+}
+
+func TestCodexSessionMatchesProject_WindowsDoesNotFoldCase(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("Windows-only Codex path matching")
+	}
+
+	codexHome := t.TempDir()
+	projectPath := `C:\Users\Test\Proj`
+	sessionFile := writeCodexSessionFile(t, codexHome, "33333333-3333-4333-8333-333333333333", `c:\users\test\proj`)
+
+	match, known := codexSessionMatchesProject(sessionFile, normalizePath(projectPath))
+	if !known {
+		t.Fatal("codexSessionMatchesProject should detect project metadata")
+	}
+	if match {
+		t.Fatalf("codexSessionMatchesProject should keep %q and %q distinct on Windows", projectPath, `c:\users\test\proj`)
+	}
 }
 
 // TestInstance_CodexSessionExclusion_SameProjectPath verifies that two

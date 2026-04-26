@@ -4,6 +4,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/asheshgoplani/agent-deck/internal/sessionbackend"
 	"github.com/asheshgoplani/agent-deck/internal/tmux"
 )
 
@@ -75,6 +76,7 @@ func DiscoverExistingTmuxSessions(existingInstances []*Instance) ([]*Instance, e
 			Tool:           tool,
 			TmuxSocketName: sess.SocketName, // Inherit from the tmux session we discovered (#687)
 			tmuxSession:    sess,
+			backend:        sessionbackend.NewBackend(sess),
 		}
 		_ = inst.UpdateStatus()
 		discovered = append(discovered, inst)

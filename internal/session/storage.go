@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/asheshgoplani/agent-deck/internal/logging"
+	"github.com/asheshgoplani/agent-deck/internal/sessionbackend"
 	"github.com/asheshgoplani/agent-deck/internal/statedb"
 	"github.com/asheshgoplani/agent-deck/internal/tmux"
 )
@@ -881,6 +882,7 @@ func (s *Storage) convertToInstances(data *StorageData) ([]*Instance, []*GroupDa
 			AdditionalPaths:    instData.AdditionalPaths,
 			MultiRepoTempDir:   instData.MultiRepoTempDir,
 			tmuxSession:        tmuxSess,
+			backend:            sessionbackend.NewBackend(tmuxSess),
 		}
 		// Convert multi-repo worktree data
 		for _, wt := range instData.MultiRepoWorktrees {

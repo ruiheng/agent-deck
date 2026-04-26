@@ -1,3 +1,5 @@
+//go:build !windows
+
 // Package session: Session persistence regression test suite.
 //
 // Purpose
@@ -114,26 +116,6 @@ func writeStubClaudeBinary(t *testing.T, dir string) string {
 	}
 	t.Cleanup(func() { _ = os.Remove(path) })
 	return dir
-}
-
-// isolatedHomeDir creates a fresh temp HOME with ~/.agent-deck/,
-// ~/.agent-deck/hooks/, and ~/.claude/projects/ pre-created, then sets
-// HOME to that path for the duration of the test and clears the
-// agent-deck user-config cache so tests exercise the default branch of
-// GetTmuxSettings(). A t.Cleanup is registered that clears the cache again
-// once HOME is restored, so config state does not leak to adjacent tests.
-func isolatedHomeDir(t *testing.T) string {
-	t.Helper()
-	home := t.TempDir()
-	for _, sub := range []string{".agent-deck", ".agent-deck/hooks", ".claude/projects"} {
-		if err := os.MkdirAll(filepath.Join(home, sub), 0o755); err != nil {
-			t.Fatalf("isolatedHomeDir mkdir %s: %v", sub, err)
-		}
-	}
-	t.Setenv("HOME", home)
-	ClearUserConfigCache()
-	t.Cleanup(func() { ClearUserConfigCache() })
-	return home
 }
 
 // TestPersistence_LinuxDefaultIsUserScope pins REQ-1: on a Linux host where

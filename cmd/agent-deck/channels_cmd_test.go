@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -32,7 +33,11 @@ func channelsCLIBinary(t *testing.T) string {
 	if err != nil {
 		t.Fatalf("mkdir bin tmp: %v", err)
 	}
-	bin := filepath.Join(binDir, "agent-deck-test")
+	binName := "agent-deck-test"
+	if runtime.GOOS == "windows" {
+		binName += ".exe"
+	}
+	bin := filepath.Join(binDir, binName)
 
 	build := exec.Command("go", "build", "-o", bin, ".")
 	if out, err := build.CombinedOutput(); err != nil {
@@ -69,6 +74,9 @@ func runAgentDeck(
 		if strings.HasPrefix(kv, "HOME=") {
 			continue
 		}
+		if strings.HasPrefix(kv, "USERPROFILE=") {
+			continue
+		}
 		// Strip CLAUDE_CONFIG_DIR so the test's isolated HOME/.claude is the
 		// effective Claude config dir — otherwise session search leaks into
 		// the developer's real ~/.claude/projects tree. Added for #483.
@@ -79,6 +87,7 @@ func runAgentDeck(
 	}
 	env = append(env,
 		"HOME="+home,
+		"USERPROFILE="+home,
 		"AGENTDECK_PROFILE=ch_support_test",
 		"TERM=dumb",
 	)

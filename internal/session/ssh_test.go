@@ -1,6 +1,7 @@
 package session
 
 import (
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -89,5 +90,25 @@ func TestSSHRunnerBuildRemoteCommand_QuotesRemoteSessionOutputID(t *testing.T) {
 				t.Fatalf("buildRemoteCommand mismatch\nwant: %s\ngot:  %s", want, got)
 			}
 		})
+	}
+}
+
+func TestSSHRunnerSSHBaseArgs(t *testing.T) {
+	runner := &SSHRunner{Host: "devbox", AgentDeckPath: "agent-deck", Profile: "default"}
+	args := runner.sshBaseArgs("agent-deck list --json")
+	joined := strings.Join(args, " ")
+	if runtime.GOOS != "windows" {
+		if !strings.Contains(joined, "ControlMaster=auto") {
+			t.Fatalf("sshBaseArgs should include ControlMaster, got %q", joined)
+		}
+		if !strings.Contains(joined, "ControlPersist=600") {
+			t.Fatalf("sshBaseArgs should include ControlPersist, got %q", joined)
+		}
+	}
+	if !strings.Contains(joined, "ConnectTimeout=10") {
+		t.Fatalf("sshBaseArgs should include ConnectTimeout, got %q", joined)
+	}
+	if runtime.GOOS == "windows" && !strings.Contains(joined, "BatchMode=yes") {
+		t.Fatalf("windows sshBaseArgs should include BatchMode, got %q", joined)
 	}
 }

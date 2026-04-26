@@ -1,10 +1,12 @@
 package session
 
 import (
+	"bufio"
 	"fmt"
 	"log/slog"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
 )
@@ -54,7 +56,7 @@ func (i *Instance) buildEnvSourceCommand() string {
 		script := config.Shell.InitScript
 		if isFilePath(script) {
 			resolved := ExpandPath(script)
-			sources = append(sources, buildSourceCmd(resolved, ignoreMissing))
+			sources = append(sources, buildScriptSourceCmd(resolved, ignoreMissing))
 		} else {
 			// Inline command (e.g., 'eval "$(direnv hook bash)"')
 			sources = append(sources, script)
@@ -93,7 +95,8 @@ func (i *Instance) buildEnvSourceCommand() string {
 	}
 
 	// Join all sources with && and add trailing && for the main command
-	return strings.Join(sources, " && ") + " && "
+	sep := shellCommandSeparator()
+	return strings.Join(sources, sep) + sep
 }
 
 // themeEnvExport returns a shell export command for COLORFGBG based on the
@@ -123,7 +126,7 @@ func themeEnvExport() string {
 		}
 	}
 
-	return fmt.Sprintf("export COLORFGBG='%s'", colorfgbg)
+	return shellSetEnvCommand("COLORFGBG", colorfgbg)
 }
 
 // ThemeColorFGBG returns the COLORFGBG value for the current resolved theme.
@@ -160,11 +163,88 @@ func colorfgbgMatchesTheme(colorfgbg, theme string) (bool, bool) {
 // buildSourceCmd creates a shell command to source a file.
 // If ignoreMissing is true, wraps in a file existence check.
 func buildSourceCmd(path string, ignoreMissing bool) string {
+	if runtime.GOOS == "windows" {
+		return buildWindowsEnvSourceCmd(path, ignoreMissing)
+	}
 	if ignoreMissing {
 		// Use [ -f file ] && source file pattern for safe sourcing
 		return fmt.Sprintf(`[ -f "%s" ] && source "%s"`, path, path)
 	}
 	return fmt.Sprintf(`source "%s"`, path)
+}
+
+func buildScriptSourceCmd(path string, ignoreMissing bool) string {
+	if runtime.GOOS == "windows" {
+		if ignoreMissing {
+			return fmt.Sprintf(`if (Test-Path '%s') { . '%s' }`, path, path)
+		}
+		return fmt.Sprintf(`. '%s'`, path)
+	}
+	if ignoreMissing {
+		return fmt.Sprintf(`[ -f "%s" ] && source "%s"`, path, path)
+	}
+	return fmt.Sprintf(`source "%s"`, path)
+}
+
+func buildWindowsEnvSourceCmd(path string, ignoreMissing bool) string {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if ignoreMissing && os.IsNotExist(err) {
+			return ""
+		}
+		return fmt.Sprintf(`throw 'failed to read env file: %s'`, shellQuotePowerShellSingle(path))
+	}
+
+	assignments, err := parseEnvFileAssignments(string(data))
+	if err != nil {
+		return fmt.Sprintf(`throw 'failed to parse env file %s: %s'`,
+			shellQuotePowerShellSingle(path),
+			shellQuotePowerShellSingle(err.Error()))
+	}
+	if len(assignments) == 0 {
+		return ""
+	}
+	return strings.Join(assignments, shellCommandSeparator())
+}
+
+func parseEnvFileAssignments(content string) ([]string, error) {
+	scanner := bufio.NewScanner(strings.NewReader(content))
+	assignments := []string{}
+	lineNo := 0
+
+	for scanner.Scan() {
+		lineNo++
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		line = strings.TrimPrefix(line, "export ")
+		line = strings.TrimSpace(line)
+
+		key, value, ok := strings.Cut(line, "=")
+		if !ok {
+			return nil, fmt.Errorf("line %d is not KEY=VALUE or export KEY=VALUE", lineNo)
+		}
+		key = strings.TrimSpace(key)
+		value = strings.TrimSpace(value)
+		if !isValidEnvKey(key) {
+			return nil, fmt.Errorf("line %d has invalid env key %q", lineNo, key)
+		}
+
+		// Preserve literal values; only strip matching outer quotes.
+		if len(value) >= 2 {
+			if (value[0] == '\'' && value[len(value)-1] == '\'') ||
+				(value[0] == '"' && value[len(value)-1] == '"') {
+				value = value[1 : len(value)-1]
+			}
+		}
+
+		assignments = append(assignments, shellSetEnvCommand(key, value))
+	}
+	if err := scanner.Err(); err != nil {
+		return nil, err
+	}
+	return assignments, nil
 }
 
 // resolvePath resolves a user-specified config file path:
@@ -191,14 +271,14 @@ func ExpandPath(path string) string {
 	// Step 2: Expand tilde prefix to home directory.
 	// After env var expansion, any remaining ~ is a genuine tilde.
 	if strings.HasPrefix(path, "~/") {
-		home, err := os.UserHomeDir()
+		home, err := userHomeDir()
 		if err != nil {
 			return path
 		}
 		return filepath.Join(home, path[2:])
 	}
 	if path == "~" {
-		home, err := os.UserHomeDir()
+		home, err := userHomeDir()
 		if err != nil {
 			return path
 		}
@@ -237,12 +317,10 @@ func (i *Instance) getToolInlineEnv() string {
 	exports := make([]string, 0, len(keys))
 	for _, k := range keys {
 		v := def.Env[k]
-		// Escape single quotes: replace ' with '\'' (end quote, escaped quote, start quote)
-		escaped := strings.ReplaceAll(v, "'", "'\\''")
-		exports = append(exports, fmt.Sprintf("export %s='%s'", k, escaped))
+		exports = append(exports, shellSetEnvCommand(k, v))
 	}
 
-	return strings.Join(exports, " && ")
+	return strings.Join(exports, shellCommandSeparator())
 }
 
 // getToolEnvFile returns the env_file setting for the current tool.
@@ -316,11 +394,40 @@ func (i *Instance) getConductorEnv(ignoreMissing bool) string {
 			if !isValidEnvKey(k) {
 				continue // skip invalid env var names
 			}
-			parts = append(parts, fmt.Sprintf("export %s='%s'", k, strings.ReplaceAll(meta.Env[k], "'", "'\\''")))
+			parts = append(parts, shellSetEnvCommand(k, meta.Env[k]))
 		}
 	}
 
-	return strings.Join(parts, " && ")
+	return strings.Join(parts, shellCommandSeparator())
+}
+
+func shellCommandSeparator() string {
+	if runtime.GOOS == "windows" {
+		return "; "
+	}
+	return " && "
+}
+
+func shellQuoteSingle(value string) string {
+	return strings.ReplaceAll(value, "'", "'\\''")
+}
+
+func shellQuotePowerShellSingle(value string) string {
+	return strings.ReplaceAll(value, "'", "''")
+}
+
+func shellSetEnvCommand(key, value string) string {
+	if runtime.GOOS == "windows" {
+		return fmt.Sprintf(`$env:%s='%s'`, key, shellQuotePowerShellSingle(value))
+	}
+	return fmt.Sprintf("export %s='%s'", key, shellQuoteSingle(value))
+}
+
+func shellUnsetEnvCommand(key string, powerShell bool) string {
+	if powerShell {
+		return fmt.Sprintf("Remove-Item Env:%s -ErrorAction SilentlyContinue", key)
+	}
+	return fmt.Sprintf("unset %s", key)
 }
 
 // isValidEnvKey checks that a string is a valid environment variable name.
@@ -340,8 +447,9 @@ func isValidEnvKey(key string) bool {
 	return true
 }
 
-// telegramStateDirStripExpr returns `unset TELEGRAM_STATE_DIR` for any
-// claude spawn that is NOT a channel-owning telegram session. S8
+// telegramStateDirStripExpr returns the shell-specific command that clears
+// TELEGRAM_STATE_DIR for any claude spawn that is NOT a channel-owning
+// telegram session. S8
 // (v1.7.40) broadens issue #680's narrow conductor-pairing predicate:
 // every `agent-deck launch` child that doesn't own the telegram bot
 // must lose TELEGRAM_STATE_DIR, otherwise it inherits the conductor's
@@ -375,5 +483,5 @@ func telegramStateDirStripExpr(inst *Instance) string {
 			return "" // explicit telegram channel owner
 		}
 	}
-	return "unset TELEGRAM_STATE_DIR"
+	return shellUnsetEnvCommand("TELEGRAM_STATE_DIR", inst.shouldUsePowerShellClaudeShell())
 }

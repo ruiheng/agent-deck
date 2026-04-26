@@ -13,10 +13,10 @@ import (
 	"path/filepath"
 	"sync"
 	"sync/atomic"
-	"syscall"
 	"time"
 
 	"github.com/asheshgoplani/agent-deck/internal/logging"
+	"github.com/asheshgoplani/agent-deck/internal/processutil"
 )
 
 var proxyLog = logging.ForComponent(logging.CompPool)
@@ -229,7 +229,7 @@ func (p *SocketProxy) Start() error {
 	// Create a new process group so grandchild processes (e.g., node spawned by npx,
 	// python spawned by uvx) can be killed together. Without this, killing npx leaves
 	// the actual MCP server process orphaned under PID 1.
-	p.mcpProcess.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	processutil.SetProcessGroup(p.mcpProcess)
 
 	// Graceful shutdown: send SIGTERM to the entire process group on context cancel.
 	// WaitDelay gives the group time to exit after SIGTERM before Go forcibly
@@ -237,8 +237,7 @@ func (p *SocketProxy) Start() error {
 	// processes (e.g., node spawned by npx) inherit stdout/stderr and keep Wait() blocked.
 	// See: https://github.com/golang/go/issues/50436
 	p.mcpProcess.Cancel = func() error {
-		// Kill entire process group (negative PID) so grandchildren die too
-		return syscall.Kill(-p.mcpProcess.Process.Pid, syscall.SIGTERM)
+		return processutil.TerminateProcessTree(p.mcpProcess.Process)
 	}
 	p.mcpProcess.WaitDelay = 3 * time.Second
 
@@ -555,7 +554,7 @@ func (p *SocketProxy) Stop() error {
 		case <-time.After(5 * time.Second):
 			// Final safety net: force kill entire process group if SIGTERM didn't work
 			proxyLog.Warn("process_wait_timeout", slog.String("mcp", p.name))
-			_ = syscall.Kill(-p.mcpProcess.Process.Pid, syscall.SIGKILL)
+			_ = processutil.KillProcessTree(p.mcpProcess.Process)
 			<-done // reap() must return after Kill
 		}
 		os.Remove(p.socketPath)
@@ -588,7 +587,7 @@ func (p *SocketProxy) HealthCheck() error {
 	if p.mcpProcess == nil {
 		return fmt.Errorf("process not running")
 	}
-	if err := p.mcpProcess.Process.Signal(syscall.Signal(0)); err != nil {
+	if err := processutil.CheckProcessRunning(p.mcpProcess.Process); err != nil {
 		return err
 	}
 	if _, err := os.Stat(p.socketPath); err != nil {

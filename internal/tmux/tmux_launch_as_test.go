@@ -14,12 +14,32 @@
 package tmux
 
 import (
+	"encoding/base64"
+	"runtime"
 	"strings"
 	"testing"
+	"unicode/utf16"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+func decodePowerShellEncodedCommand(t *testing.T, wrapped string) string {
+	t.Helper()
+
+	const prefix = "pwsh -NoLogo -EncodedCommand "
+	require.True(t, strings.HasPrefix(wrapped, prefix), "expected PowerShell encoded wrapper, got: %s", wrapped)
+
+	decoded, err := base64.StdEncoding.DecodeString(strings.TrimPrefix(wrapped, prefix))
+	require.NoError(t, err)
+	require.Equal(t, 0, len(decoded)%2)
+
+	words := make([]uint16, len(decoded)/2)
+	for i := range words {
+		words[i] = uint16(decoded[i*2]) | uint16(decoded[i*2+1])<<8
+	}
+	return string(utf16.Decode(words))
+}
 
 // TestStartCommandSpec_LaunchAs_Service_UsesServiceForm pins the argv
 // shape for service mode. Restart=on-failure and Type=forking are the
@@ -184,6 +204,10 @@ func TestStartCommandSpec_LaunchAs_ServiceWithInitialProcess(t *testing.T) {
 	// Last element must be the bash-wrapped command
 	require.NotEmpty(t, tmuxArgs)
 	last := tmuxArgs[len(tmuxArgs)-1]
+	if runtime.GOOS == "windows" {
+		assert.Equal(t, "claude --resume xyz", decodePowerShellEncodedCommand(t, last))
+		return
+	}
 	assert.True(t, strings.HasPrefix(last, "bash -c '"), "initial process must be bash-wrapped")
 	assert.Contains(t, last, "claude --resume xyz")
 }

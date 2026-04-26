@@ -92,6 +92,81 @@ func TestCreateSessionTool_Pi(t *testing.T) {
 	}
 }
 
+func TestShouldRenderMissingTmuxError_NonErrorStatus(t *testing.T) {
+	inst := session.NewInstance("test", "/tmp")
+	if shouldRenderMissingTmuxError(inst, session.StatusIdle) {
+		t.Fatal("shouldRenderMissingTmuxError returned true for non-error status")
+	}
+}
+
+func TestShouldRenderMissingTmuxError_NilInstance(t *testing.T) {
+	if shouldRenderMissingTmuxError(nil, session.StatusError) {
+		t.Fatal("shouldRenderMissingTmuxError returned true for nil instance")
+	}
+}
+
+func TestEffectiveDisplayStatus_ConnectedCodexSuppressesError(t *testing.T) {
+	inst := session.NewInstanceWithTool("codex-test", "/tmp/test", "codex")
+	inst.CodexSessionID = "sess-123"
+	inst.CodexDetectedAt = time.Now()
+	got := effectiveDisplayStatus(inst, session.StatusError)
+	if got != session.StatusError {
+		t.Fatalf("effectiveDisplayStatus() = %q, want %q when tmux session cannot be confirmed", got, session.StatusError)
+	}
+}
+
+func TestShouldRenderMissingTmuxError_ConnectedCodexSuppressesPanel(t *testing.T) {
+	inst := session.NewInstanceWithTool("codex-test", "/tmp/test", "codex")
+	inst.CodexSessionID = "sess-123"
+	inst.CodexDetectedAt = time.Now()
+	if !shouldRenderMissingTmuxError(inst, session.StatusError) {
+		t.Fatal("shouldRenderMissingTmuxError returned false when tmux session cannot be confirmed")
+	}
+}
+
+func TestEffectiveDisplayStatus_StaleConnectedCodexStaysError(t *testing.T) {
+	inst := session.NewInstanceWithTool("codex-test", "/tmp/test", "codex")
+	inst.CodexSessionID = "sess-123"
+	inst.CodexDetectedAt = time.Now().Add(-1 * time.Minute)
+	got := effectiveDisplayStatus(inst, session.StatusError)
+	if got != session.StatusError {
+		t.Fatalf("effectiveDisplayStatus() = %q, want %q for stale connected session", got, session.StatusError)
+	}
+}
+
+func TestTrimTrailingVisuallyEmptyLines_RemovesANSISpacerRows(t *testing.T) {
+	lines := []string{
+		"real output",
+		"\x1b[48;2;10;20;30m   \x1b[0m",
+		"\x1b[48;2;10;20;30m\x1b[0m",
+		"",
+	}
+
+	trimmed := trimTrailingVisuallyEmptyLines(lines)
+	if len(trimmed) != 1 || trimmed[0] != "real output" {
+		t.Fatalf("trimTrailingVisuallyEmptyLines() = %#v, want only real output", trimmed)
+	}
+}
+
+func TestShouldAttachExistingSession_ConnectedErrorSession(t *testing.T) {
+	inst := session.NewInstanceWithTool("codex-test", "/tmp/test", "codex")
+	inst.CodexSessionID = "sess-123"
+	inst.SetStatusThreadSafe(session.StatusError)
+
+	if !shouldAttachExistingSession(inst) {
+		t.Fatal("shouldAttachExistingSession returned false for connected session")
+	}
+}
+
+func TestShouldAttachExistingSession_StoppedSession(t *testing.T) {
+	inst := session.NewInstance("shell-test", "/tmp/test")
+	inst.SetStatusThreadSafe(session.StatusStopped)
+
+	if shouldAttachExistingSession(inst) {
+		t.Fatal("shouldAttachExistingSession returned true for stopped session")
+	}
+}
+
 func TestHomeInit(t *testing.T) {
 	home := NewHome()
 	cmd := home.Init()

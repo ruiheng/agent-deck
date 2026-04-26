@@ -180,7 +180,7 @@ func expandSkillPath(path string) string {
 	// HOME is recognised; other env references pass through verbatim so config
 	// paths do not silently inherit arbitrary process environment.
 	if strings.Contains(path, "$") {
-		if home, err := os.UserHomeDir(); err == nil {
+		if home, err := userHomeDir(); err == nil {
 			path = os.Expand(path, func(name string) string {
 				if name == "HOME" {
 					return home
@@ -190,14 +190,14 @@ func expandSkillPath(path string) string {
 		}
 	}
 	if path == "~" {
-		home, err := os.UserHomeDir()
+		home, err := userHomeDir()
 		if err == nil {
 			return home
 		}
 		return path
 	}
 	if strings.HasPrefix(path, "~/") {
-		home, err := os.UserHomeDir()
+		home, err := userHomeDir()
 		if err == nil {
 			return filepath.Clean(filepath.Join(home, path[2:]))
 		}

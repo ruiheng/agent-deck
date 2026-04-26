@@ -23,7 +23,36 @@ var uuidSessionFileRegex = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]
 // Claude Code replaces all non-alphanumeric characters (except hyphens) with hyphens.
 // Example: /Users/master/Code cloud/!Project → -Users-master-Code-cloud--Project
 func ConvertToClaudeDirName(path string) string {
+	path = trimClaudeProjectPath(path)
 	return claudeDirNameRegex.ReplaceAllString(path, "-")
+}
+
+func trimClaudeProjectPath(path string) string {
+	switch path {
+	case "", "/", `\`:
+		return path
+	}
+	if len(path) == 3 && path[1] == ':' && (path[2] == '\\' || path[2] == '/') {
+		return path
+	}
+	if isUNCShareRoot(path) {
+		return path
+	}
+	return strings.TrimRight(path, `/\`)
+}
+
+func isUNCShareRoot(path string) bool {
+	if !(strings.HasPrefix(path, `\\`) || strings.HasPrefix(path, `//`)) {
+		return false
+	}
+	if !(strings.HasSuffix(path, `\`) || strings.HasSuffix(path, `/`)) {
+		return false
+	}
+	trimmed := strings.TrimLeft(path, `/\`)
+	parts := strings.FieldsFunc(trimmed, func(r rune) bool {
+		return r == '\\' || r == '/'
+	})
+	return len(parts) == 2
 }
 
 // ClaudeProject represents a project entry in Claude's config
@@ -262,7 +291,7 @@ func GetClaudeConfigDirForGroup(groupPath string) string {
 		}
 	}
 
-	home, _ := os.UserHomeDir()
+	home, _ := userHomeDir()
 	return filepath.Join(home, ".claude")
 }
 
@@ -321,7 +350,7 @@ func GetClaudeConfigDirSourceForGroup(groupPath string) (path, source string) {
 		}
 	}
 
-	home, _ := os.UserHomeDir()
+	home, _ := userHomeDir()
 	return filepath.Join(home, ".claude"), "default"
 }
 
@@ -398,7 +427,7 @@ func GetClaudeConfigDirForInstance(inst *Instance) string {
 		}
 	}
 
-	home, _ := os.UserHomeDir()
+	home, _ := userHomeDir()
 	return filepath.Join(home, ".claude")
 }
 
@@ -438,7 +467,7 @@ func GetClaudeConfigDirSourceForInstance(inst *Instance) (path, source string) {
 		}
 	}
 
-	home, _ := os.UserHomeDir()
+	home, _ := userHomeDir()
 	return filepath.Join(home, ".claude"), "default"
 }
 

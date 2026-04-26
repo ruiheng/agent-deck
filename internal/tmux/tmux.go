@@ -1934,11 +1934,31 @@ func (s *Session) Exists() bool {
 	return cmd.Run() == nil
 }
 
+// ExistsFresh bypasses caches and asks the session's tmux server directly.
+func (s *Session) ExistsFresh() bool {
+	cmd := s.tmuxCmd("has-session", "-t", s.Name)
+	return cmd.Run() == nil
+}
+
+// ExistsWithConfirmation retries a direct tmux existence probe once after a
+// short delay. This filters transient false negatives observed under Windows +
+// psmux without permanently masking genuinely missing sessions.
+func (s *Session) ExistsWithConfirmation() bool {
+	if s.ExistsFresh() {
+		return true
+	}
+	time.Sleep(150 * time.Millisecond)
+	return s.ExistsFresh()
+}
+
 // IsPaneDead returns true if the session's pane process has exited.
 // Uses the cached pane info (refreshed once per tick) for zero-cost lookups.
 // Falls back to a direct tmux query targeting pane 0.0 (the primary pane)
 // to avoid false positives in multi-pane layouts.
 func (s *Session) IsPaneDead() bool {
+	if !s.supportsDeadPaneDetection() {
+		return false
+	}
 	if info, ok := GetCachedPaneInfo(s.Name); ok {
 		return info.Dead
 	}
@@ -1948,6 +1968,13 @@ func (s *Session) IsPaneDead() bool {
 		return false
 	}
 	return strings.TrimSpace(string(out)) == "1"
+}
+
+func (s *Session) supportsDeadPaneDetection() bool {
+	if s == nil {
+		return false
+	}
+	return strings.EqualFold(strings.TrimSpace(s.OptionOverrides["remain-on-exit"]), "on")
 }
 
 // buildStatusBarArgs returns the tmux command args for configuring the status bar.

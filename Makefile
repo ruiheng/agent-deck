@@ -1,6 +1,7 @@
-.PHONY: build run install clean dev release-local test fmt lint ci css tools css-verify
+.PHONY: build run install clean dev release-local test fmt lint ci css tools css-verify build-codex-notify-fanout install-codex-notify-fanout-user uninstall-codex-notify-fanout-user
 
 BINARY_NAME=agent-deck
+NOTIFY_FANOUT_BINARY_NAME=codex-notify-fanout
 BUILD_DIR=./build
 VERSION=$(shell git describe --tags --always --dirty 2>/dev/null | sed 's/^v//' || echo "dev")
 LDFLAGS=-ldflags "-X main.Version=$(VERSION)"
@@ -92,6 +93,10 @@ css-verify: css
 run:
 	go run ./cmd/agent-deck
 
+# Build the standalone Codex notify fanout helper
+build-codex-notify-fanout:
+	go build -o $(BUILD_DIR)/$(NOTIFY_FANOUT_BINARY_NAME) ./cmd/codex-notify-fanout
+
 # Install to /usr/local/bin (requires sudo)
 install: build
 	sudo cp $(BUILD_DIR)/$(BINARY_NAME) /usr/local/bin/$(BINARY_NAME)
@@ -106,6 +111,13 @@ install-user: build
 	@echo "Make sure $(HOME)/.local/bin is in your PATH"
 	@echo "Run 'agent-deck' to start"
 
+# Install the standalone Codex notify fanout helper to user's local bin
+install-codex-notify-fanout-user: build-codex-notify-fanout
+	mkdir -p $(HOME)/.local/bin
+	cp $(BUILD_DIR)/$(NOTIFY_FANOUT_BINARY_NAME) $(HOME)/.local/bin/$(NOTIFY_FANOUT_BINARY_NAME)
+	@echo "✅ Installed to $(HOME)/.local/bin/$(NOTIFY_FANOUT_BINARY_NAME)"
+	@echo "Make sure $(HOME)/.local/bin is in your PATH"
+
 # Uninstall from /usr/local/bin
 uninstall:
 	sudo rm -f /usr/local/bin/$(BINARY_NAME)
@@ -115,6 +127,11 @@ uninstall:
 uninstall-user:
 	rm -f $(HOME)/.local/bin/$(BINARY_NAME)
 	@echo "✅ Uninstalled $(BINARY_NAME)"
+
+# Uninstall the standalone Codex notify fanout helper from user's local bin
+uninstall-codex-notify-fanout-user:
+	rm -f $(HOME)/.local/bin/$(NOTIFY_FANOUT_BINARY_NAME)
+	@echo "✅ Uninstalled $(NOTIFY_FANOUT_BINARY_NAME)"
 
 # Clean build artifacts
 clean:

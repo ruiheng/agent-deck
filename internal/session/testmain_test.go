@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -25,8 +26,8 @@ const bootstrapSessionName = "agent-deck-test-bootstrap"
 // check is no longer necessary.
 func skipIfNoTmuxBinary(t *testing.T) {
 	t.Helper()
-	if _, err := exec.LookPath("tmux"); err != nil {
-		t.Skip("tmux not available")
+	if err := tmuxBinaryError(); err != nil {
+		t.Skipf("tmux not available: %v", err)
 	}
 }
 
@@ -48,8 +49,8 @@ func skipIfNoTmuxBinary(t *testing.T) {
 // #618 OSC tests are migrated to skipIfNoTmuxBinary so they actively run.
 func skipIfNoTmuxServer(t *testing.T) {
 	t.Helper()
-	if _, err := exec.LookPath("tmux"); err != nil {
-		t.Skip("tmux not available")
+	if err := tmuxBinaryError(); err != nil {
+		t.Skipf("tmux not available: %v", err)
 	}
 	out, err := exec.Command("tmux", "list-sessions", "-F", "#{session_name}").Output()
 	if err != nil {
@@ -67,6 +68,28 @@ func skipIfNoTmuxServer(t *testing.T) {
 	}
 	if !hasReal {
 		t.Skip("tmux server has only the bootstrap session; legacy test requires a real live session")
+	}
+}
+
+func tmuxBinaryError() error {
+	path, err := exec.LookPath("tmux")
+	if err != nil {
+		return err
+	}
+	if err := exec.Command(path, "-V").Run(); err != nil {
+		return err
+	}
+	return nil
+}
+
+func setTestHomeEnv(home string) {
+	_ = os.Setenv("HOME", home)
+	_ = os.Setenv("USERPROFILE", home)
+	if vol := filepath.VolumeName(home); vol != "" {
+		_ = os.Setenv("HOMEDRIVE", vol)
+		if rest := strings.TrimPrefix(home, vol); rest != "" {
+			_ = os.Setenv("HOMEPATH", rest)
+		}
 	}
 }
 
@@ -150,6 +173,15 @@ func TestMain(m *testing.M) {
 	// Force test profile to prevent production data corruption
 	// See CLAUDE.md: "2025-12-11 Incident: Tests with AGENTDECK_PROFILE=work overwrote ALL 36 production sessions"
 	os.Setenv("AGENTDECK_PROFILE", "_test")
+	os.Setenv("AGENTDECK_TEST_USE_HOME", "1")
+	os.Unsetenv("CLAUDE_CONFIG_DIR")
+
+	testHome, err := os.MkdirTemp("", "agentdeck-session-home-")
+	if err != nil {
+		panic(fmt.Sprintf("mktemp test home: %v", err))
+	}
+	setTestHomeEnv(testHome)
+	os.Setenv("CODEX_HOME", filepath.Join(testHome, ".codex"))
 
 	// Run tests
 	code := m.Run()
@@ -158,6 +190,7 @@ func TestMain(m *testing.M) {
 	// This prevents RAM waste from lingering test sessions
 	// See CLAUDE.md: "2026-01-20 Incident: 20+ Test-Skip-Regen sessions orphaned, wasting ~3GB RAM"
 	cleanupTestSessions()
+	_ = os.RemoveAll(testHome)
 
 	os.Exit(code)
 }
@@ -187,7 +220,7 @@ func cleanupTestSessions() {
 // skipIfNoTmuxBinary. Any start error is printed (not fatal) so environments
 // without tmux can still run non-tmux tests.
 func bootstrapTmuxServer() func() {
-	if _, err := exec.LookPath("tmux"); err != nil {
+	if err := tmuxBinaryError(); err != nil {
 		return func() {}
 	}
 	cmd := exec.Command("tmux", "new-session", "-d", "-s", bootstrapSessionName, "sh", "-c", "sleep 3600")

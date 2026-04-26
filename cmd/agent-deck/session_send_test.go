@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -222,6 +223,31 @@ func TestSendWithRetryTarget_SkipVerify(t *testing.T) {
 	}
 	if atomic.LoadInt32(&mock.sendEnterCalls) != 0 {
 		t.Fatalf("expected 0 SendEnter calls, got %d", mock.sendEnterCalls)
+	}
+}
+
+func TestShouldSkipPostSendVerify_CodexOnWindows(t *testing.T) {
+	if !shouldSkipPostSendVerify("shell") {
+		t.Fatal("shouldSkipPostSendVerify(shell) = false, want true")
+	}
+	if shouldSkipPostSendVerify("claude") {
+		t.Fatal("shouldSkipPostSendVerify(claude) = true, want false")
+	}
+
+	if runtime.GOOS != "windows" {
+		return
+	}
+	if !shouldSkipPostSendVerify("codex") {
+		t.Fatal("shouldSkipPostSendVerify(codex) = false, want true on Windows")
+	}
+}
+
+func TestShouldWaitForAgentReady(t *testing.T) {
+	if shouldWaitForAgentReady("shell") {
+		t.Fatal("shouldWaitForAgentReady(shell) = true, want false")
+	}
+	if !shouldWaitForAgentReady("codex") {
+		t.Fatal("shouldWaitForAgentReady(codex) = false, want true")
 	}
 }
 

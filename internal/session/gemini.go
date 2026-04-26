@@ -23,7 +23,7 @@ func GetGeminiConfigDir() string {
 	if geminiConfigDirOverride != "" {
 		return geminiConfigDirOverride
 	}
-	home, _ := os.UserHomeDir()
+	home, _ := userHomeDir()
 	return filepath.Join(home, ".gemini")
 }
 

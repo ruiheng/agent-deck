@@ -2,15 +2,15 @@ package tmux
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"log/slog"
 	"maps"
 	"os"
 	"strings"
 	"sync"
-	"syscall"
 	"time"
+
+	"github.com/asheshgoplani/agent-deck/internal/processutil"
 )
 
 // PipeManager manages ControlPipes for all active tmux sessions.
@@ -491,33 +491,36 @@ const controlClientKillGrace = 500 * time.Millisecond
 // SIGKILL was ultimately used. A non-existent pid (ESRCH) is treated as
 // already-dead and returns false without escalation.
 func softKillProcess(pid int, grace time.Duration) bool {
+	proc, err := os.FindProcess(pid)
+	if err != nil {
+		return false
+	}
+
 	// Initial SIGTERM. If the process is already gone, we're done.
-	if err := syscall.Kill(pid, syscall.SIGTERM); err != nil {
-		if errors.Is(err, syscall.ESRCH) {
+	if err := processutil.TerminateProcessTree(proc); err != nil {
+		if processutil.CheckProcessRunning(proc) != nil {
 			return false
 		}
 		// Permission or other error — try SIGKILL as last resort.
-		_ = syscall.Kill(pid, syscall.SIGKILL)
+		_ = processutil.KillProcessTree(proc)
 		return true
 	}
 
-	// Poll for exit. syscall.Kill(pid, 0) returns ESRCH once the process
-	// is fully reaped; until then it returns nil (alive or zombie). The
-	// poll is aggressive (5ms) so a clean SIGTERM→exit→reap chain in a test
+	// Poll for exit. The poll is aggressive (5ms) so a clean TERM to exit chain in a test
 	// environment, where the child is a process of the test binary and must
 	// wait on the runtime's goroutine scheduler to pick up cmd.Wait(), has
-	// plenty of chances to observe ESRCH within the grace window.
+	// plenty of chances to observe the process exiting within the grace window.
 	const pollInterval = 5 * time.Millisecond
 	deadline := time.Now().Add(grace)
 	for time.Now().Before(deadline) {
 		time.Sleep(pollInterval)
-		if err := syscall.Kill(pid, 0); err != nil && errors.Is(err, syscall.ESRCH) {
+		if processutil.CheckProcessRunning(proc) != nil {
 			return false
 		}
 	}
 
 	// Still alive after grace — escalate.
-	_ = syscall.Kill(pid, syscall.SIGKILL)
+	_ = processutil.KillProcessTree(proc)
 	return true
 }
 

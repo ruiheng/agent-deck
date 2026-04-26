@@ -47,6 +47,7 @@ func printRemoteUsage() {
 	fmt.Println("Usage: agent-deck remote <command> [options]")
 	fmt.Println()
 	fmt.Println("Manage remote agent-deck instances.")
+	fmt.Println("Native Windows: remote SSH workflows supported.")
 	fmt.Println()
 	fmt.Println("Commands:")
 	fmt.Println("  add <name> <user@host>    Add a remote agent-deck instance")

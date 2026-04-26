@@ -678,6 +678,26 @@ func TestConvertToClaudeDirName(t *testing.T) {
 			input:    "/Users/test/my-project-name",
 			expected: "-Users-test-my-project-name",
 		},
+		{
+			name:     "windows path",
+			input:    `C:\Users\test\proj.v1`,
+			expected: "C--Users-test-proj-v1",
+		},
+		{
+			name:     "trims trailing unix separator",
+			input:    "/Users/test/project/",
+			expected: "-Users-test-project",
+		},
+		{
+			name:     "trims trailing windows separator",
+			input:    `C:\Users\test\project\`,
+			expected: "C--Users-test-project",
+		},
+		{
+			name:     "preserves unc share root separator",
+			input:    `\\server\share\`,
+			expected: "--server-share-",
+		},
 	}
 
 	for _, tt := range tests {

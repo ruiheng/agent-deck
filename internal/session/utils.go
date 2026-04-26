@@ -3,9 +3,20 @@ package session
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 )
+
+// userHomeDir prefers HOME when explicitly set so tests can isolate the
+// effective home directory on Windows as well as Unix.
+func userHomeDir() (string, error) {
+	if home := strings.TrimSpace(os.Getenv("HOME")); home != "" &&
+		(runtime.GOOS != "windows" || os.Getenv("AGENTDECK_TEST_USE_HOME") == "1") {
+		return home, nil
+	}
+	return os.UserHomeDir()
+}
 
 // findNewestFile returns the newest file matching a glob pattern along with its modification time.
 // Returns empty string and zero time if no files match.
@@ -40,7 +51,7 @@ func GetDirectoryCompletions(input string) ([]string, error) {
 	// Handle tilde-prefixed paths
 	originalInput := input
 	if strings.HasPrefix(input, "~") {
-		home, err := os.UserHomeDir()
+		home, err := userHomeDir()
 		if err != nil {
 			return nil, err
 		}
@@ -80,7 +91,7 @@ func GetDirectoryCompletions(input string) ([]string, error) {
 
 			// If original input used tilde, convert back
 			if strings.HasPrefix(originalInput, "~") {
-				home, _ := os.UserHomeDir()
+				home, _ := userHomeDir()
 				rel, err := filepath.Rel(home, match)
 				if err == nil && !strings.HasPrefix(rel, "..") {
 					match = "~" + string(os.PathSeparator) + rel

@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -253,5 +254,69 @@ func TestIsTerminalHookEvent(t *testing.T) {
 		if got := isTerminalHookEvent(tt.event); got != tt.expect {
 			t.Fatalf("isTerminalHookEvent(%q) = %v, want %v", tt.event, got, tt.expect)
 		}
+	}
+}
+
+func TestPathWithinBase(t *testing.T) {
+	base := filepath.Join(`C:\Users\Gilbert Fine`, ".claude")
+
+	tests := []struct {
+		name string
+		path string
+		want bool
+	}{
+		{
+			name: "child path",
+			path: filepath.Join(base, "projects", "abc", "sess.jsonl"),
+			want: true,
+		},
+		{
+			name: "sibling prefix is rejected",
+			path: base + "-evil\\projects\\sess.jsonl",
+			want: false,
+		},
+		{
+			name: "parent escape is rejected",
+			path: filepath.Join(base, "..", "other", "sess.jsonl"),
+			want: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := pathWithinBase(tt.path, base); got != tt.want {
+				t.Fatalf("pathWithinBase(%q, %q) = %v, want %v", tt.path, base, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestWriteCostEvent_AllowsCustomClaudeConfigDir(t *testing.T) {
+	tmpHome := t.TempDir()
+	tmpClaude := filepath.Join(tmpHome, ".claude-work")
+	t.Setenv("HOME", tmpHome)
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("CLAUDE_CONFIG_DIR", tmpClaude)
+
+	transcriptDir := filepath.Join(tmpClaude, "projects", "custom-project")
+	if err := os.MkdirAll(transcriptDir, 0o755); err != nil {
+		t.Fatalf("mkdir transcript dir: %v", err)
+	}
+
+	transcriptPath := filepath.Join(transcriptDir, "sess.jsonl")
+	transcript := `{"type":"assistant","message":{"model":"claude-test","usage":{"input_tokens":11,"output_tokens":7,"cache_read_input_tokens":0,"cache_creation_input_tokens":0}}}`
+	if err := os.WriteFile(transcriptPath, []byte(transcript+"\n"), 0o644); err != nil {
+		t.Fatalf("write transcript: %v", err)
+	}
+
+	payload := []byte(fmt.Sprintf(`{"hook_event_name":"Stop","transcript_path":%q}`, transcriptPath))
+	writeCostEvent("inst-custom-claude-dir", payload)
+
+	entries, err := os.ReadDir(filepath.Join(tmpHome, ".agent-deck", "cost-events"))
+	if err != nil {
+		t.Fatalf("read cost events dir: %v", err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("cost event count = %d, want 1", len(entries))
 	}
 }

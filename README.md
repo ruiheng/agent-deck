@@ -561,7 +561,22 @@ Feedback posts to a public GitHub Discussion at [Feedback Hub](https://github.co
 
 ## Installation
 
-**Works on:** macOS, Linux, Windows (WSL)
+**Works on:** macOS, Linux, Windows (WSL), and native Windows.
+
+Native Windows support is available for the core operator loop. WSL remains the
+recommended Windows environment when you need Unix-only integrations such as MCP
+socket pooling or Linux process isolation.
+
+| Capability | macOS/Linux | Windows via WSL2 | Native Windows |
+|---|---:|---:|---:|
+| TUI startup, session create/start/attach | Yes | Yes | Yes |
+| Send input, status detection, restart | Yes | Yes | Yes |
+| Codex/Claude project history detection | Yes | Yes | Yes |
+| Remote SSH workflows | Yes | Yes | Yes, direct `ssh -tt` attach |
+| Web UI / browser terminal bridge | Yes | Yes | Yes |
+| MCP socket pooling | Yes | Yes on WSL2/Linux FS | Not yet, uses stdio fallback |
+| Git worktree workflows | Yes | Yes | Not yet |
+| Linux cgroup/systemd isolation | Linux only | Linux only | Not applicable |
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/asheshgoplani/agent-deck/main/install.sh | bash
@@ -715,7 +730,9 @@ Agent Deck adds AI-specific intelligence on top of tmux: smart status detection 
 <details>
 <summary><b>Can I use it on Windows?</b></summary>
 
-Yes, via WSL (Windows Subsystem for Linux). [Install WSL](https://learn.microsoft.com/en-us/windows/wsl/install), then run the installer inside WSL. WSL2 is recommended for full feature support including MCP socket pooling.
+Yes. Native Windows supports the core operator loop: TUI startup, session create/start/attach, send input, status detection, restart, remote SSH workflows, web UI / browser bridge, and Codex sessions.
+
+WSL2 is still recommended when you need Unix-only integrations such as MCP socket pooling, Linux process isolation, or Git worktree workflows. [Install WSL](https://learn.microsoft.com/en-us/windows/wsl/install), then run the installer inside WSL.
 
 </details>
 
@@ -762,6 +779,14 @@ No. Agent Deck creates its own tmux sessions with the prefix `agentdeck_*`. Your
 make build    # Build
 make test     # Test
 make lint     # Lint
+```
+
+On Windows, use the built-in PowerShell helper instead of `make`:
+
+```powershell
+.\dev.cmd build   # Build
+.\dev.cmd test    # Test
+.\dev.cmd lint    # Lint
 ```
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for details.

@@ -464,7 +464,7 @@ func ClearProjectMCPs(projectPath string) error {
 // This is the ROOT config that Claude ALWAYS reads, regardless of CLAUDE_CONFIG_DIR setting.
 // MCPs defined here apply to ALL Claude sessions globally.
 func GetUserMCPRootPath() string {
-	home, err := os.UserHomeDir()
+	home, err := userHomeDir()
 	if err != nil {
 		return ""
 	}

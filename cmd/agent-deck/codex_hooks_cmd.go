@@ -370,7 +370,7 @@ func getCodexConfigPath() string {
 	if codexHome := strings.TrimSpace(os.Getenv("CODEX_HOME")); codexHome != "" {
 		return filepath.Join(codexHome, "config.toml")
 	}
-	home, err := os.UserHomeDir()
+	home, err := testAwareHomeDir()
 	if err != nil {
 		return filepath.Join(os.TempDir(), ".codex", "config.toml")
 	}

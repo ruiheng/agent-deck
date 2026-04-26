@@ -102,8 +102,8 @@ func TestStripSystemdRunPrefix_PassesThroughUnexpectedShape(t *testing.T) {
 //   - statusLog recorded a tmux_systemd_run_fallback event
 //   - cleanup kills the specific server we created (targeted -t filter)
 func TestStartCommandSpec_FallsBackToDirect(t *testing.T) {
-	if _, err := exec.LookPath("tmux"); err != nil {
-		t.Skipf("no tmux binary available: %v", err)
+	if err := tmuxBinaryError(); err != nil {
+		t.Skipf("no runnable tmux binary available: %v", err)
 	}
 
 	original := execCommand

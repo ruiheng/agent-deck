@@ -2065,7 +2065,7 @@ func GetPreviewSettings() PreviewSettings {
 func GetExperimentsSettings() ExperimentsSettings {
 	config, err := LoadUserConfig()
 	if err != nil || config == nil {
-		homeDir, _ := os.UserHomeDir()
+		homeDir, _ := userHomeDir()
 		return ExperimentsSettings{
 			Directory:   filepath.Join(homeDir, "src", "tries"),
 			DatePrefix:  true,
@@ -2077,7 +2077,7 @@ func GetExperimentsSettings() ExperimentsSettings {
 
 	// Apply defaults for unset values
 	if settings.Directory == "" {
-		homeDir, _ := os.UserHomeDir()
+		homeDir, _ := userHomeDir()
 		settings.Directory = filepath.Join(homeDir, "src", "tries")
 	} else {
 		settings.Directory = ExpandPath(settings.Directory)

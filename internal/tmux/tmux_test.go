@@ -1,13 +1,16 @@
 package tmux
 
 import (
+	"encoding/base64"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf16"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -547,9 +550,7 @@ func BenchmarkStripANSI_OldVsNew(b *testing.B) {
 }
 
 func TestDetectTool(t *testing.T) {
-	if _, err := exec.LookPath("tmux"); err != nil {
-		t.Skip("tmux not available")
-	}
+	skipIfNoTmuxBinary(t)
 
 	sess := NewSession("test", "/tmp")
 	// Without an actual session, DetectTool should return "shell"
@@ -773,9 +774,7 @@ func TestGetStatusFlow(t *testing.T) {
 }
 
 func TestListAllSessionsEmpty(t *testing.T) {
-	if _, err := exec.LookPath("tmux"); err != nil {
-		t.Skip("tmux not available")
-	}
+	skipIfNoTmuxBinary(t)
 
 	// This should not error even if no sessions exist
 	sessions, err := ListAllSessions()
@@ -2258,7 +2257,7 @@ func TestSpikeDetectionWindowExpiry(t *testing.T) {
 func TestSessionLogFile(t *testing.T) {
 	sess := NewSession("test-log", t.TempDir())
 
-	logFile := sess.LogFile()
+	logFile := filepath.ToSlash(sess.LogFile())
 	assert.Contains(t, logFile, ".agent-deck/logs/")
 	assert.Contains(t, logFile, "agentdeck_test-log")
 	assert.True(t, strings.HasSuffix(logFile, ".log"))
@@ -2539,9 +2538,7 @@ func TestBindUnbindKey(t *testing.T) {
 }
 
 func TestGetActiveSession(t *testing.T) {
-	if _, err := exec.LookPath("tmux"); err != nil {
-		t.Skip("tmux not available")
-	}
+	skipIfNoTmuxBinary(t)
 
 	// GetActiveSession returns the current client session
 	// This may fail if not running inside tmux, which is expected
@@ -2679,7 +2676,7 @@ func TestBuildStatusBarArgs(t *testing.T) {
 			displayName:     "my-project",
 			workDir:         "/home/user/my-project",
 			optionOverrides: nil,
-			wantKeys:        []string{"status", "status-style", "status-left-length", "status-right", "status-right-length"},
+			wantKeys:        []string{"status-style", "status-left-length", "status-right", "status-right-length"},
 			skipKeys:        nil,
 		},
 		{
@@ -2688,7 +2685,7 @@ func TestBuildStatusBarArgs(t *testing.T) {
 			displayName:     "my-project",
 			workDir:         "/home/user/my-project",
 			optionOverrides: map[string]string{},
-			wantKeys:        []string{"status", "status-style", "status-left-length", "status-right", "status-right-length"},
+			wantKeys:        []string{"status-style", "status-left-length", "status-right", "status-right-length"},
 			skipKeys:        nil,
 		},
 		{
@@ -2706,7 +2703,7 @@ func TestBuildStatusBarArgs(t *testing.T) {
 			displayName:     "my-project",
 			workDir:         "/home/user/my-project",
 			optionOverrides: map[string]string{"status-style": "bg=#000000"},
-			wantKeys:        []string{"status", "status-left-length", "status-right", "status-right-length"},
+			wantKeys:        []string{"status-left-length", "status-right", "status-right-length"},
 			skipKeys:        []string{"status-style"},
 		},
 		{
@@ -2724,7 +2721,7 @@ func TestBuildStatusBarArgs(t *testing.T) {
 			displayName:     "my-project",
 			workDir:         "/home/user/my-project",
 			optionOverrides: map[string]string{"history-limit": "50000"},
-			wantKeys:        []string{"status", "status-style", "status-left-length", "status-right", "status-right-length"},
+			wantKeys:        []string{"status-style", "status-left-length", "status-right", "status-right-length"},
 			skipKeys:        nil,
 		},
 		{
@@ -2867,9 +2864,7 @@ func TestBuildTerminalTitleArgs(t *testing.T) {
 }
 
 func TestConfigureTerminalTitle(t *testing.T) {
-	if _, err := exec.LookPath("tmux"); err != nil {
-		t.Skip("tmux not available")
-	}
+	skipIfNoTmuxBinary(t)
 
 	root := t.TempDir()
 	projectDir := filepath.Join(root, "agent-deck")
@@ -2980,6 +2975,11 @@ func TestStartCommandSpec_InitialProcess_WrapsBashRegardlessOfContent(t *testing
 			require.Equal(t, 7, len(args), "expected 7 args (new-session -d -s NAME -c DIR COMMAND)")
 
 			wrapped := args[len(args)-1]
+			if runtime.GOOS == "windows" {
+				require.True(t, strings.HasPrefix(wrapped, "pwsh -NoLogo -EncodedCommand "),
+					"windows initial-process launch should use PowerShell encoded wrapper; got: %s", wrapped)
+				return
+			}
 			require.True(t, strings.HasPrefix(wrapped, "bash -c '"),
 				"command should always be wrapped in bash -c to guarantee fish/zsh/bash compatibility; got: %s", wrapped)
 			require.True(t, strings.HasSuffix(wrapped, "'"),
@@ -3003,6 +3003,9 @@ func TestStartCommandSpec_InitialProcess_WrapsBashRegardlessOfContent(t *testing
 // valid when invoked via `sh -c`, which is how tmux delivers it. This is
 // the end-to-end guarantee that #526 is fixed.
 func TestStartCommandSpec_InitialProcess_ShellSyntaxValid(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("unix shell syntax validation")
+	}
 	if _, err := exec.LookPath("bash"); err != nil {
 		t.Skip("bash not available")
 	}
@@ -3049,6 +3052,10 @@ func TestWrapRespawnCommand_UsesBashRegardlessOfShellEnv(t *testing.T) {
 func TestWrapRespawnCommand_PreservesQuotedPayloads(t *testing.T) {
 	t.Parallel()
 
+	if _, err := exec.LookPath("sh"); err != nil {
+		t.Skip("sh not available")
+	}
+
 	cases := []struct {
 		name string
 		cmd  string
@@ -3088,6 +3095,23 @@ func TestWrapRespawnCommand_ErrorsWhenBashUnavailable(t *testing.T) {
 	require.Contains(t, err.Error(), "bash not found")
 }
 
+func decodePowerShellEncodedCommandForTest(t *testing.T, wrapped string) string {
+	t.Helper()
+
+	const prefix = "pwsh -NoLogo -EncodedCommand "
+	require.True(t, strings.HasPrefix(wrapped, prefix), "expected PowerShell encoded wrapper, got: %s", wrapped)
+
+	decoded, err := base64.StdEncoding.DecodeString(strings.TrimPrefix(wrapped, prefix))
+	require.NoError(t, err)
+	require.Equal(t, 0, len(decoded)%2)
+
+	words := make([]uint16, len(decoded)/2)
+	for i := range words {
+		words[i] = uint16(decoded[i*2]) | uint16(decoded[i*2+1])<<8
+	}
+	return string(utf16.Decode(words))
+}
+
 func TestStartCommandSpec_DoesNotDoubleWrapBashC(t *testing.T) {
 	s := &Session{
 		Name:                       "agentdeck_test_abcdef12",
@@ -3098,6 +3122,10 @@ func TestStartCommandSpec_DoesNotDoubleWrapBashC(t *testing.T) {
 	cmd := `bash -c 'stty susp undef; docker exec -it agent-deck-test bash -c '\''export COLORFGBG='\''\''\''15;0'\''\''\'' && opencode -s ses_abc'\'''`
 	_, args := s.startCommandSpec("/tmp", cmd)
 	require.NotEmpty(t, args)
+	if runtime.GOOS == "windows" {
+		require.Equal(t, cmd, decodePowerShellEncodedCommandForTest(t, args[len(args)-1]))
+		return
+	}
 	require.Equal(t, cmd, args[len(args)-1])
 }
 
@@ -3110,6 +3138,10 @@ func TestStartCommandSpec_WrapsNonBashCommands(t *testing.T) {
 
 	_, args := s.startCommandSpec("/tmp", `export COLORFGBG='15;0' && opencode -s ses_abc`)
 	require.NotEmpty(t, args)
+	if runtime.GOOS == "windows" {
+		require.Equal(t, `export COLORFGBG='15;0' && opencode -s ses_abc`, decodePowerShellEncodedCommandForTest(t, args[len(args)-1]))
+		return
+	}
 	require.True(t, strings.HasPrefix(args[len(args)-1], "bash -c '"))
 }
 
@@ -3143,6 +3175,9 @@ func TestResolvedAgentDeckTheme_COLORFGBG(t *testing.T) {
 func TestResolvedAgentDeckTheme_ExplicitConfigOverridesCOLORFGBG(t *testing.T) {
 	tempDir := t.TempDir()
 	t.Setenv("HOME", tempDir)
+	if runtime.GOOS == "windows" {
+		t.Setenv("USERPROFILE", tempDir)
+	}
 
 	// Write explicit dark config
 	agentDeckDir := filepath.Join(tempDir, ".agent-deck")
@@ -3194,4 +3229,15 @@ func TestKillSessionsWithEnvValue_NoMatch(t *testing.T) {
 	KillSessionsWithEnvValue("CLAUDE_SESSION_ID", "nonexistent-id", "")
 
 	assert.NoError(t, exec.Command("tmux", "has-session", "-t", sess).Run(), "session should not be killed")
+}
+
+func TestSupportsDeadPaneDetection(t *testing.T) {
+	sess := &Session{}
+	assert.False(t, sess.supportsDeadPaneDetection())
+
+	sess.OptionOverrides = map[string]string{"remain-on-exit": "off"}
+	assert.False(t, sess.supportsDeadPaneDetection())
+
+	sess.OptionOverrides["remain-on-exit"] = "on"
+	assert.True(t, sess.supportsDeadPaneDetection())
 }

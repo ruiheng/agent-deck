@@ -23,6 +23,12 @@ Thank you for your interest in contributing to Agent Deck! This document provide
 - tmux
 - Make
 
+On Windows, `make` is optional — use the PowerShell helper:
+
+```powershell
+.\dev.cmd help
+```
+
 ### Building
 
 ```bash
@@ -32,12 +38,29 @@ make lint       # Run linter (requires golangci-lint)
 make fmt        # Format code
 ```
 
+Windows equivalent:
+
+```powershell
+.\dev.cmd build
+.\dev.cmd test
+.\dev.cmd lint
+.\dev.cmd fmt
+```
+
 ### Running Locally
 
 ```bash
 make dev        # Run with auto-reload (requires 'air')
 # or
 make run        # Run directly
+```
+
+Windows equivalent:
+
+```powershell
+.\dev.cmd dev
+# or
+.\dev.cmd run
 ```
 
 ## Making Changes
@@ -63,8 +86,8 @@ refactor: simplify group management logic
 
 ### Code Style
 
-- Run `make fmt` before committing
-- Run `make lint` to check for issues
+- Run `make fmt` (or `.\dev.cmd fmt` on Windows) before committing
+- Run `make lint` (or `.\dev.cmd lint` on Windows) to check for issues
 - Follow existing code patterns
 - Add tests for new functionality
 
@@ -125,7 +148,9 @@ agent-deck/
 │   ├── session/        # Session & group management
 │   └── tmux/           # tmux integration, status detection
 ├── .github/workflows/  # CI/CD
-├── Makefile           # Build automation
+├── Makefile           # Unix-like build automation
+├── dev.ps1            # Windows development helper
+├── dev.cmd            # Windows wrapper for dev.ps1
 └── README.md
 ```
 

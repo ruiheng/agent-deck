@@ -7,11 +7,12 @@ import (
 	"os"
 	"os/exec"
 	"strconv"
+	"runtime"
 	"strings"
 	"sync"
-	"syscall"
 	"time"
 
+	"github.com/asheshgoplani/agent-deck/internal/processutil"
 	"github.com/creack/pty"
 	"github.com/gorilla/websocket"
 )
@@ -193,10 +194,7 @@ func (b *tmuxPTYBridge) Close() {
 		}
 		b.ptmxMu.Unlock()
 		if b.cmd != nil && b.cmd.Process != nil {
-			pgid, err := syscall.Getpgid(b.cmd.Process.Pid)
-			if err == nil {
-				_ = syscall.Kill(-pgid, syscall.SIGTERM)
-			} else {
+			if err := processutil.TerminateProcessTree(b.cmd.Process); err != nil {
 				_ = b.cmd.Process.Kill()
 			}
 		}
@@ -252,8 +250,8 @@ func tmuxCommand(socketName string, args ...string) *exec.Cmd {
 	}
 
 	cmd := exec.Command("tmux", finalArgs...)
-	if hasSocket {
-		cmd.Env = environWithoutTMUX(os.Environ())
+	if hasSocket || runtime.GOOS == "windows" {
+		cmd.Env = sanitizeTmuxEnv(os.Environ(), hasSocket)
 	}
 	return cmd
 }
@@ -281,10 +279,13 @@ func tmuxSocketFromEnv() (string, bool) {
 	return socketPart, true
 }
 
-func environWithoutTMUX(env []string) []string {
+func sanitizeTmuxEnv(env []string, stripTMUX bool) []string {
 	filtered := make([]string, 0, len(env))
 	for _, kv := range env {
-		if strings.HasPrefix(kv, "TMUX=") {
+		if stripTMUX && strings.HasPrefix(kv, "TMUX=") {
+			continue
+		}
+		if runtime.GOOS == "windows" && strings.HasPrefix(kv, "PSMUX_SESSION=") {
 			continue
 		}
 		filtered = append(filtered, kv)

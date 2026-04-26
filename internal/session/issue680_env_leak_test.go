@@ -13,7 +13,7 @@ package session
 //
 // Fix: when the Claude session is NOT itself a conductor AND the
 // session's group has a paired [conductors.<group>] block, append an
-// `unset TELEGRAM_STATE_DIR` to the spawn env so the poller does not
+// clear TELEGRAM_STATE_DIR in the spawn env so the poller does not
 // auto-start in children. TELEGRAM_STATE_DIR is the only known-bad
 // conductor-only env var today; keeping this hardcoded avoids a
 // schema change at release-cut time. Users with legitimate reasons
@@ -22,6 +22,7 @@ package session
 
 import (
 	"os"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -79,6 +80,20 @@ func configWithConductorAndGroup(name, envFilePath string) *UserConfig {
 	return cfg
 }
 
+func wantTelegramStateDirStripExpr() string {
+	if runtime.GOOS == "windows" {
+		return "Remove-Item Env:TELEGRAM_STATE_DIR -ErrorAction SilentlyContinue"
+	}
+	return "unset TELEGRAM_STATE_DIR"
+}
+
+func wantTelegramStateDirStripExprFor(inst *Instance) string {
+	if inst.shouldUsePowerShellClaudeShell() {
+		return "Remove-Item Env:TELEGRAM_STATE_DIR -ErrorAction SilentlyContinue"
+	}
+	return "unset TELEGRAM_STATE_DIR"
+}
+
 // Child session in a conductor's group MUST strip TELEGRAM_STATE_DIR
 // after sourcing the group env_file so the telegram plugin does not
 // auto-start in children and race the conductor for getUpdates.
@@ -95,7 +110,7 @@ func TestIssue680_ChildSession_StripsTelegramStateDir(t *testing.T) {
 
 	got := child.buildEnvSourceCommand()
 
-	if !strings.Contains(got, "unset TELEGRAM_STATE_DIR") {
+	if !strings.Contains(got, wantTelegramStateDirStripExprFor(child)) {
 		t.Errorf("child session in conductor group should strip TELEGRAM_STATE_DIR\nbuildEnvSourceCommand() = %q", got)
 	}
 }
@@ -115,7 +130,7 @@ func TestIssue680_ConductorSession_KeepsTelegramStateDir(t *testing.T) {
 
 	got := conductor.buildEnvSourceCommand()
 
-	if strings.Contains(got, "unset TELEGRAM_STATE_DIR") {
+	if strings.Contains(got, wantTelegramStateDirStripExpr()) {
 		t.Errorf("conductor session must NOT strip TELEGRAM_STATE_DIR\nbuildEnvSourceCommand() = %q", got)
 	}
 }
@@ -150,7 +165,7 @@ func TestIssue680_ChildSession_NoConductorBlock_StripsUnderS8(t *testing.T) {
 
 	got := child.buildEnvSourceCommand()
 
-	if !strings.Contains(got, "unset TELEGRAM_STATE_DIR") {
+	if !strings.Contains(got, wantTelegramStateDirStripExprFor(child)) {
 		t.Errorf("S8 broadening: non-channel-owning child must strip TELEGRAM_STATE_DIR even in a non-conductor group\nbuildEnvSourceCommand() = %q", got)
 	}
 }
@@ -182,7 +197,30 @@ func TestIssue680_ChildSession_NoGroupEnvFile_StripsUnderS8(t *testing.T) {
 
 	got := child.buildEnvSourceCommand()
 
-	if !strings.Contains(got, "unset TELEGRAM_STATE_DIR") {
+	if !strings.Contains(got, wantTelegramStateDirStripExprFor(child)) {
 		t.Errorf("S8 broadening: child must strip TSD even without env_file\nbuildEnvSourceCommand() = %q", got)
+	}
+}
+
+func TestIssue680_WindowsNonPowerShellShell_UsesPOSIXStrip(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("Windows-specific shell selection")
+	}
+	cfg := &UserConfig{MCPs: make(map[string]MCPDef)}
+	defer resetUserConfigCache(t, cfg)()
+
+	child := &Instance{
+		Title:       "sandbox-child",
+		Tool:        "claude",
+		ProjectPath: "/tmp",
+		Sandbox:     &SandboxConfig{Enabled: true},
+	}
+
+	got := child.buildEnvSourceCommand()
+	if !strings.Contains(got, "unset TELEGRAM_STATE_DIR") {
+		t.Errorf("Windows non-PowerShell claude shell should use POSIX unset\nbuildEnvSourceCommand() = %q", got)
+	}
+	if strings.Contains(got, "Remove-Item Env:TELEGRAM_STATE_DIR") {
+		t.Errorf("Windows non-PowerShell claude shell must not use PowerShell unset\nbuildEnvSourceCommand() = %q", got)
 	}
 }

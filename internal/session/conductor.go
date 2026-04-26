@@ -566,7 +566,7 @@ func GenerateHeartbeatPlist(name string, intervalMinutes int) (string, error) {
 	label := HeartbeatPlistLabel(name)
 	intervalSeconds := intervalMinutes * 60
 
-	homeDir, err := os.UserHomeDir()
+	homeDir, err := userHomeDir()
 	if err != nil {
 		return "", err
 	}
@@ -583,7 +583,7 @@ func GenerateHeartbeatPlist(name string, intervalMinutes int) (string, error) {
 
 // HeartbeatPlistPath returns the path where a conductor's heartbeat plist should be installed
 func HeartbeatPlistPath(name string) (string, error) {
-	homeDir, err := os.UserHomeDir()
+	homeDir, err := userHomeDir()
 	if err != nil {
 		return "", err
 	}
@@ -1227,7 +1227,7 @@ func GenerateLaunchdPlist() (string, error) {
 		return "", err
 	}
 
-	homeDir, err := os.UserHomeDir()
+	homeDir, err := userHomeDir()
 	if err != nil {
 		return "", err
 	}
@@ -1253,7 +1253,7 @@ func GenerateLaunchdPlist() (string, error) {
 
 // LaunchdPlistPath returns the path where the plist should be installed
 func LaunchdPlistPath() (string, error) {
-	homeDir, err := os.UserHomeDir()
+	homeDir, err := userHomeDir()
 	if err != nil {
 		return "", err
 	}
@@ -1265,7 +1265,7 @@ func LaunchdPlistPath() (string, error) {
 // PATH (so pyenv/asdf-selected interpreters win), then common absolute paths.
 func findPython3() string {
 	// Prefer the conductor venv python which has bridge dependencies installed.
-	if homeDir, err := os.UserHomeDir(); err == nil {
+	if homeDir, err := userHomeDir(); err == nil {
 		venvPython := filepath.Join(homeDir, ".agent-deck", "conductor", "venv", "bin", "python3")
 		if _, err := os.Stat(venvPython); err == nil {
 			return venvPython
@@ -1450,7 +1450,7 @@ const systemdTransitionNotifierServiceName = "agent-deck-transition-notifier.ser
 
 // SystemdUserDir returns the systemd user unit directory (~/.config/systemd/user/)
 func SystemdUserDir() (string, error) {
-	homeDir, err := os.UserHomeDir()
+	homeDir, err := userHomeDir()
 	if err != nil {
 		return "", err
 	}
@@ -1511,7 +1511,7 @@ func GenerateSystemdBridgeService() (string, error) {
 	if err != nil {
 		return "", err
 	}
-	homeDir, err := os.UserHomeDir()
+	homeDir, err := userHomeDir()
 	if err != nil {
 		return "", err
 	}
@@ -1533,7 +1533,7 @@ func GenerateSystemdBridgeService() (string, error) {
 
 // GenerateTransitionNotifierLaunchdPlist returns a launchd plist for the transition notifier daemon.
 func GenerateTransitionNotifierLaunchdPlist() (string, error) {
-	homeDir, err := os.UserHomeDir()
+	homeDir, err := userHomeDir()
 	if err != nil {
 		return "", err
 	}
@@ -1557,7 +1557,7 @@ func GenerateTransitionNotifierLaunchdPlist() (string, error) {
 
 // TransitionNotifierLaunchdPlistPath returns the launchd plist path for transition notifier.
 func TransitionNotifierLaunchdPlistPath() (string, error) {
-	homeDir, err := os.UserHomeDir()
+	homeDir, err := userHomeDir()
 	if err != nil {
 		return "", err
 	}
@@ -1566,7 +1566,7 @@ func TransitionNotifierLaunchdPlistPath() (string, error) {
 
 // GenerateSystemdTransitionNotifierService returns the systemd unit content for transition notifier.
 func GenerateSystemdTransitionNotifierService() (string, error) {
-	homeDir, err := os.UserHomeDir()
+	homeDir, err := userHomeDir()
 	if err != nil {
 		return "", err
 	}
@@ -1602,7 +1602,7 @@ func GenerateSystemdHeartbeatService(name string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	homeDir, err := os.UserHomeDir()
+	homeDir, err := userHomeDir()
 	if err != nil {
 		return "", err
 	}
@@ -1665,7 +1665,7 @@ func installBridgeDaemonLaunchd() (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("failed to get plist path: %w", err)
 	}
-	homeDir, err := os.UserHomeDir()
+	homeDir, err := userHomeDir()
 	if err != nil {
 		return "", err
 	}
@@ -1733,7 +1733,7 @@ func installTransitionNotifierLaunchd() (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("failed to get notifier plist path: %w", err)
 	}
-	homeDir, err := os.UserHomeDir()
+	homeDir, err := userHomeDir()
 	if err != nil {
 		return "", err
 	}
@@ -1971,7 +1971,7 @@ func installHeartbeatDaemonLaunchd(name string, intervalMinutes int) error {
 	if err != nil {
 		return err
 	}
-	homeDir, err := os.UserHomeDir()
+	homeDir, err := userHomeDir()
 	if err != nil {
 		return err
 	}

@@ -23,7 +23,7 @@ type StatusEvent struct {
 
 // GetEventsDir returns the path to the events directory.
 func GetEventsDir() string {
-	home, err := os.UserHomeDir()
+	home, err := userHomeDir()
 	if err != nil {
 		return filepath.Join(os.TempDir(), ".agent-deck", "events")
 	}

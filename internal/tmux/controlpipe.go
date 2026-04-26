@@ -8,10 +8,10 @@ import (
 	"os/exec"
 	"strings"
 	"sync"
-	"syscall"
 	"time"
 
 	"github.com/asheshgoplani/agent-deck/internal/logging"
+	"github.com/asheshgoplani/agent-deck/internal/processutil"
 )
 
 var pipeLog = logging.ForComponent("pipe")
@@ -102,7 +102,7 @@ func NewControlPipe(sessionName, socketName string) (*ControlPipe, error) {
 func newControlPipeOnce(sessionName, socketName string) (*ControlPipe, error) {
 	cmd := tmuxExec(socketName, "-C", "attach-session", "-t", sessionName)
 	// Put in own process group so we can kill the entire group on shutdown
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	processutil.SetProcessGroup(cmd)
 
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
@@ -361,12 +361,7 @@ func (cp *ControlPipe) Close() {
 
 		// Kill the process group to clean up reliably
 		if cp.cmd.Process != nil {
-			pgid, err := syscall.Getpgid(cp.cmd.Process.Pid)
-			if err == nil {
-				_ = syscall.Kill(-pgid, syscall.SIGKILL)
-			} else {
-				_ = cp.cmd.Process.Kill()
-			}
+			_ = processutil.KillProcessTree(cp.cmd.Process)
 		}
 
 		// Wait for the process to exit (prevents zombies). Routed through

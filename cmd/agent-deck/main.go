@@ -500,21 +500,7 @@ func main() {
 				slog.Int("pid", os.Getpid()))
 		}
 
-		// SIGUSR1 dumps the ring buffer for post-mortem debugging
-		usr1Chan := make(chan os.Signal, 1)
-		signal.Notify(usr1Chan, syscall.SIGUSR1)
-		go func() {
-			for range usr1Chan {
-				dumpPath := filepath.Join(baseDir, fmt.Sprintf("crash-dump-%d.jsonl", time.Now().Unix()))
-				if err := logging.DumpRingBuffer(dumpPath); err != nil {
-					logging.ForComponent(logging.CompUI).Error("crash_dump_failed",
-						slog.String("error", err.Error()))
-				} else {
-					logging.ForComponent(logging.CompUI).Info("crash_dump_written",
-						slog.String("path", dumpPath))
-				}
-			}
-		}()
+		installCrashDumpSignalHandler(baseDir)
 	}
 
 	// Extract --group / -g flag here (TUI-only path; subcommands consume their own -g)
@@ -2658,24 +2644,7 @@ func drainStdin() {
 	if !term.IsTerminal(fd) {
 		return
 	}
-
-	// Use TCIFLUSH via ioctl to flush the terminal input queue
-	// This is the proper Unix way to discard pending input
-	// TCIFLUSH = 0 (flush input), TCIOFLUSH = 2 (flush both)
-	// The syscall is: ioctl(fd, TCFLSH, TCIFLUSH)
-	// On macOS/Darwin, TCFLSH = 0x80047410 (from termios.h)
-	// On Linux, TCFLSH = 0x540B
-	const (
-		tcflshDarwin = 0x80047410
-		tcflshLinux  = 0x540B
-		tciflush     = 0 // flush input queue
-	)
-
-	// Try Darwin first, then Linux
-	_, _, errno := syscall.Syscall(syscall.SYS_IOCTL, uintptr(fd), tcflshDarwin, tciflush)
-	if errno != 0 {
-		_, _, _ = syscall.Syscall(syscall.SYS_IOCTL, uintptr(fd), tcflshLinux, tciflush)
-	}
+	drainStdinPlatform(fd)
 }
 
 func printHelp() {

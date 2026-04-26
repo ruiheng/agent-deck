@@ -5,19 +5,12 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"os"
 	"os/exec"
-	"os/signal"
+	"runtime"
+	"strconv"
 	"strings"
-	"sync"
-	"syscall"
 	"time"
-
-	"github.com/asheshgoplani/agent-deck/internal/termreply"
-	"github.com/asheshgoplani/agent-deck/internal/tmux"
-	"github.com/creack/pty"
-	"golang.org/x/term"
 )
 
 // sshAttachReplyQuarantine matches attachReplyQuarantine in internal/tmux/pty.go.
@@ -44,6 +37,13 @@ func NewSSHRunner(name string, rc RemoteConfig) *SSHRunner {
 	}
 }
 
+func (r *SSHRunner) ensureSSHAvailable(bin string) error {
+	if _, err := exec.LookPath(bin); err != nil {
+		return fmt.Errorf("%s not found in PATH", bin)
+	}
+	return nil
+}
+
 // Run executes an agent-deck command on the remote host and returns stdout.
 func (r *SSHRunner) Run(ctx context.Context, args ...string) ([]byte, error) {
 	timeoutCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
@@ -53,19 +53,15 @@ func (r *SSHRunner) Run(ctx context.Context, args ...string) ([]byte, error) {
 
 // run executes an agent-deck command on the remote host using the provided context directly.
 func (r *SSHRunner) run(ctx context.Context, args ...string) ([]byte, error) {
-	_ = os.MkdirAll(sshControlDir, 0700)
+	if err := r.ensureSSHAvailable("ssh"); err != nil {
+		return nil, err
+	}
+	if runtime.GOOS != "windows" {
+		_ = os.MkdirAll(sshControlDir, 0700)
+	}
 
 	remoteCmd := r.buildRemoteCommand(args...)
-
-	sshArgs := []string{
-		"-o", "ControlMaster=auto",
-		"-o", "ControlPath=" + sshControlDir + "/%r@%h:%p",
-		"-o", "ControlPersist=600",
-		"-o", "ConnectTimeout=10",
-		"-o", "BatchMode=yes",
-		r.Host,
-		remoteCmd,
-	}
+	sshArgs := r.sshBaseArgs(remoteCmd)
 
 	cmd := exec.CommandContext(ctx, "ssh", sshArgs...)
 	var stdout, stderr bytes.Buffer
@@ -85,145 +81,37 @@ func (r *SSHRunner) run(ctx context.Context, args ...string) ([]byte, error) {
 // PTY in sync when the local terminal is resized, and sends SIGWINCH to
 // self on detach so Bubble Tea re-queries the terminal size.
 func (r *SSHRunner) Attach(sessionID string) error {
-	_ = os.MkdirAll(sshControlDir, 0700)
+	if err := r.ensureSSHAvailable("ssh"); err != nil {
+		return err
+	}
+	if runtime.GOOS != "windows" {
+		_ = os.MkdirAll(sshControlDir, 0700)
+	}
 
 	remoteCmd := r.buildRemoteCommand("session", "attach", sessionID)
+	if runtime.GOOS == "windows" {
+		cmd := exec.Command("ssh", r.windowsAttachArgs(remoteCmd)...)
+		cmd.Stdin = os.Stdin
+		cmd.Stdout = os.Stdout
+		cmd.Stderr = os.Stderr
+		if err := cmd.Run(); err != nil {
+			return fmt.Errorf("ssh attach failed: %w", err)
+		}
+		return nil
+	}
+	return r.attachWithPTY(remoteCmd)
+}
 
+func (r *SSHRunner) windowsAttachArgs(remoteCmd string) []string {
+	dest, port := splitSSHHostPort(r.Host)
 	sshArgs := []string{
-		"-tt", // force remote PTY
-		"-o", "ControlMaster=auto",
-		"-o", "ControlPath=" + sshControlDir + "/%r@%h:%p",
-		"-o", "ControlPersist=600",
-		r.Host,
-		remoteCmd,
+		"-tt",
+		"-o", "ConnectTimeout=10",
 	}
-
-	cmd := exec.Command("ssh", sshArgs...)
-
-	// Start SSH with a local PTY so it can detect terminal dimensions.
-	// Without this, piping stdin causes SSH to default to 80x24.
-	ptmx, err := pty.Start(cmd)
-	if err != nil {
-		return fmt.Errorf("failed to start ssh with pty: %w", err)
+	if port != "" {
+		sshArgs = append(sshArgs, "-p", port)
 	}
-	defer ptmx.Close()
-
-	// Set the PTY slave to raw mode so all bytes pass through transparently.
-	if _, err := term.MakeRaw(int(ptmx.Fd())); err != nil {
-		return fmt.Errorf("failed to set pty raw mode: %w", err)
-	}
-
-	// Save original terminal state and set raw mode.
-	oldState, err := term.MakeRaw(int(os.Stdin.Fd()))
-	if err != nil {
-		return fmt.Errorf("failed to set raw mode: %w", err)
-	}
-	defer func() { _ = term.Restore(int(os.Stdin.Fd()), oldState) }()
-
-	// Handle SIGWINCH to resize the PTY when the local terminal is resized.
-	sigwinch := make(chan os.Signal, 1)
-	signal.Notify(sigwinch, syscall.SIGWINCH)
-	sigwinchDone := make(chan struct{})
-	defer func() {
-		signal.Stop(sigwinch)
-		close(sigwinchDone)
-	}()
-
-	var wg sync.WaitGroup
-
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		for {
-			select {
-			case <-sigwinchDone:
-				return
-			case _, ok := <-sigwinch:
-				if !ok {
-					return
-				}
-				if ws, err := pty.GetsizeFull(os.Stdin); err == nil {
-					_ = pty.Setsize(ptmx, ws)
-				}
-			}
-		}
-	}()
-
-	// Initial resize to propagate current terminal dimensions.
-	sigwinch <- syscall.SIGWINCH
-
-	detachCh := make(chan struct{})
-	outputDone := make(chan struct{})
-
-	// Copy PTY output to stdout.
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		defer close(outputDone)
-		_, _ = io.Copy(os.Stdout, ptmx)
-	}()
-
-	// Read stdin, intercept Ctrl+Q (all encodings), forward the rest.
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		buf := make([]byte, 256)
-		for {
-			n, err := os.Stdin.Read(buf)
-			if err != nil {
-				break
-			}
-			data := buf[:n]
-
-			if idx := tmux.IndexCtrlQ(data); idx >= 0 {
-				if idx > 0 {
-					_, _ = ptmx.Write(data[:idx])
-				}
-				close(detachCh)
-				return
-			}
-
-			if _, err := ptmx.Write(data); err != nil {
-				break
-			}
-		}
-	}()
-
-	// Wait for SSH to exit.
-	cmdDone := make(chan error, 1)
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		cmdDone <- cmd.Wait()
-	}()
-
-	// Block until detach or SSH exit.
-	select {
-	case <-detachCh:
-	case <-cmdDone:
-	}
-
-	// Cleanup: close PTY and wait for output to drain.
-	_ = ptmx.Close()
-	if cmd.Process != nil {
-		_ = cmd.Process.Kill()
-	}
-	select {
-	case <-outputDone:
-	case <-time.After(50 * time.Millisecond):
-	}
-	termreply.QuarantineFor(sshAttachReplyQuarantine)
-
-	// Reset terminal styles that may have leaked from the remote session.
-	_, _ = os.Stdout.WriteString("\x1b]8;;\x1b\\\x1b[0m\x1b[24m\x1b[39m\x1b[49m")
-
-	// Send SIGWINCH to self so Bubble Tea re-queries terminal dimensions
-	// and redraws the TUI with the correct layout on return.
-	if p, err := os.FindProcess(os.Getpid()); err == nil {
-		_ = p.Signal(syscall.SIGWINCH)
-	}
-
-	return nil
+	return append(sshArgs, dest, remoteCmd)
 }
 
 // RunCommand executes an arbitrary agent-deck command on the remote.
@@ -294,7 +182,12 @@ func (r *SSHRunner) FetchSessionOutput(ctx context.Context, sessionID string) (s
 
 // DetectPlatform returns the remote host's OS and architecture (e.g., "linux", "amd64").
 func (r *SSHRunner) DetectPlatform(ctx context.Context) (goos, goarch string, err error) {
-	_ = os.MkdirAll(sshControlDir, 0700)
+	if err := r.ensureSSHAvailable("ssh"); err != nil {
+		return "", "", err
+	}
+	if runtime.GOOS != "windows" {
+		_ = os.MkdirAll(sshControlDir, 0700)
+	}
 
 	// Run uname on the remote to detect OS and machine architecture
 	sshArgs := r.sshBaseArgs("uname -s -m")
@@ -339,7 +232,12 @@ func (r *SSHRunner) DetectPlatform(ctx context.Context) (goos, goarch string, er
 // CheckBinary checks if agent-deck exists at the configured path on the remote.
 // Returns the version string if found, or empty string if not found.
 func (r *SSHRunner) CheckBinary(ctx context.Context) (version string, found bool) {
-	_ = os.MkdirAll(sshControlDir, 0700)
+	if err := r.ensureSSHAvailable("ssh"); err != nil {
+		return "", false
+	}
+	if runtime.GOOS != "windows" {
+		_ = os.MkdirAll(sshControlDir, 0700)
+	}
 
 	remoteCmd := shellQuote(r.AgentDeckPath) + " version"
 	sshArgs := r.sshBaseArgs(remoteCmd)
@@ -365,7 +263,15 @@ func (r *SSHRunner) CheckBinary(ctx context.Context) (version string, found bool
 
 // DeployBinary uploads a binary to the remote at the configured agent-deck path.
 func (r *SSHRunner) DeployBinary(ctx context.Context, binaryData []byte) error {
-	_ = os.MkdirAll(sshControlDir, 0700)
+	if err := r.ensureSSHAvailable("ssh"); err != nil {
+		return err
+	}
+	if err := r.ensureSSHAvailable("scp"); err != nil {
+		return err
+	}
+	if runtime.GOOS != "windows" {
+		_ = os.MkdirAll(sshControlDir, 0700)
+	}
 
 	// Write binary to temp file locally
 	tmpFile, err := os.CreateTemp("", "agent-deck-remote-*")
@@ -393,14 +299,21 @@ func (r *SSHRunner) DeployBinary(ctx context.Context, binaryData []byte) error {
 	}
 
 	// SCP the binary to the remote
+	dest, port := splitSSHHostPort(r.Host)
 	scpArgs := []string{
-		"-o", "ControlMaster=auto",
-		"-o", "ControlPath=" + sshControlDir + "/%r@%h:%p",
-		"-o", "ControlPersist=600",
 		"-o", "ConnectTimeout=10",
-		tmpPath,
-		r.Host + ":" + r.AgentDeckPath,
 	}
+	if runtime.GOOS != "windows" {
+		scpArgs = append(scpArgs,
+			"-o", "ControlMaster=auto",
+			"-o", "ControlPath="+sshControlDir+"/%r@%h:%p",
+			"-o", "ControlPersist=600",
+		)
+	}
+	if port != "" {
+		scpArgs = append(scpArgs, "-P", port)
+	}
+	scpArgs = append(scpArgs, tmpPath, dest+":"+r.AgentDeckPath)
 
 	scpCtx, cancel := context.WithTimeout(ctx, 120*time.Second)
 	defer cancel()
@@ -424,15 +337,23 @@ func (r *SSHRunner) DeployBinary(ctx context.Context, binaryData []byte) error {
 
 // sshBaseArgs returns common SSH args for running a raw command on the remote.
 func (r *SSHRunner) sshBaseArgs(remoteCmd string) []string {
-	return []string{
-		"-o", "ControlMaster=auto",
-		"-o", "ControlPath=" + sshControlDir + "/%r@%h:%p",
-		"-o", "ControlPersist=600",
+	dest, port := splitSSHHostPort(r.Host)
+	args := []string{
 		"-o", "ConnectTimeout=10",
 		"-o", "BatchMode=yes",
-		r.Host,
-		remoteCmd,
 	}
+	if runtime.GOOS != "windows" {
+		args = append(args,
+			"-o", "ControlMaster=auto",
+			"-o", "ControlPath="+sshControlDir+"/%r@%h:%p",
+			"-o", "ControlPersist=600",
+		)
+	}
+	if port != "" {
+		args = append(args, "-p", port)
+	}
+	args = append(args, dest, remoteCmd)
+	return args
 }
 
 // CreateSession creates and starts a new session on the remote, returning its ID.
@@ -497,4 +418,45 @@ type RemoteSessionInfo struct {
 
 	// Set locally, not from JSON
 	RemoteName string `json:"-"`
+}
+
+func splitSSHHostPort(host string) (dest, port string) {
+	dest = strings.TrimSpace(host)
+	if dest == "" {
+		return "", ""
+	}
+
+	if bracketStart := strings.LastIndex(dest, "["); bracketStart >= 0 {
+		bracketEnd := strings.LastIndex(dest, "]")
+		if bracketEnd > bracketStart {
+			if bracketEnd == len(dest)-1 {
+				return dest, ""
+			}
+			if bracketEnd+1 < len(dest) && dest[bracketEnd+1] == ':' {
+				candidatePort := dest[bracketEnd+2:]
+				if candidatePort != "" {
+					if _, err := strconv.Atoi(candidatePort); err == nil {
+						return dest[:bracketEnd+1], candidatePort
+					}
+				}
+			}
+			return dest, ""
+		}
+	}
+
+	at := strings.LastIndex(dest, "@")
+	colon := strings.LastIndex(dest, ":")
+	if colon <= at || colon == len(dest)-1 {
+		return dest, ""
+	}
+	if strings.Contains(dest[at+1:colon], ":") {
+		return dest, ""
+	}
+
+	candidatePort := dest[colon+1:]
+	if _, err := strconv.Atoi(candidatePort); err != nil {
+		return dest, ""
+	}
+
+	return dest[:colon], candidatePort
 }

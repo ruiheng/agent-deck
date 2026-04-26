@@ -5,7 +5,6 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"strings"
 )
 
 // SlugifyClaudeProjectPath converts a project path to Claude Code's encoded
@@ -18,10 +17,7 @@ import (
 // Kept in the session package so both the costs sync path and the CLI
 // `session move` command share one implementation (issue #414).
 func SlugifyClaudeProjectPath(projectPath string) string {
-	projectPath = strings.TrimRight(projectPath, "/")
-	slug := strings.ReplaceAll(projectPath, "/", "-")
-	slug = strings.ReplaceAll(slug, ".", "-")
-	return slug
+	return ConvertToClaudeDirName(projectPath)
 }
 
 // MigrateClaudeProjectDir moves ~/.claude/projects/<oldSlug>/ to

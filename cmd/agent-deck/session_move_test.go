@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/asheshgoplani/agent-deck/internal/session"
 )
 
 // sessionMoveAddSession is a helper that creates a test session and returns
@@ -40,13 +42,11 @@ func sessionMoveAddSession(t *testing.T, home, oldPath, title string) string {
 	return resp.ID
 }
 
-// claudeProjectSlugForTest mirrors internal/costs.slugifyProjectPath so we
-// can seed + assert the migration target. Claude encodes / and . as -.
+// claudeProjectSlugForTest shares the production encoding rule so Windows
+// drive letters and backslashes map to the same ~/.claude/projects slug that
+// the runtime actually uses.
 func claudeProjectSlugForTest(projectPath string) string {
-	projectPath = strings.TrimRight(projectPath, "/")
-	slug := strings.ReplaceAll(projectPath, "/", "-")
-	slug = strings.ReplaceAll(slug, ".", "-")
-	return slug
+	return session.ConvertToClaudeDirName(projectPath)
 }
 
 // seedClaudeProjectDir seeds ~/.claude/projects/<slug-of-projectPath>/ with
@@ -235,5 +235,54 @@ func TestSessionMove_MissingArguments(t *testing.T) {
 	combined := strings.ToLower(stderr)
 	if !strings.Contains(combined, "path") && !strings.Contains(combined, "usage") {
 		t.Errorf("error message should mention path or usage; got: %s", stderr)
+	}
+}
+
+func TestSessionMove_UsesWindowsClaudeSlugEncoding(t *testing.T) {
+	if testing.Short() {
+		t.Skip("subprocess CLI test skipped in short mode")
+	}
+	home := t.TempDir()
+	oldPath := `C:\Users\test\proj.v1`
+	newPath := `D:\Repos\proj.v2`
+
+	oldClaudeDir := seedClaudeProjectDir(t, home, oldPath, "windows-history\n")
+	newClaudeDir := filepath.Join(home, ".claude", "projects", claudeProjectSlugForTest(newPath))
+
+	if err := session.MigrateClaudeProjectDir(home, oldPath, newPath, false); err != nil {
+		t.Fatalf("MigrateClaudeProjectDir failed: %v", err)
+	}
+
+	if _, err := os.Stat(oldClaudeDir); !os.IsNotExist(err) {
+		t.Fatalf("old Windows slug dir still exists at %s", oldClaudeDir)
+	}
+	if _, err := os.Stat(filepath.Join(newClaudeDir, "abc-123.jsonl")); err != nil {
+		t.Fatalf("new Windows slug dir missing migrated sentinel: %v", err)
+	}
+	if strings.Contains(filepath.Base(newClaudeDir), `\`) || strings.Contains(filepath.Base(newClaudeDir), `:`) {
+		t.Fatalf("Windows slug still contains raw path separators or drive marker: %s", filepath.Base(newClaudeDir))
+	}
+}
+
+func TestSessionMove_PreservesUNCShareRootSlugEncoding(t *testing.T) {
+	home := t.TempDir()
+	oldPath := `\\server\share\`
+	newPath := `\\server\share\project2`
+
+	oldClaudeDir := seedClaudeProjectDir(t, home, oldPath, "unc-history\n")
+	newClaudeDir := filepath.Join(home, ".claude", "projects", claudeProjectSlugForTest(newPath))
+
+	if err := session.MigrateClaudeProjectDir(home, oldPath, newPath, false); err != nil {
+		t.Fatalf("MigrateClaudeProjectDir failed: %v", err)
+	}
+
+	if _, err := os.Stat(oldClaudeDir); !os.IsNotExist(err) {
+		t.Fatalf("old UNC slug dir still exists at %s", oldClaudeDir)
+	}
+	if _, err := os.Stat(filepath.Join(newClaudeDir, "abc-123.jsonl")); err != nil {
+		t.Fatalf("new UNC slug dir missing migrated sentinel: %v", err)
+	}
+	if got := filepath.Base(oldClaudeDir); got != "--server-share-" {
+		t.Fatalf("old UNC root slug = %q, want %q", got, "--server-share-")
 	}
 }

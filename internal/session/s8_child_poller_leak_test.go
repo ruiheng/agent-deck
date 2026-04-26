@@ -45,7 +45,7 @@ func TestS8_ChildNoChannels_NoConfig_StripsTSD(t *testing.T) {
 
 	got := child.buildEnvSourceCommand()
 
-	if !strings.Contains(got, "unset TELEGRAM_STATE_DIR") {
+	if !strings.Contains(got, wantTelegramStateDirStripExpr()) {
 		t.Errorf("non-channel-owning child must strip TELEGRAM_STATE_DIR even with no env_file\nbuildEnvSourceCommand() = %q", got)
 	}
 }
@@ -73,7 +73,7 @@ func TestS8_ChildNoChannels_UnrelatedGroup_StripsTSD(t *testing.T) {
 
 	got := child.buildEnvSourceCommand()
 
-	if !strings.Contains(got, "unset TELEGRAM_STATE_DIR") {
+	if !strings.Contains(got, wantTelegramStateDirStripExpr()) {
 		t.Errorf("non-channel-owning child in unrelated group must strip TELEGRAM_STATE_DIR\nbuildEnvSourceCommand() = %q", got)
 	}
 }
@@ -99,7 +99,7 @@ func TestS8_TelegramChannelOwner_KeepsTSD(t *testing.T) {
 
 	got := owner.buildEnvSourceCommand()
 
-	if strings.Contains(got, "unset TELEGRAM_STATE_DIR") {
+	if strings.Contains(got, wantTelegramStateDirStripExpr()) {
 		t.Errorf("channel-owning session (Channels contains telegram) must NOT strip TELEGRAM_STATE_DIR\nbuildEnvSourceCommand() = %q", got)
 	}
 }
@@ -122,7 +122,7 @@ func TestS8_NonClaudeSession_NoStrip(t *testing.T) {
 
 	got := codex.buildEnvSourceCommand()
 
-	if strings.Contains(got, "unset TELEGRAM_STATE_DIR") {
+	if strings.Contains(got, wantTelegramStateDirStripExpr()) {
 		t.Errorf("non-claude session must NOT receive the TSD strip\nbuildEnvSourceCommand() = %q", got)
 	}
 }
@@ -147,7 +147,7 @@ func TestS8_NonTelegramChannelOwner_StripsTSD(t *testing.T) {
 
 	got := discordOwner.buildEnvSourceCommand()
 
-	if !strings.Contains(got, "unset TELEGRAM_STATE_DIR") {
+	if !strings.Contains(got, wantTelegramStateDirStripExpr()) {
 		t.Errorf("non-telegram channel owner should still strip TELEGRAM_STATE_DIR (telegram-only env var)\nbuildEnvSourceCommand() = %q", got)
 	}
 }
@@ -172,7 +172,7 @@ func TestS8_TelegramChannelOwner_ForkVariant_KeepsTSD(t *testing.T) {
 
 	got := owner.buildEnvSourceCommand()
 
-	if strings.Contains(got, "unset TELEGRAM_STATE_DIR") {
+	if strings.Contains(got, wantTelegramStateDirStripExpr()) {
 		t.Errorf("fork-variant telegram channel owner must NOT strip\nbuildEnvSourceCommand() = %q", got)
 	}
 }
@@ -198,7 +198,7 @@ func TestS8_ConductorSession_NoChannels_KeepsTSD(t *testing.T) {
 
 	got := conductor.buildEnvSourceCommand()
 
-	if strings.Contains(got, "unset TELEGRAM_STATE_DIR") {
+	if strings.Contains(got, wantTelegramStateDirStripExpr()) {
 		t.Errorf("conductor-* session must NOT strip TSD (owner of the bot)\nbuildEnvSourceCommand() = %q", got)
 	}
 }

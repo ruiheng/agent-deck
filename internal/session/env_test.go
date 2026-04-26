@@ -3,43 +3,56 @@ package session
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
 
 func TestExpandPath(t *testing.T) {
-	home, err := os.UserHomeDir()
+	home, err := userHomeDir()
 	if err != nil {
 		t.Skip("Cannot get home directory")
 	}
 
 	// Set a known env var for testing
-	t.Setenv("AGENTDECK_TEST_DIR", "/tmp/testdir")
-	t.Setenv("AGENTDECK_RELATIVE_TEST_DIR", "tmp/relative/testdir")
+	testDir := filepath.Join(string(filepath.Separator), "tmp", "testdir")
+	relativeTestDir := filepath.Join("tmp", "relative", "testdir")
+	absolutePath := filepath.Join(string(filepath.Separator), "var", "log", "test.log")
+	envInMiddle := filepath.Join(string(filepath.Separator), "opt", relativeTestDir, "file")
+	undefinedPath := string(filepath.Separator) + ".env"
+	if runtime.GOOS == "windows" {
+		testDir = filepath.Join(`C:\`, "tmp", "testdir")
+		absolutePath = filepath.Join(`C:\`, "var", "log", "test.log")
+		envInMiddle = filepath.Join(string(filepath.Separator), "opt", relativeTestDir, "file")
+		undefinedPath = string(filepath.Separator) + ".env"
+	}
+	t.Setenv("AGENTDECK_TEST_DIR", testDir)
+	t.Setenv("AGENTDECK_RELATIVE_TEST_DIR", relativeTestDir)
 
 	tests := []struct {
 		name     string
 		input    string
 		expected string
 	}{
-		{"absolute path", "/var/log/test.log", "/var/log/test.log"},
+		{"absolute path", absolutePath, absolutePath},
 		{"relative path", ".env", ".env"},
 		{"tilde prefix", "~/.secrets", filepath.Join(home, ".secrets")},
 		{"just tilde", "~", home},
-		{"tilde in middle", "/path/~/.env", "/path/~/.env"},
+		{"tilde in middle", filepath.Join(string(filepath.Separator), "path", "~", ".env"), filepath.Join(string(filepath.Separator), "path", "~", ".env")},
 		{"$HOME expansion", "$HOME/.claude.env", filepath.Join(home, ".claude.env")},
 		{"${HOME} expansion", "${HOME}/.claude.env", filepath.Join(home, ".claude.env")},
-		{"custom env var", "$AGENTDECK_TEST_DIR/.env", "/tmp/testdir/.env"},
-		{"env var in middle", "/opt/$AGENTDECK_RELATIVE_TEST_DIR/file", "/opt/tmp/relative/testdir/file"},
-		{"tilde with env var after", "~/$AGENTDECK_TEST_DIR/.env", filepath.Join(home, "/tmp/testdir/.env")},
-		{"tilde with ${VAR} after", "~/${AGENTDECK_TEST_DIR}/.env", filepath.Join(home, "/tmp/testdir/.env")},
-		{"undefined env var", "$UNDEFINED_VAR/.env", "/.env"},
+		{"custom env var", "$AGENTDECK_TEST_DIR/.env", filepath.Join(testDir, ".env")},
+		{"env var in middle", filepath.Join(string(filepath.Separator), "opt", "$AGENTDECK_RELATIVE_TEST_DIR", "file"), envInMiddle},
+		{"tilde with env var after", "~/$AGENTDECK_TEST_DIR/.env", filepath.Join(home, testDir, ".env")},
+		{"tilde with ${VAR} after", "~/${AGENTDECK_TEST_DIR}/.env", filepath.Join(home, testDir, ".env")},
+		{"undefined env var", "$UNDEFINED_VAR/.env", undefinedPath},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := ExpandPath(tt.input)
-			if result != tt.expected {
+			result := filepath.Clean(ExpandPath(tt.input))
+			expected := filepath.Clean(tt.expected)
+			if result != expected {
 				t.Errorf("ExpandPath(%q) = %q, want %q", tt.input, result, tt.expected)
 			}
 		})
@@ -47,12 +60,17 @@ func TestExpandPath(t *testing.T) {
 }
 
 func TestResolvePath(t *testing.T) {
-	home, err := os.UserHomeDir()
+	home, err := userHomeDir()
 	if err != nil {
 		t.Skip("Cannot get home directory")
 	}
 
-	workDir := "/projects/myapp"
+	workDir := filepath.Join(string(filepath.Separator), "projects", "myapp")
+	absoluteEnvPath := filepath.Join(string(filepath.Separator), "etc", "env")
+	if runtime.GOOS == "windows" {
+		workDir = filepath.Join(`C:\`, "projects", "myapp")
+		absoluteEnvPath = filepath.Join(`C:\`, "etc", "env")
+	}
 
 	tests := []struct {
 		name     string
@@ -60,18 +78,19 @@ func TestResolvePath(t *testing.T) {
 		workDir  string
 		expected string
 	}{
-		{"absolute path", "/etc/env", workDir, "/etc/env"},
+		{"absolute path", absoluteEnvPath, workDir, absoluteEnvPath},
 		{"home path", "~/.secrets", workDir, filepath.Join(home, ".secrets")},
-		{"relative path", ".env", workDir, "/projects/myapp/.env"},
-		{"relative subdir", "config/.env", workDir, "/projects/myapp/config/.env"},
+		{"relative path", ".env", workDir, filepath.Join(workDir, ".env")},
+		{"relative subdir", filepath.Join("config", ".env"), workDir, filepath.Join(workDir, "config", ".env")},
 		{"$HOME env var", "$HOME/.claude.env", workDir, filepath.Join(home, ".claude.env")},
 		{"${HOME} env var", "${HOME}/.secrets", workDir, filepath.Join(home, ".secrets")},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := resolvePath(tt.path, tt.workDir)
-			if result != tt.expected {
+			result := filepath.Clean(resolvePath(tt.path, tt.workDir))
+			expected := filepath.Clean(tt.expected)
+			if result != expected {
 				t.Errorf("resolvePath(%q, %q) = %q, want %q", tt.path, tt.workDir, result, tt.expected)
 			}
 		})
@@ -127,12 +146,53 @@ func TestBuildSourceCmd(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			result := buildSourceCmd(tt.path, tt.ignoreMissing)
+			if runtime.GOOS == "windows" {
+				if result != "" && strings.Contains(result, ". '") {
+					t.Fatalf("buildSourceCmd() should not PowerShell dot-source env files on Windows, got %q", result)
+				}
+				return
+			}
 			for _, want := range tt.wantContains {
 				if !strings.Contains(result, want) {
 					t.Errorf("buildSourceCmd(%q, %v) = %q, want to contain %q", tt.path, tt.ignoreMissing, result, want)
 				}
 			}
 		})
+	}
+}
+
+func TestParseEnvFileAssignments(t *testing.T) {
+	assignments, err := parseEnvFileAssignments("export FOO=bar\nBAR='baz qux'\n# comment\n")
+	if err != nil {
+		t.Fatalf("parseEnvFileAssignments() unexpected error: %v", err)
+	}
+	if runtime.GOOS == "windows" {
+		want := []string{"$env:FOO='bar'", "$env:BAR='baz qux'"}
+		for i, expected := range want {
+			if assignments[i] != expected {
+				t.Fatalf("assignments[%d] = %q, want %q", i, assignments[i], expected)
+			}
+		}
+		return
+	}
+	want := []string{"export FOO='bar'", "export BAR='baz qux'"}
+	for i, expected := range want {
+		if assignments[i] != expected {
+			t.Fatalf("assignments[%d] = %q, want %q", i, assignments[i], expected)
+		}
+	}
+}
+
+func TestBuildScriptSourceCmd(t *testing.T) {
+	result := buildScriptSourceCmd("/path/init.ps1", true)
+	if runtime.GOOS == "windows" {
+		if !strings.Contains(result, "Test-Path") || !strings.Contains(result, ". '/path/init.ps1'") {
+			t.Fatalf("buildScriptSourceCmd() = %q, want PowerShell dot-source wrapper", result)
+		}
+		return
+	}
+	if !strings.Contains(result, `source "/path/init.ps1"`) {
+		t.Fatalf("buildScriptSourceCmd() = %q, want source command", result)
 	}
 }
 
@@ -169,7 +229,7 @@ func TestGetToolInlineEnv(t *testing.T) {
 			name:     "single var",
 			tool:     "testtool",
 			env:      map[string]string{"API_KEY": "secret123"},
-			expected: "export API_KEY='secret123'",
+			expected: shellSetEnvCommand("API_KEY", "secret123"),
 		},
 		{
 			name: "multiple vars sorted alphabetically",
@@ -179,25 +239,29 @@ func TestGetToolInlineEnv(t *testing.T) {
 				"ALPHA":  "first",
 				"MIDDLE": "mid",
 			},
-			expected: "export ALPHA='first' && export MIDDLE='mid' && export ZEBRA='last'",
+			expected: strings.Join([]string{
+				shellSetEnvCommand("ALPHA", "first"),
+				shellSetEnvCommand("MIDDLE", "mid"),
+				shellSetEnvCommand("ZEBRA", "last"),
+			}, shellCommandSeparator()),
 		},
 		{
 			name:     "value with single quotes escaped",
 			tool:     "testtool",
 			env:      map[string]string{"MSG": "it's a test"},
-			expected: "export MSG='it'\\''s a test'",
+			expected: shellSetEnvCommand("MSG", "it's a test"),
 		},
 		{
 			name:     "value with dollar sign not expanded",
 			tool:     "testtool",
 			env:      map[string]string{"VAR": "$HOME/path"},
-			expected: "export VAR='$HOME/path'",
+			expected: shellSetEnvCommand("VAR", "$HOME/path"),
 		},
 		{
 			name:     "value with backticks not expanded",
 			tool:     "testtool",
 			env:      map[string]string{"CMD": "`whoami`"},
-			expected: "export CMD='`whoami`'",
+			expected: shellSetEnvCommand("CMD", "`whoami`"),
 		},
 	}
 
@@ -250,37 +314,37 @@ func TestThemeEnvExport(t *testing.T) {
 			name:         "dark theme without parent env",
 			theme:        "dark",
 			envCOLORFGBG: "",
-			wantContains: "export COLORFGBG='15;0'",
+			wantContains: shellSetEnvCommand("COLORFGBG", "15;0"),
 		},
 		{
 			name:         "light theme without parent env",
 			theme:        "light",
 			envCOLORFGBG: "",
-			wantContains: "export COLORFGBG='0;15'",
+			wantContains: shellSetEnvCommand("COLORFGBG", "0;15"),
 		},
 		{
 			name:         "dark theme with matching parent env",
 			theme:        "dark",
 			envCOLORFGBG: "7;0",
-			wantContains: "export COLORFGBG='7;0'", // propagate parent's exact value
+			wantContains: shellSetEnvCommand("COLORFGBG", "7;0"), // propagate parent's exact value
 		},
 		{
 			name:         "light theme with matching parent env",
 			theme:        "light",
 			envCOLORFGBG: "0;15",
-			wantContains: "export COLORFGBG='0;15'", // propagate parent's exact value
+			wantContains: shellSetEnvCommand("COLORFGBG", "0;15"), // propagate parent's exact value
 		},
 		{
 			name:         "dark theme with mismatched parent env (parent says light)",
 			theme:        "dark",
 			envCOLORFGBG: "0;15",
-			wantContains: "export COLORFGBG='15;0'", // override with dark value
+			wantContains: shellSetEnvCommand("COLORFGBG", "15;0"), // override with dark value
 		},
 		{
 			name:         "light theme with mismatched parent env (parent says dark)",
 			theme:        "light",
 			envCOLORFGBG: "15;0",
-			wantContains: "export COLORFGBG='0;15'", // override with light value
+			wantContains: shellSetEnvCommand("COLORFGBG", "0;15"), // override with light value
 		},
 	}
 

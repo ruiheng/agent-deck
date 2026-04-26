@@ -22,8 +22,8 @@ const bootstrapSessionName = "agent-deck-tmux-test-bootstrap"
 // longer needed -- we skip only when tmux itself is missing.
 func skipIfNoTmuxBinary(t *testing.T) {
 	t.Helper()
-	if _, err := exec.LookPath("tmux"); err != nil {
-		t.Skip("tmux not available")
+	if err := tmuxBinaryError(); err != nil {
+		t.Skipf("tmux not available: %v", err)
 	}
 }
 
@@ -33,8 +33,8 @@ func skipIfNoTmuxBinary(t *testing.T) {
 // external live session still silent-skip as before.
 func skipIfNoTmuxServer(t *testing.T) {
 	t.Helper()
-	if _, err := exec.LookPath("tmux"); err != nil {
-		t.Skip("tmux not available")
+	if err := tmuxBinaryError(); err != nil {
+		t.Skipf("tmux not available: %v", err)
 	}
 	out, err := exec.Command("tmux", "list-sessions", "-F", "#{session_name}").Output()
 	if err != nil {
@@ -52,6 +52,17 @@ func skipIfNoTmuxServer(t *testing.T) {
 	if !hasReal {
 		t.Skip("tmux server has only the bootstrap session; legacy test requires a real live session")
 	}
+}
+
+func tmuxBinaryError() error {
+	path, err := exec.LookPath("tmux")
+	if err != nil {
+		return err
+	}
+	if err := exec.Command(path, "-V").Run(); err != nil {
+		return err
+	}
+	return nil
 }
 
 // TestMain ensures all tmux tests use the _test profile to prevent
@@ -81,6 +92,8 @@ func TestMain(m *testing.M) {
 	// etc.) actively run rather than silent-skipping on cold-boot.
 	cleanupBootstrap := bootstrapTmuxServer()
 	defer cleanupBootstrap()
+
+	os.Setenv("AGENTDECK_TEST_USE_HOME", "1")
 
 	// Force _test profile for all tests in this package
 	os.Setenv("AGENTDECK_PROFILE", "_test")
@@ -119,7 +132,7 @@ func cleanupTestSessions() {
 // socket so `tmux list-sessions` succeeds for the lifetime of this test
 // binary. If tmux is not installed this is a no-op (tests skip anyway).
 func bootstrapTmuxServer() func() {
-	if _, err := exec.LookPath("tmux"); err != nil {
+	if err := tmuxBinaryError(); err != nil {
 		return func() {}
 	}
 	cmd := exec.Command("tmux", "new-session", "-d", "-s", bootstrapSessionName, "sh", "-c", "sleep 3600")

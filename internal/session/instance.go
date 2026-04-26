@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -22,12 +23,14 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf16"
 
 	"al.essio.dev/pkg/shellescape"
 
 	"github.com/asheshgoplani/agent-deck/internal/docker"
 	"github.com/asheshgoplani/agent-deck/internal/logging"
 	"github.com/asheshgoplani/agent-deck/internal/send"
+	"github.com/asheshgoplani/agent-deck/internal/sessionbackend"
 	"github.com/asheshgoplani/agent-deck/internal/tmux"
 )
 
@@ -239,7 +242,8 @@ type Instance struct {
 	// JSON structure: {"tool": "claude", "options": {...}}
 	ToolOptionsJSON json.RawMessage `json:"tool_options,omitempty"`
 
-	tmuxSession *tmux.Session // Internal tmux session
+	tmuxSession *tmux.Session                 // Internal tmux session
+	backend     sessionbackend.SessionBackend // Incremental runtime/backend seam
 
 	// Hook-based status detection (set by StatusFileWatcher from Claude Code hooks)
 	hookStatus     string    // running, idle, waiting, dead (empty = no hook data)
@@ -506,6 +510,7 @@ func NewInstance(title, projectPath string) *Instance {
 		CreatedAt:      time.Now(),
 		TmuxSocketName: socket,
 		tmuxSession:    tmuxSess,
+		backend:        sessionbackend.NewBackend(tmuxSess),
 	}
 }
 
@@ -537,6 +542,7 @@ func NewInstanceWithTool(title, projectPath, tool string) *Instance {
 		CreatedAt:      time.Now(),
 		TmuxSocketName: socket,
 		tmuxSession:    tmuxSess,
+		backend:        sessionbackend.NewBackend(tmuxSess),
 	}
 
 	// Claude session ID will be detected from files Claude creates
@@ -595,30 +601,8 @@ func (i *Instance) buildClaudeCommandWithMessage(baseCommand, message string) st
 	claudeCmd := GetClaudeCommand()
 	hasCustomCommand := claudeCmd != "claude"
 
-	// Check if CLAUDE_CONFIG_DIR is explicitly configured (env var or config.toml)
-	// If NOT explicit, we don't set it in the command - let the shell's environment handle it.
-	// This is critical for WSL and other environments where users have CLAUDE_CONFIG_DIR
-	// set in their .bashrc/.zshrc - we should NOT override that with a default path.
-	// Also skip if using a custom command (alias handles config dir)
-	configDirPrefix := ""
-	if !hasCustomCommand && IsClaudeConfigDirExplicitForInstance(i) {
-		configDir := GetClaudeConfigDirForInstance(i)
-		// Worker scratch dir override: if a per-instance scratch
-		// CLAUDE_CONFIG_DIR has been prepared (issue #59, v1.7.68),
-		// route the claude binary through it so it loads the mutated
-		// settings.json with the telegram plugin pinned off. Conductors
-		// and explicit channel owners leave WorkerScratchConfigDir
-		// empty and use the ambient profile — see worker_scratch.go.
-		if i.WorkerScratchConfigDir != "" {
-			configDir = i.WorkerScratchConfigDir
-		}
-		configDirPrefix = fmt.Sprintf("CLAUDE_CONFIG_DIR=%s ", configDir)
-	}
-
-	// AGENTDECK_INSTANCE_ID is set as an inline env var so Claude's hook subprocesses
-	// can identify which agent-deck session they belong to.
-	instanceIDPrefix := fmt.Sprintf("AGENTDECK_INSTANCE_ID=%s ", i.ID)
-	configDirPrefix = instanceIDPrefix + configDirPrefix
+	includeConfigDir := !hasCustomCommand && IsClaudeConfigDirExplicitForInstance(i)
+	configDirPrefix := i.buildClaudeInlineEnvPrefix(includeConfigDir)
 
 	// Get options - either from instance or create defaults from config
 	opts := i.GetClaudeOptions()
@@ -629,14 +613,17 @@ func (i *Instance) buildClaudeCommandWithMessage(baseCommand, message string) st
 	}
 
 	// S8 (v1.7.40) defense-in-depth: non-channel-owning claude spawns
-	// wrap the final exec in `env -u TELEGRAM_STATE_DIR` so the child
-	// process is guaranteed to start without TSD even if the shell
-	// unset in buildEnvSourceCommand is somehow bypassed. Empty string
-	// for conductors, explicit telegram channel owners, and non-claude
-	// tools (see telegramStateDirStripExpr for the predicate).
+	// clear TELEGRAM_STATE_DIR immediately before the final claude command so
+	// the child process is guaranteed to start without TSD even if the earlier
+	// shell unset is bypassed. Empty string for conductors, explicit telegram
+	// channel owners, and non-claude tools (see telegramStateDirStripExpr).
 	execEnvPrefix := ""
 	if telegramStateDirStripExpr(i) != "" {
-		execEnvPrefix = "env -u TELEGRAM_STATE_DIR "
+		if i.shouldUsePowerShellClaudeShell() {
+			execEnvPrefix = shellUnsetEnvCommand("TELEGRAM_STATE_DIR", true) + "; "
+		} else {
+			execEnvPrefix = "env -u TELEGRAM_STATE_DIR "
+		}
 	}
 
 	// If baseCommand is just "claude", build the appropriate command
@@ -661,7 +648,8 @@ func (i *Instance) buildClaudeCommandWithMessage(baseCommand, message string) st
 				}
 				// Session was never interacted with - use --session-id with same UUID.
 				// CLAUDE_SESSION_ID is propagated via host-side SyncSessionIDsToTmux after start.
-				bashExportPrefix := i.buildBashExportPrefix()
+				launchIncludeConfigDir := includeConfigDir || (runtime.GOOS != "windows" && IsClaudeConfigDirExplicitForInstance(i))
+				bashExportPrefix := i.buildClaudeLaunchPrefix(launchIncludeConfigDir)
 				return fmt.Sprintf(
 					`%s%s%s --session-id "%s"%s`,
 					bashExportPrefix, execEnvPrefix, claudeCmd, opts.ResumeSessionID, extraFlags)
@@ -679,7 +667,8 @@ func (i *Instance) buildClaudeCommandWithMessage(baseCommand, message string) st
 		// NOTE: These commands get wrapped in `bash -c` for fish compatibility (#47),
 		// so shell aliases won't work — but real binaries/scripts are fine.
 		//
-		bashExportPrefix := i.buildBashExportPrefix()
+		launchIncludeConfigDir := includeConfigDir || (runtime.GOOS != "windows" && IsClaudeConfigDirExplicitForInstance(i))
+		bashExportPrefix := i.buildClaudeLaunchPrefix(launchIncludeConfigDir)
 
 		// Pre-generate UUID in Go to avoid shell uuidgen (may be absent in Docker sandbox).
 		// CLAUDE_SESSION_ID is also propagated via host-side SetEnvironment after tmux start.
@@ -701,12 +690,18 @@ func (i *Instance) buildClaudeCommandWithMessage(baseCommand, message string) st
 		var baseCmd string
 		// Use pre-generated literal UUID with --session-id flag.
 		// CLAUDE_SESSION_ID is propagated via host-side SetEnvironment after tmux start.
-		baseCmd = fmt.Sprintf(
-			`%sexec %s%s --session-id "%s"%s%s`,
-			bashExportPrefix, execEnvPrefix, claudeCmd, sessionUUID, extraFlags, startupQuerySuffix)
+		if runtime.GOOS == "windows" {
+			baseCmd = fmt.Sprintf(
+				`%s%s%s --session-id "%s"%s%s`,
+				bashExportPrefix, execEnvPrefix, claudeCmd, sessionUUID, extraFlags, startupQuerySuffix)
+		} else {
+			baseCmd = fmt.Sprintf(
+				`%sexec %s%s --session-id "%s"%s%s`,
+				bashExportPrefix, execEnvPrefix, claudeCmd, sessionUUID, extraFlags, startupQuerySuffix)
+		}
 
 		// If message provided, append wait-and-send logic in background.
-		if message != "" {
+		if message != "" && runtime.GOOS != "windows" {
 			// Escape single quotes in message for bash
 			escapedMsg := strings.ReplaceAll(message, "'", "'\"'\"'")
 
@@ -728,14 +723,14 @@ func (i *Instance) buildClaudeCommandWithMessage(baseCommand, message string) st
 	// the env-source prefix (CFG-03) and the bash export prefix (CFG-02) so
 	// group env_file exports AND CLAUDE_CONFIG_DIR both land in the spawn env
 	// before exec'ing the wrapper.
-	return i.buildEnvSourceCommand() + i.buildBashExportPrefix() + baseCommand
+	return i.buildEnvSourceCommand() + i.buildBashExportPrefix(IsClaudeConfigDirExplicitForInstance(i)) + baseCommand
 }
 
 // buildBashExportPrefix builds the export prefix used in bash -c commands.
 // It always exports AGENTDECK_INSTANCE_ID, and conditionally adds CLAUDE_CONFIG_DIR.
-func (i *Instance) buildBashExportPrefix() string {
+func (i *Instance) buildBashExportPrefix(includeConfigDir bool) string {
 	prefix := fmt.Sprintf("export AGENTDECK_INSTANCE_ID=%s; ", i.ID)
-	if IsClaudeConfigDirExplicitForInstance(i) {
+	if includeConfigDir {
 		configDir := GetClaudeConfigDirForInstance(i)
 		// Worker scratch dir override (issue #59, v1.7.68). Mirrors the
 		// same override in the inline CLAUDE_CONFIG_DIR= prefix path
@@ -769,6 +764,38 @@ func (i *Instance) logClaudeConfigResolution() {
 		slog.String("resolved", resolvedPath),
 		slog.String("source", source),
 	)
+}
+
+func (i *Instance) buildClaudeInlineEnvPrefix(includeConfigDir bool) string {
+	configDir := GetClaudeConfigDirForInstance(i)
+	if i.WorkerScratchConfigDir != "" {
+		configDir = i.WorkerScratchConfigDir
+	}
+
+	if i.shouldUsePowerShellClaudeShell() {
+		parts := []string{shellSetEnvCommand("AGENTDECK_INSTANCE_ID", i.ID)}
+		if includeConfigDir {
+			parts = append(parts, shellSetEnvCommand("CLAUDE_CONFIG_DIR", configDir))
+		}
+		return strings.Join(parts, shellCommandSeparator()) + shellCommandSeparator()
+	}
+
+	prefix := fmt.Sprintf("AGENTDECK_INSTANCE_ID=%s ", i.ID)
+	if includeConfigDir {
+		prefix += fmt.Sprintf("CLAUDE_CONFIG_DIR=%s ", configDir)
+	}
+	return prefix
+}
+
+func (i *Instance) buildClaudeLaunchPrefix(includeConfigDir bool) string {
+	if i.shouldUsePowerShellClaudeShell() {
+		return i.buildClaudeInlineEnvPrefix(includeConfigDir)
+	}
+	return i.buildBashExportPrefix(includeConfigDir)
+}
+
+func (i *Instance) shouldUsePowerShellClaudeShell() bool {
+	return runtime.GOOS == "windows" && !i.IsSSH() && !i.IsSandboxed() && !i.hasEffectiveWrapper()
 }
 
 // buildClaudeExtraFlags builds extra command-line flags string from ClaudeOptions
@@ -1000,9 +1027,12 @@ func (i *Instance) buildCodexCommand(baseCommand string) string {
 	}
 
 	envPrefix := i.buildEnvSourceCommand()
-	agentdeckEnvPrefix := fmt.Sprintf("AGENTDECK_INSTANCE_ID=%s AGENTDECK_TITLE=%q AGENTDECK_TOOL=%s ",
-		i.ID, i.Title, i.Tool)
-	envPrefix += agentdeckEnvPrefix
+	agentdeckParts := []string{
+		shellSetEnvCommand("AGENTDECK_INSTANCE_ID", i.ID),
+		shellSetEnvCommand("AGENTDECK_TITLE", i.Title),
+		shellSetEnvCommand("AGENTDECK_TOOL", i.Tool),
+	}
+	envPrefix += strings.Join(agentdeckParts, shellCommandSeparator()) + shellCommandSeparator()
 
 	yoloFlag := i.resolveCodexYoloFlag()
 
@@ -1237,7 +1267,7 @@ func (i *Instance) queryOpenCodeSession() string {
 func normalizePath(p string) string {
 	// Expand home directory
 	if strings.HasPrefix(p, "~") {
-		if home, err := os.UserHomeDir(); err == nil {
+		if home, err := userHomeDir(); err == nil {
 			p = strings.Replace(p, "~", home, 1)
 		}
 	}
@@ -1309,7 +1339,7 @@ func getCodexHomeDir() string {
 		return codexHome
 	}
 
-	home, err := os.UserHomeDir()
+	home, err := userHomeDir()
 	if err != nil {
 		return filepath.Join(os.TempDir(), ".codex")
 	}
@@ -2246,7 +2276,7 @@ func (i *Instance) Start() error {
 	// Build tmux option overrides from config (e.g. allow-passthrough = "all").
 	// Sandbox sessions also get remain-on-exit for dead-pane detection.
 	i.tmuxSession.OptionOverrides = i.buildTmuxOptionOverrides()
-	i.tmuxSession.RunCommandAsInitialProcess = i.IsSandboxed() || i.Tool != "shell"
+	i.tmuxSession.RunCommandAsInitialProcess = i.shouldRunCommandAsInitialProcess()
 	i.tmuxSession.LaunchInUserScope = GetTmuxSettings().GetLaunchInUserScope()
 	i.tmuxSession.LaunchAs = GetTmuxSettings().GetLaunchAs()
 
@@ -2418,7 +2448,7 @@ func (i *Instance) StartWithMessage(message string) error {
 	// Build tmux option overrides from config (e.g. allow-passthrough = "all").
 	// Sandbox sessions also get remain-on-exit for dead-pane detection.
 	i.tmuxSession.OptionOverrides = i.buildTmuxOptionOverrides()
-	i.tmuxSession.RunCommandAsInitialProcess = i.IsSandboxed() || i.Tool != "shell"
+	i.tmuxSession.RunCommandAsInitialProcess = i.shouldRunCommandAsInitialProcess()
 	i.tmuxSession.LaunchInUserScope = GetTmuxSettings().GetLaunchInUserScope()
 	i.tmuxSession.LaunchAs = GetTmuxSettings().GetLaunchAs()
 
@@ -2503,6 +2533,10 @@ func (i *Instance) StartWithMessage(message string) error {
 func (i *Instance) sendMessageWhenReady(message string) error {
 	if i.tmuxSession == nil {
 		return fmt.Errorf("tmux session not initialized")
+	}
+
+	if strings.EqualFold(strings.TrimSpace(i.Tool), "shell") {
+		return i.tmuxSession.SendKeysAndEnter(message)
 	}
 
 	// Track state transitions: we need to see "active" before accepting "waiting"
@@ -2710,6 +2744,9 @@ func (i *Instance) UpdateStatus() error {
 	// Check if tmux session exists
 	if !i.tmuxSession.Exists() {
 		if i.Status != StatusStopped {
+			if i.tmuxSession.ExistsWithConfirmation() {
+				return nil
+			}
 			i.Status = StatusError
 		}
 		i.lastErrorCheck = time.Now() // Record when we confirmed error/stopped
@@ -2844,24 +2881,12 @@ func (i *Instance) UpdateStatus() error {
 		i.Status = StatusError
 	}
 
-	// Update tool detection dynamically (enables fork when wrapped tools start).
-	// Only built-in tool identities are rewritten here. Custom tools like
-	// "my-codex" should keep their configured identity even when tmux correctly
-	// detects the wrapped CLI as Codex.
-	if detectedTool := i.tmuxSession.DetectTool(); detectedTool != "" {
-		if !isBuiltinToolName(i.Tool) && GetToolDef(i.Tool) != nil {
-			// Preserve configured custom tool names.
-		} else {
-			switch detectedTool {
-			case "claude", "gemini", "opencode", "codex":
-				i.Tool = detectedTool
-			case "shell":
-				switch i.Tool {
-				case "", "shell", "claude", "gemini", "opencode", "codex":
-					i.Tool = detectedTool
-				}
-			}
-		}
+	// Update tool detection dynamically for built-in tools.
+	// Do not upgrade explicit shell sessions based on content sniffing alone:
+	// prompts/history can mention "codex", "claude", etc. and would otherwise
+	// silently mutate the session type after attach/send.
+	if detectedTool := i.tmuxSession.DetectTool(); shouldAdoptDetectedTool(i.Tool, detectedTool) {
+		i.Tool = detectedTool
 	}
 
 	// Update session metadata tracking only for active/waiting sessions.
@@ -2913,6 +2938,27 @@ func (i *Instance) UpdateStatus() error {
 	}
 
 	return nil
+}
+
+func shouldAdoptDetectedTool(currentTool, detectedTool string) bool {
+	switch detectedTool {
+	case "claude", "gemini", "opencode", "codex":
+		switch currentTool {
+		case "", "claude", "gemini", "opencode", "codex":
+			return true
+		default:
+			return false
+		}
+	case "shell":
+		switch currentTool {
+		case "", "shell", "claude", "gemini", "opencode", "codex":
+			return true
+		default:
+			return false
+		}
+	default:
+		return false
+	}
 }
 
 // UpdateClaudeSession updates the Claude session ID from tmux environment.
@@ -3391,7 +3437,12 @@ func (i *Instance) Preview() (string, error) {
 		return "", fmt.Errorf("tmux session not initialized")
 	}
 
-	content, err := i.tmuxSession.CapturePane()
+	backend := i.GetSessionBackend()
+	if backend == nil {
+		return "", fmt.Errorf("tmux session not initialized")
+	}
+
+	content, err := backend.CapturePane()
 	if err != nil {
 		return "", err
 	}
@@ -3406,28 +3457,31 @@ func (i *Instance) Preview() (string, error) {
 
 // PreviewFull returns all terminal output
 func (i *Instance) PreviewFull() (string, error) {
-	if i.tmuxSession == nil {
+	backend := i.GetSessionBackend()
+	if backend == nil {
 		return "", fmt.Errorf("tmux session not initialized")
 	}
 
-	return i.tmuxSession.CaptureFullHistory()
+	return backend.CaptureFullHistory()
 }
 
 // PreviewWindowFull returns the full scrollback of a specific tmux window.
 func (i *Instance) PreviewWindowFull(windowIndex int) (string, error) {
-	if i.tmuxSession == nil {
+	backend := i.GetSessionBackend()
+	if backend == nil {
 		return "", fmt.Errorf("tmux session not initialized")
 	}
-	return i.tmuxSession.CaptureWindowFullHistory(windowIndex)
+	return backend.CaptureWindowFullHistory(windowIndex)
 }
 
 // HasUpdated checks if there's new output since last check
 func (i *Instance) HasUpdated() bool {
-	if i.tmuxSession == nil {
+	backend := i.GetSessionBackend()
+	if backend == nil {
 		return false
 	}
 
-	updated, err := i.tmuxSession.HasUpdated()
+	updated, err := backend.HasUpdated()
 	if err != nil {
 		return false
 	}
@@ -3442,28 +3496,29 @@ func (i *Instance) HasUpdated() bool {
 // Session IDs are needed in tmux environment for restart/resume operations that
 // spawn new processes. Without this sync, R key wouldn't resume the correct session.
 func (i *Instance) SyncSessionIDsToTmux() {
-	if i.tmuxSession == nil || !i.tmuxSession.Exists() {
+	backend := i.GetSessionBackend()
+	if backend == nil || !backend.Exists() {
 		return
 	}
 
 	// Sync ClaudeSessionID
 	if i.ClaudeSessionID != "" {
-		_ = i.tmuxSession.SetEnvironment("CLAUDE_SESSION_ID", i.ClaudeSessionID)
+		_ = backend.SetEnvironment("CLAUDE_SESSION_ID", i.ClaudeSessionID)
 	}
 
 	// Sync GeminiSessionID
 	if i.GeminiSessionID != "" {
-		_ = i.tmuxSession.SetEnvironment("GEMINI_SESSION_ID", i.GeminiSessionID)
+		_ = backend.SetEnvironment("GEMINI_SESSION_ID", i.GeminiSessionID)
 	}
 
 	// Sync OpenCodeSessionID
 	if i.OpenCodeSessionID != "" {
-		_ = i.tmuxSession.SetEnvironment("OPENCODE_SESSION_ID", i.OpenCodeSessionID)
+		_ = backend.SetEnvironment("OPENCODE_SESSION_ID", i.OpenCodeSessionID)
 	}
 
 	// Sync CodexSessionID
 	if i.CodexSessionID != "" {
-		_ = i.tmuxSession.SetEnvironment("CODEX_SESSION_ID", i.CodexSessionID)
+		_ = backend.SetEnvironment("CODEX_SESSION_ID", i.CodexSessionID)
 	}
 }
 
@@ -3534,26 +3589,27 @@ func (i *Instance) prepareRestartMCPConfig() {
 // Only updates fields where the tmux env has a non-empty value; does not
 // blank existing IDs if the tmux env is missing the variable.
 func (i *Instance) SyncSessionIDsFromTmux() {
-	if i.tmuxSession == nil || !i.tmuxSession.Exists() {
+	backend := i.GetSessionBackend()
+	if backend == nil || !backend.Exists() {
 		return
 	}
 
-	if id, err := i.tmuxSession.GetEnvironment("CLAUDE_SESSION_ID"); err == nil && id != "" {
+	if id, err := backend.GetEnvironment("CLAUDE_SESSION_ID"); err == nil && id != "" {
 		i.ClaudeSessionID = id
 		if i.ClaudeDetectedAt.IsZero() {
 			i.ClaudeDetectedAt = time.Now()
 		}
 	}
 
-	if id, err := i.tmuxSession.GetEnvironment("GEMINI_SESSION_ID"); err == nil && id != "" {
+	if id, err := backend.GetEnvironment("GEMINI_SESSION_ID"); err == nil && id != "" {
 		i.GeminiSessionID = id
 	}
 
-	if id, err := i.tmuxSession.GetEnvironment("OPENCODE_SESSION_ID"); err == nil && id != "" {
+	if id, err := backend.GetEnvironment("OPENCODE_SESSION_ID"); err == nil && id != "" {
 		i.OpenCodeSessionID = id
 	}
 
-	if id, err := i.tmuxSession.GetEnvironment("CODEX_SESSION_ID"); err == nil && id != "" {
+	if id, err := backend.GetEnvironment("CODEX_SESSION_ID"); err == nil && id != "" {
 		i.CodexSessionID = id
 	}
 }
@@ -4257,7 +4313,7 @@ func (i *Instance) killInternal(sync bool) error {
 	// Gated on IsSandboxed() (not SandboxContainer) so cleanup runs even if
 	// container creation failed after credential extraction.
 	if i.IsSandboxed() {
-		if homeDir, err := os.UserHomeDir(); err == nil {
+		if homeDir, err := userHomeDir(); err == nil {
 			docker.CleanupKeychainCredentials(homeDir)
 		}
 	}
@@ -4583,7 +4639,7 @@ func (i *Instance) Restart() error {
 	// Build tmux option overrides from config (e.g. allow-passthrough = "all").
 	// Sandbox sessions also get remain-on-exit for dead-pane detection.
 	i.tmuxSession.OptionOverrides = i.buildTmuxOptionOverrides()
-	i.tmuxSession.RunCommandAsInitialProcess = i.IsSandboxed() || i.Tool != "shell"
+	i.tmuxSession.RunCommandAsInitialProcess = i.shouldRunCommandAsInitialProcess()
 	i.tmuxSession.LaunchInUserScope = GetTmuxSettings().GetLaunchInUserScope()
 	i.tmuxSession.LaunchAs = GetTmuxSettings().GetLaunchAs()
 
@@ -4681,28 +4737,8 @@ func (i *Instance) buildClaudeResumeCommand() string {
 	claudeCmd := GetClaudeCommand()
 	hasCustomCommand := claudeCmd != "claude"
 
-	// Check if CLAUDE_CONFIG_DIR is explicitly configured
-	// If NOT explicit, don't set it - let the shell's environment handle it
-	// Also skip if using a custom command (alias handles config dir)
-	configDirPrefix := ""
-	if !hasCustomCommand && IsClaudeConfigDirExplicitForInstance(i) {
-		configDir := GetClaudeConfigDirForInstance(i)
-		// Worker scratch dir override: if a per-instance scratch
-		// CLAUDE_CONFIG_DIR has been prepared (issue #59, v1.7.68),
-		// route the claude binary through it so it loads the mutated
-		// settings.json with the telegram plugin pinned off. Conductors
-		// and explicit channel owners leave WorkerScratchConfigDir
-		// empty and use the ambient profile — see worker_scratch.go.
-		if i.WorkerScratchConfigDir != "" {
-			configDir = i.WorkerScratchConfigDir
-		}
-		configDirPrefix = fmt.Sprintf("CLAUDE_CONFIG_DIR=%s ", configDir)
-	}
-
-	// AGENTDECK_INSTANCE_ID is set as an inline env var so hook subprocesses
-	// can identify which agent-deck session they belong to.
-	instanceIDPrefix := fmt.Sprintf("AGENTDECK_INSTANCE_ID=%s ", i.ID)
-	configDirPrefix = instanceIDPrefix + configDirPrefix
+	includeConfigDir := !hasCustomCommand && IsClaudeConfigDirExplicitForInstance(i)
+	configDirPrefix := i.buildClaudeInlineEnvPrefix(includeConfigDir)
 
 	// Get per-session permission settings (falls back to config if not persisted)
 	opts := i.GetClaudeOptions()
@@ -4928,7 +4964,7 @@ func (i *Instance) buildClaudeForkCommandForTarget(target *Instance, opts *Claud
 	// "claude" binary + explicit env exports, NOT a custom command alias like "cdw".
 	// Reason: Commands with $(...) get wrapped in `bash -c` for fish compatibility (#47),
 	// and shell aliases are not available in non-interactive bash shells.
-	bashExportPrefix := target.buildBashExportPrefix()
+	bashExportPrefix := target.buildBashExportPrefix(IsClaudeConfigDirExplicitForInstance(target))
 
 	// If no options provided, use defaults from config
 	if opts == nil {
@@ -5149,6 +5185,9 @@ func (i *Instance) CreateForkedOpenCodeInstanceWithOptions(
 
 // Exists checks if the tmux session still exists
 func (i *Instance) Exists() bool {
+	if backend := i.GetSessionBackend(); backend != nil {
+		return backend.Exists()
+	}
 	if i.tmuxSession == nil {
 		return false
 	}
@@ -5158,6 +5197,28 @@ func (i *Instance) Exists() bool {
 // GetTmuxSession returns the tmux session object
 func (i *Instance) GetTmuxSession() *tmux.Session {
 	return i.tmuxSession
+}
+
+// GetSessionBackend returns the current runtime backend. During this migration
+// phase, legacy tmux-backed instances are lazily wrapped so higher-level code
+// can stop depending directly on *tmux.Session.
+func (i *Instance) GetSessionBackend() sessionbackend.SessionBackend {
+	if i.backend != nil {
+		return i.backend
+	}
+	if i.tmuxSession != nil {
+		i.backend = sessionbackend.NewBackend(i.tmuxSession)
+	}
+	return i.backend
+}
+
+func (i *Instance) setTmuxSession(sess *tmux.Session) {
+	i.tmuxSession = sess
+	if sess == nil {
+		i.backend = nil
+		return
+	}
+	i.backend = sessionbackend.NewBackend(sess)
 }
 
 // SetAcknowledgedFromShared applies an acknowledgment from another TUI instance
@@ -5780,6 +5841,16 @@ func shellQuote(s string) string {
 	return "'" + strings.ReplaceAll(s, "'", "'\\''") + "'"
 }
 
+func powerShellEncodedCommand(command string) string {
+	encoded := utf16.Encode([]rune(command))
+	buf := make([]byte, len(encoded)*2)
+	for i, r := range encoded {
+		buf[i*2] = byte(r)
+		buf[i*2+1] = byte(r >> 8)
+	}
+	return "pwsh -NoLogo -EncodedCommand " + base64.StdEncoding.EncodeToString(buf)
+}
+
 // wrapForSandbox wraps command in docker exec if the instance is sandboxed.
 // Returns the wrapped command and the container name. The caller is responsible
 // for persisting the container name to i.SandboxContainer.
@@ -5841,6 +5912,22 @@ func (i *Instance) prepareCommand(cmd string) (string, string, error) {
 	return wrapped, containerName, nil
 }
 
+func (i *Instance) shouldRunCommandAsInitialProcess() bool {
+	if i.IsSandboxed() {
+		return true
+	}
+	if i.Tool == "shell" {
+		return false
+	}
+	// Claude launch/resume builders still emit POSIX shell fragments on
+	// native Windows, so they must continue to use the interactive pane
+	// send-keys path rather than PowerShell initial-process launch.
+	if runtime.GOOS == "windows" && IsClaudeCompatible(i.Tool) {
+		return false
+	}
+	return true
+}
+
 // terminalEnvVars are always passed through to containers for proper UI/theming.
 var terminalEnvVars = []string{"TERM", "COLORTERM", "FORCE_COLOR", "NO_COLOR", "COLORFGBG"}
 
@@ -5889,7 +5976,7 @@ func ensureSandboxContainer(inst *Instance, userCfg *UserConfig, toolCommand str
 	containerName := docker.GenerateName(inst.ID, inst.Title)
 	ctr := docker.NewContainer(containerName, inst.Sandbox.Image)
 
-	homeDir, homeErr := os.UserHomeDir()
+	homeDir, homeErr := userHomeDir()
 	if homeErr != nil {
 		sessionLog.Warn("user_home_dir", slog.String("error", homeErr.Error()))
 	}
