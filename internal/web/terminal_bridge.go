@@ -6,8 +6,8 @@ import (
 	"io"
 	"os"
 	"os/exec"
-	"strconv"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -291,4 +291,8 @@ func sanitizeTmuxEnv(env []string, stripTMUX bool) []string {
 		filtered = append(filtered, kv)
 	}
 	return filtered
+}
+
+func environWithoutTMUX(env []string) []string {
+	return sanitizeTmuxEnv(env, true)
 }
