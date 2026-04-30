@@ -22,7 +22,7 @@ func walkGoFiles(root string, visit func(path string) error) error {
 			// Prune noise + nested worktrees so CI scanning a worktree
 			// does not trip on the sibling checkouts.
 			switch name {
-			case ".git", "node_modules", "vendor", ".worktrees":
+			case ".git", "node_modules", "vendor", ".worktrees", ".tmp-go":
 				return filepath.SkipDir
 			}
 			return nil

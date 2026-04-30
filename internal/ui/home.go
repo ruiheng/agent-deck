@@ -4387,6 +4387,11 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 		h.previewCacheTime[msg.previewKey] = time.Now()
 		if msg.err == nil {
 			h.previewCache[msg.previewKey] = msg.content
+		} else {
+			h.previewCache[msg.previewKey] = fmt.Sprintf("Preview unavailable: %v", msg.err)
+			uiLog.Debug("preview_fetch_failed",
+				slog.String("preview_key", msg.previewKey),
+				slog.String("error", msg.err.Error()))
 		}
 		h.previewCacheMu.Unlock()
 		return h, nil
@@ -13594,22 +13599,22 @@ func shouldAttachExistingSession(inst *session.Instance) bool {
 	if displayStatus == session.StatusStopped {
 		return false
 	}
-	if hasConnectedConversation(inst) {
-		tmuxSess := inst.GetTmuxSession()
-		return tmuxSess == nil || !tmuxSess.IsPaneDead()
-	}
 	if shouldRenderMissingTmuxError(inst, displayStatus) {
 		return false
 	}
 
-	// For ordinary sessions, prefer attach over restart even if Exists()
-	// momentarily reports false. Windows + psmux can produce transient false
-	// negatives here, and attach itself is the more authoritative operation.
+	if shouldTreatConnectedSessionAsTemporarilyAlive(inst) {
+		return true
+	}
+
 	tmuxSess := inst.GetTmuxSession()
 	if tmuxSess != nil && tmuxSess.IsPaneDead() {
 		return false
 	}
-	return true
+	if runtime.GOOS == "windows" {
+		return true
+	}
+	return inst.Exists()
 }
 
 func shouldRenderMissingTmuxError(inst *session.Instance, status session.Status) bool {

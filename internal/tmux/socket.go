@@ -2,7 +2,9 @@ package tmux
 
 import (
 	"context"
+	"os"
 	"os/exec"
+	"runtime"
 	"strings"
 	"sync"
 )
@@ -71,7 +73,11 @@ func tmuxArgs(socketName string, args ...string) []string {
 // `exec.Command("tmux", args...)`, preserving the contract of every
 // pre-v1.7.50 call site that was rewritten in #697.
 func tmuxExec(socketName string, args ...string) *exec.Cmd {
-	return exec.Command("tmux", tmuxArgs(socketName, args...)...)
+	cmd := exec.Command("tmux", tmuxArgs(socketName, args...)...)
+	if runtime.GOOS == "windows" {
+		cmd.Env = environWithoutPSMUXSession()
+	}
+	return cmd
 }
 
 // tmuxExecContext is the context-aware variant of tmuxExec. Several
@@ -79,7 +85,22 @@ func tmuxExec(socketName string, args ...string) *exec.Cmd {
 // timeout (e.g. SetEnvironment at internal/tmux/tmux.go:1412); this keeps
 // the -L plumbing centralised for them too.
 func tmuxExecContext(ctx context.Context, socketName string, args ...string) *exec.Cmd {
-	return exec.CommandContext(ctx, "tmux", tmuxArgs(socketName, args...)...)
+	cmd := exec.CommandContext(ctx, "tmux", tmuxArgs(socketName, args...)...)
+	if runtime.GOOS == "windows" {
+		cmd.Env = environWithoutPSMUXSession()
+	}
+	return cmd
+}
+
+func environWithoutPSMUXSession() []string {
+	env := make([]string, 0, len(os.Environ()))
+	for _, kv := range os.Environ() {
+		if strings.HasPrefix(kv, "PSMUX_SESSION=") {
+			continue
+		}
+		env = append(env, kv)
+	}
+	return env
 }
 
 // tmuxCmd is the per-Session convenience wrapper. Every tmux subprocess

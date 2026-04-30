@@ -196,6 +196,7 @@ func TestStartCommandSpec_LaunchAs_ServiceWithInitialProcess(t *testing.T) {
 		WorkDir:                    "/tmp/project",
 		LaunchAs:                   "service",
 		RunCommandAsInitialProcess: true,
+		CommandUsesPowerShell:      runtime.GOOS == "windows",
 	}
 	launcher, args := s.startCommandSpec("/tmp/project", "claude --resume xyz")
 

@@ -4,6 +4,7 @@ import (
 	"go/ast"
 	"go/parser"
 	"go/token"
+	"os"
 	"path/filepath"
 	"runtime"
 	"sort"
@@ -70,6 +71,7 @@ func TestNoRawTmuxExec_OutsideAllowlist(t *testing.T) {
 		// from a non-agent-deck tmux pane. Documented at each call site.
 		"cmd/agent-deck/cli_utils.go": {
 			{"tmux", "display-message", "-p", "#S"},
+			{"tmux", ""}, // currentTmuxClientCommand(args...) wrapper; documented at call site
 		},
 		"cmd/agent-deck/session_cmd.go": {
 			{"tmux", "display-message", "-p", "#{session_name}\t#{pane_current_path}"},
@@ -107,6 +109,35 @@ func TestNoRawTmuxExec_OutsideAllowlist(t *testing.T) {
 				"or add to allowedBypassFiles / allowedBypassCalls with justification:\n  %s\n\n"+
 				"Context: #687 follow-up. A bypass silently defeats socket isolation.",
 			len(unallowed), strings.Join(unallowed, "\n  "))
+	}
+}
+
+func TestWalkGoFilesSkipsTmpGoCache(t *testing.T) {
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, ".tmp-go", "mod", "example"), 0o755); err != nil {
+		t.Fatalf("mkdir .tmp-go cache: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(root, "internal"), 0o755); err != nil {
+		t.Fatalf("mkdir internal: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(root, ".tmp-go", "mod", "example", "bad.go"), []byte("package bad\n"), 0o644); err != nil {
+		t.Fatalf("write cache go file: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "internal", "ok.go"), []byte("package internal\n"), 0o644); err != nil {
+		t.Fatalf("write real go file: %v", err)
+	}
+
+	var visited []string
+	if err := walkGoFiles(root, func(path string) error {
+		rel, _ := filepath.Rel(root, path)
+		visited = append(visited, filepath.ToSlash(rel))
+		return nil
+	}); err != nil {
+		t.Fatalf("walkGoFiles: %v", err)
+	}
+
+	if strings.Join(visited, ",") != "internal/ok.go" {
+		t.Fatalf("walkGoFiles should ignore .tmp-go cache, visited %v", visited)
 	}
 }
 

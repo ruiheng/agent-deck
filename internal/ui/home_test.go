@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -148,13 +149,13 @@ func TestTrimTrailingVisuallyEmptyLines_RemovesANSISpacerRows(t *testing.T) {
 	}
 }
 
-func TestShouldAttachExistingSession_ConnectedErrorSession(t *testing.T) {
+func TestShouldAttachExistingSession_ConnectedErrorSessionWithoutTmuxDoesNotAttach(t *testing.T) {
 	inst := session.NewInstanceWithTool("codex-test", "/tmp/test", "codex")
 	inst.CodexSessionID = "sess-123"
 	inst.SetStatusThreadSafe(session.StatusError)
 
-	if !shouldAttachExistingSession(inst) {
-		t.Fatal("shouldAttachExistingSession returned false for connected session")
+	if shouldAttachExistingSession(inst) {
+		t.Fatal("shouldAttachExistingSession returned true for connected session without confirmed tmux runtime")
 	}
 }
 
@@ -164,6 +165,18 @@ func TestShouldAttachExistingSession_StoppedSession(t *testing.T) {
 
 	if shouldAttachExistingSession(inst) {
 		t.Fatal("shouldAttachExistingSession returned true for stopped session")
+	}
+}
+
+func TestShouldAttachExistingSession_WindowsOrdinarySessionIgnoresExistsFalseNegative(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("windows-specific psmux existence behavior")
+	}
+	inst := session.NewInstance("shell-test", "/tmp/test")
+	inst.SetStatusThreadSafe(session.StatusWaiting)
+
+	if !shouldAttachExistingSession(inst) {
+		t.Fatal("shouldAttachExistingSession returned false for ordinary Windows session")
 	}
 }
 
@@ -1527,8 +1540,12 @@ func TestPreviewFetchedMsgUpdatesCacheTimeOnError(t *testing.T) {
 	if cacheTime.Before(before) {
 		t.Fatalf("preview cache time %v should be at or after %v", cacheTime, before)
 	}
-	if _, ok := updated.previewCache[key]; ok {
-		t.Fatal("preview content should not be cached when fetch fails")
+	cached, ok := updated.previewCache[key]
+	if !ok {
+		t.Fatal("preview error should be cached so the pane does not stay stuck on loading")
+	}
+	if !strings.Contains(cached, "Preview unavailable: fetch failed") {
+		t.Fatalf("preview error cache = %q, want diagnostic", cached)
 	}
 }
 

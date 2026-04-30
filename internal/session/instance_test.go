@@ -1509,6 +1509,16 @@ func TestBuildCodexCommand_CustomWrapperPreservesToolIdentity(t *testing.T) {
 	originalHome := os.Getenv("HOME")
 	os.Setenv("HOME", tmpDir)
 	defer os.Setenv("HOME", originalHome)
+	originalCodexHome := os.Getenv("CODEX_HOME")
+	testCodexHome := filepath.Join(tmpDir, ".codex")
+	os.Setenv("CODEX_HOME", testCodexHome)
+	defer func() {
+		if originalCodexHome != "" {
+			_ = os.Setenv("CODEX_HOME", originalCodexHome)
+		} else {
+			_ = os.Unsetenv("CODEX_HOME")
+		}
+	}()
 	ClearUserConfigCache()
 
 	agentDeckDir := filepath.Join(tmpDir, ".agent-deck")
@@ -1533,17 +1543,749 @@ func TestBuildCodexCommand_CustomWrapperPreservesToolIdentity(t *testing.T) {
 	inst.Command = "codex-wrapper"
 
 	cmd := inst.buildCodexCommand(inst.Command)
-	if !strings.Contains(cmd, `AGENTDECK_TOOL=my-codex`) {
+	if !strings.Contains(cmd, shellSetEnvCommandForPowerShell("AGENTDECK_TOOL", "my-codex", false)) {
 		t.Fatalf("buildCodexCommand should preserve custom tool identity, got %q", cmd)
+	}
+	if strings.Contains(cmd, "$env:AGENTDECK_TOOL") {
+		t.Fatalf("custom Codex-compatible command should keep POSIX env syntax, got %q", cmd)
 	}
 	if !strings.Contains(cmd, "codex-wrapper") {
 		t.Fatalf("buildCodexCommand should use the custom command, got %q", cmd)
 	}
 
 	inst.CodexSessionID = "019d1af6-c425-7791-8fd1-38c0fc43062c"
+	writeFakeCodexRollout(t, testCodexHome, inst.CodexSessionID)
 	cmd = inst.buildCodexCommand(inst.Command)
 	if !strings.Contains(cmd, "codex-wrapper resume 019d1af6-c425-7791-8fd1-38c0fc43062c") {
 		t.Fatalf("buildCodexCommand should resume through the custom wrapper, got %q", cmd)
+	}
+}
+
+func TestBuildCodexCommand_CustomCompatiblePOSIXCommandStaysPOSIXOnWindows(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("windows-specific shell syntax")
+	}
+
+	tmpDir := t.TempDir()
+	originalHome := os.Getenv("HOME")
+	os.Setenv("HOME", tmpDir)
+	defer os.Setenv("HOME", originalHome)
+	ClearUserConfigCache()
+	defer ClearUserConfigCache()
+
+	agentDeckDir := filepath.Join(tmpDir, ".agent-deck")
+	if err := os.MkdirAll(agentDeckDir, 0o700); err != nil {
+		t.Fatalf("mkdir %s: %v", agentDeckDir, err)
+	}
+
+	cfg := &UserConfig{
+		Tools: map[string]ToolDef{
+			"my-posix-codex": {
+				Command:        "FOO=bar codex",
+				CompatibleWith: "codex",
+			},
+		},
+	}
+	if err := SaveUserConfig(cfg); err != nil {
+		t.Fatalf("SaveUserConfig: %v", err)
+	}
+	ClearUserConfigCache()
+
+	inst := NewInstanceWithTool("test", "/tmp/test", "my-posix-codex")
+	inst.Command = "FOO=bar codex"
+
+	cmd := inst.buildCodexCommand(inst.Command)
+	if strings.Contains(cmd, "$env:") {
+		t.Fatalf("custom Codex-compatible POSIX command must not emit PowerShell env syntax, got %q", cmd)
+	}
+	if !strings.Contains(cmd, "export AGENTDECK_TOOL='my-posix-codex'") {
+		t.Fatalf("custom Codex-compatible POSIX command should emit POSIX env syntax, got %q", cmd)
+	}
+	if !strings.Contains(cmd, "FOO=bar codex") {
+		t.Fatalf("custom Codex-compatible command should be preserved, got %q", cmd)
+	}
+	if got := inst.shouldUsePowerShellCommandShell(); got {
+		t.Fatal("custom Codex-compatible POSIX command should not use PowerShell shell")
+	}
+}
+
+func TestBuildCodexCommand_CustomCommandSkipsHostRolloutCheck(t *testing.T) {
+	tmpDir := t.TempDir()
+	originalHome := os.Getenv("HOME")
+	os.Setenv("HOME", tmpDir)
+	defer os.Setenv("HOME", originalHome)
+	originalCodexHome, hadCodexHome := os.LookupEnv("CODEX_HOME")
+	os.Setenv("CODEX_HOME", filepath.Join(tmpDir, ".codex-host-empty"))
+	defer func() {
+		if hadCodexHome {
+			_ = os.Setenv("CODEX_HOME", originalCodexHome)
+		} else {
+			_ = os.Unsetenv("CODEX_HOME")
+		}
+	}()
+	ClearUserConfigCache()
+	defer ClearUserConfigCache()
+
+	agentDeckDir := filepath.Join(tmpDir, ".agent-deck")
+	if err := os.MkdirAll(agentDeckDir, 0o700); err != nil {
+		t.Fatalf("mkdir %s: %v", agentDeckDir, err)
+	}
+
+	cfg := &UserConfig{
+		Tools: map[string]ToolDef{
+			"my-codex": {
+				Command:        "codex-wrapper",
+				CompatibleWith: "codex",
+			},
+		},
+	}
+	if err := SaveUserConfig(cfg); err != nil {
+		t.Fatalf("SaveUserConfig: %v", err)
+	}
+	ClearUserConfigCache()
+
+	id := "019d1af6-c425-7791-8fd1-38c0fc43062c"
+	inst := NewInstanceWithTool("test", "/tmp/test", "my-codex")
+	inst.Command = "codex-wrapper"
+	inst.CodexSessionID = id
+	inst.CodexDetectedAt = time.Now()
+
+	cmd := inst.buildCodexCommand(inst.Command)
+	if !strings.Contains(cmd, "codex-wrapper resume "+id) {
+		t.Fatalf("custom codex command should preserve resume without host rollout, got %q", cmd)
+	}
+	if inst.CodexSessionID != id {
+		t.Fatalf("CodexSessionID should be preserved for custom codex command, got %q", inst.CodexSessionID)
+	}
+	if inst.CodexDetectedAt.IsZero() {
+		t.Fatal("CodexDetectedAt should be preserved for custom codex command")
+	}
+}
+
+func writeFakeCodexRollout(t *testing.T, codexHome, sessionID string) string {
+	t.Helper()
+	dir := filepath.Join(codexHome, "sessions", "2026", "04", "24")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("mkdir %s: %v", dir, err)
+	}
+	path := filepath.Join(dir, "rollout-2026-04-24T17-00-00-"+sessionID+".jsonl")
+	if err := os.WriteFile(path, []byte("{}\n"), 0o644); err != nil {
+		t.Fatalf("write rollout: %v", err)
+	}
+	return path
+}
+
+func TestBuildCodexCommand_DropsResumeWhenRolloutMissing(t *testing.T) {
+	tmpDir := t.TempDir()
+	originalHome := os.Getenv("HOME")
+	os.Setenv("HOME", tmpDir)
+	defer os.Setenv("HOME", originalHome)
+	originalCodexHome := os.Getenv("CODEX_HOME")
+	os.Unsetenv("CODEX_HOME")
+	defer func() {
+		if originalCodexHome != "" {
+			_ = os.Setenv("CODEX_HOME", originalCodexHome)
+		}
+	}()
+	ClearUserConfigCache()
+
+	if err := os.MkdirAll(filepath.Join(tmpDir, ".agent-deck", "hooks"), 0o700); err != nil {
+		t.Fatalf("mkdir hooks: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(tmpDir, ".codex", "sessions", "2026", "04", "24"), 0o755); err != nil {
+		t.Fatalf("mkdir sessions: %v", err)
+	}
+
+	inst := NewInstanceWithTool("stale", "/tmp/stale", "codex")
+	staleID := "deadbeef-1111-2222-3333-444455556666"
+	inst.CodexSessionID = staleID
+	inst.CodexDetectedAt = time.Now()
+	WriteHookSessionAnchor(inst.ID, staleID)
+
+	cmd := inst.buildCodexCommand(inst.Command)
+	if strings.Contains(cmd, "resume "+staleID) {
+		t.Fatalf("expected resume to be dropped for stale sid, got %q", cmd)
+	}
+	if strings.Contains(cmd, " resume ") {
+		t.Fatalf("expected no resume token at all, got %q", cmd)
+	}
+	if inst.CodexSessionID != "" {
+		t.Fatalf("CodexSessionID should be cleared after stale-sid drop, got %q", inst.CodexSessionID)
+	}
+	if !inst.CodexDetectedAt.IsZero() {
+		t.Fatalf("CodexDetectedAt should be zeroed after stale-sid drop, got %v", inst.CodexDetectedAt)
+	}
+	if got := ReadHookSessionAnchor(inst.ID); got != "" {
+		t.Fatalf(".sid anchor should be cleared after stale-sid drop, got %q", got)
+	}
+}
+
+func TestBuildCodexCommand_KeepsResumeWhenRolloutExists(t *testing.T) {
+	tmpDir := t.TempDir()
+	originalHome := os.Getenv("HOME")
+	os.Setenv("HOME", tmpDir)
+	defer os.Setenv("HOME", originalHome)
+	originalCodexHome := os.Getenv("CODEX_HOME")
+	os.Unsetenv("CODEX_HOME")
+	defer func() {
+		if originalCodexHome != "" {
+			_ = os.Setenv("CODEX_HOME", originalCodexHome)
+		}
+	}()
+	ClearUserConfigCache()
+
+	inst := NewInstanceWithTool("live", "/tmp/live", "codex")
+	liveID := "01234567-89ab-cdef-0123-456789abcdef"
+	inst.CodexSessionID = liveID
+	writeFakeCodexRollout(t, filepath.Join(tmpDir, ".codex"), liveID)
+
+	cmd := inst.buildCodexCommand(inst.Command)
+	if !strings.Contains(cmd, "resume "+liveID) {
+		t.Fatalf("expected resume %s in command, got %q", liveID, cmd)
+	}
+	if inst.CodexSessionID != liveID {
+		t.Fatalf("CodexSessionID should be preserved when rollout exists, got %q", inst.CodexSessionID)
+	}
+}
+
+func TestBuildCodexCommand_RespectsCodexHomeForRolloutCheck(t *testing.T) {
+	tmpDir := t.TempDir()
+	originalHome := os.Getenv("HOME")
+	os.Setenv("HOME", tmpDir)
+	defer os.Setenv("HOME", originalHome)
+	codexHome := filepath.Join(tmpDir, ".codex-acct1")
+	originalCodexHome := os.Getenv("CODEX_HOME")
+	os.Setenv("CODEX_HOME", codexHome)
+	defer func() {
+		if originalCodexHome != "" {
+			_ = os.Setenv("CODEX_HOME", originalCodexHome)
+		} else {
+			_ = os.Unsetenv("CODEX_HOME")
+		}
+	}()
+	ClearUserConfigCache()
+
+	inst := NewInstanceWithTool("acct1", "/tmp/acct1", "codex")
+	id := "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+	inst.CodexSessionID = id
+	writeFakeCodexRollout(t, codexHome, id)
+
+	cmd := inst.buildCodexCommand(inst.Command)
+	if !strings.Contains(cmd, "resume "+id) {
+		t.Fatalf("expected resume under CODEX_HOME=%s, got %q", codexHome, cmd)
+	}
+}
+
+func TestBuildCodexCommand_RespectsCodexHomeWithGlobChars(t *testing.T) {
+	tmpDir := t.TempDir()
+	originalHome := os.Getenv("HOME")
+	os.Setenv("HOME", tmpDir)
+	defer os.Setenv("HOME", originalHome)
+	codexHome := filepath.Join(tmpDir, "acct[work]", ".codex")
+	originalCodexHome := os.Getenv("CODEX_HOME")
+	os.Setenv("CODEX_HOME", codexHome)
+	defer func() {
+		if originalCodexHome != "" {
+			_ = os.Setenv("CODEX_HOME", originalCodexHome)
+		} else {
+			_ = os.Unsetenv("CODEX_HOME")
+		}
+	}()
+	ClearUserConfigCache()
+
+	inst := NewInstanceWithTool("glob-home", "/tmp/glob-home", "codex")
+	id := "abababab-cdcd-efef-1212-343434343434"
+	inst.CodexSessionID = id
+	writeFakeCodexRollout(t, codexHome, id)
+
+	cmd := inst.buildCodexCommand(inst.Command)
+	if !strings.Contains(cmd, "resume "+id) {
+		t.Fatalf("expected resume under CODEX_HOME with glob chars %s, got %q", codexHome, cmd)
+	}
+	if inst.CodexSessionID != id {
+		t.Fatalf("CodexSessionID should be preserved for glob-char CODEX_HOME, got %q", inst.CodexSessionID)
+	}
+}
+
+func TestBuildCodexCommand_RespectsCodexHomeFromShellEnvFile(t *testing.T) {
+	tmpDir := t.TempDir()
+	originalHome := os.Getenv("HOME")
+	os.Setenv("HOME", tmpDir)
+	defer os.Setenv("HOME", originalHome)
+	originalCodexHome, hadCodexHome := os.LookupEnv("CODEX_HOME")
+	os.Setenv("CODEX_HOME", filepath.Join(tmpDir, ".codex-host-empty"))
+	defer func() {
+		if hadCodexHome {
+			_ = os.Setenv("CODEX_HOME", originalCodexHome)
+		} else {
+			_ = os.Unsetenv("CODEX_HOME")
+		}
+	}()
+	ClearUserConfigCache()
+
+	agentDeckDir := filepath.Join(tmpDir, ".agent-deck")
+	if err := os.MkdirAll(agentDeckDir, 0o700); err != nil {
+		t.Fatalf("mkdir %s: %v", agentDeckDir, err)
+	}
+	projectDir := filepath.Join(tmpDir, "project")
+	if err := os.MkdirAll(projectDir, 0o755); err != nil {
+		t.Fatalf("mkdir project: %v", err)
+	}
+	sessionCodexHome := filepath.Join(tmpDir, ".codex-session")
+	if err := os.WriteFile(filepath.Join(projectDir, "codex.env"), []byte("CODEX_HOME="+sessionCodexHome+"\n"), 0o644); err != nil {
+		t.Fatalf("write env file: %v", err)
+	}
+	if err := SaveUserConfig(&UserConfig{Shell: ShellSettings{EnvFiles: []string{"codex.env"}}}); err != nil {
+		t.Fatalf("SaveUserConfig: %v", err)
+	}
+	ClearUserConfigCache()
+
+	inst := NewInstanceWithTool("shell-env", projectDir, "codex")
+	id := "cccccccc-dddd-eeee-ffff-000000000000"
+	inst.CodexSessionID = id
+	writeFakeCodexRollout(t, sessionCodexHome, id)
+
+	cmd := inst.buildCodexCommand(inst.Command)
+	if !strings.Contains(cmd, "resume "+id) {
+		t.Fatalf("expected resume using shell env_file CODEX_HOME=%s, got %q", sessionCodexHome, cmd)
+	}
+	if inst.CodexSessionID != id {
+		t.Fatalf("CodexSessionID should be preserved for env_file CODEX_HOME, got %q", inst.CodexSessionID)
+	}
+}
+
+func TestBuildCodexCommand_DoesNotDropResumeForDynamicCodexHomeEnvFile(t *testing.T) {
+	tmpDir := t.TempDir()
+	originalHome := os.Getenv("HOME")
+	os.Setenv("HOME", tmpDir)
+	defer os.Setenv("HOME", originalHome)
+	originalCodexHome, hadCodexHome := os.LookupEnv("CODEX_HOME")
+	os.Setenv("CODEX_HOME", filepath.Join(tmpDir, ".codex-host-empty"))
+	defer func() {
+		if hadCodexHome {
+			_ = os.Setenv("CODEX_HOME", originalCodexHome)
+		} else {
+			_ = os.Unsetenv("CODEX_HOME")
+		}
+	}()
+	ClearUserConfigCache()
+
+	agentDeckDir := filepath.Join(tmpDir, ".agent-deck")
+	if err := os.MkdirAll(agentDeckDir, 0o700); err != nil {
+		t.Fatalf("mkdir %s: %v", agentDeckDir, err)
+	}
+	projectDir := filepath.Join(tmpDir, "project")
+	if err := os.MkdirAll(projectDir, 0o755); err != nil {
+		t.Fatalf("mkdir project: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(projectDir, "codex.env"), []byte("BASE=/mnt/acct\nCODEX_HOME=$BASE/.codex\n"), 0o644); err != nil {
+		t.Fatalf("write env file: %v", err)
+	}
+	if err := SaveUserConfig(&UserConfig{Shell: ShellSettings{EnvFiles: []string{"codex.env"}}}); err != nil {
+		t.Fatalf("SaveUserConfig: %v", err)
+	}
+	ClearUserConfigCache()
+
+	inst := NewInstanceWithTool("dynamic-env-file", projectDir, "codex")
+	id := "44444444-5555-6666-7777-888888888888"
+	inst.CodexSessionID = id
+	inst.CodexDetectedAt = time.Now()
+	WriteHookSessionAnchor(inst.ID, id)
+
+	cmd := inst.buildCodexCommand(inst.Command)
+	if !strings.Contains(cmd, "resume "+id) {
+		t.Fatalf("expected resume to be preserved when env_file CODEX_HOME is dynamic, got %q", cmd)
+	}
+	if inst.CodexSessionID != id {
+		t.Fatalf("CodexSessionID should be preserved for dynamic env_file CODEX_HOME, got %q", inst.CodexSessionID)
+	}
+	if got := ReadHookSessionAnchor(inst.ID); got != id {
+		t.Fatalf(".sid anchor should be preserved for dynamic env_file CODEX_HOME, got %q", got)
+	}
+}
+
+func TestBuildCodexCommand_DoesNotTrustStaticEnvFileBeforeOpaqueInitScript(t *testing.T) {
+	tmpDir := t.TempDir()
+	originalHome := os.Getenv("HOME")
+	os.Setenv("HOME", tmpDir)
+	defer os.Setenv("HOME", originalHome)
+	originalCodexHome, hadCodexHome := os.LookupEnv("CODEX_HOME")
+	os.Setenv("CODEX_HOME", filepath.Join(tmpDir, ".codex-host-empty"))
+	defer func() {
+		if hadCodexHome {
+			_ = os.Setenv("CODEX_HOME", originalCodexHome)
+		} else {
+			_ = os.Unsetenv("CODEX_HOME")
+		}
+	}()
+	ClearUserConfigCache()
+
+	agentDeckDir := filepath.Join(tmpDir, ".agent-deck")
+	if err := os.MkdirAll(agentDeckDir, 0o700); err != nil {
+		t.Fatalf("mkdir %s: %v", agentDeckDir, err)
+	}
+	projectDir := filepath.Join(tmpDir, "project")
+	if err := os.MkdirAll(projectDir, 0o755); err != nil {
+		t.Fatalf("mkdir project: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(projectDir, "codex.env"), []byte("CODEX_HOME=/tmp/static-codex\n"), 0o644); err != nil {
+		t.Fatalf("write env file: %v", err)
+	}
+	cfg := &UserConfig{
+		Shell: ShellSettings{
+			EnvFiles:   []string{"codex.env"},
+			InitScript: `eval "$(direnv export bash)"`,
+		},
+	}
+	if err := SaveUserConfig(cfg); err != nil {
+		t.Fatalf("SaveUserConfig: %v", err)
+	}
+	ClearUserConfigCache()
+
+	inst := NewInstanceWithTool("static-before-opaque", projectDir, "codex")
+	id := "55555555-6666-7777-8888-999999999999"
+	inst.CodexSessionID = id
+	inst.CodexDetectedAt = time.Now()
+	WriteHookSessionAnchor(inst.ID, id)
+
+	cmd := inst.buildCodexCommand(inst.Command)
+	if !strings.Contains(cmd, "resume "+id) {
+		t.Fatalf("expected resume to be preserved when opaque init_script may override static env_file CODEX_HOME, got %q", cmd)
+	}
+	if inst.CodexSessionID != id {
+		t.Fatalf("CodexSessionID should be preserved when init_script may override env_file CODEX_HOME, got %q", inst.CodexSessionID)
+	}
+	if got := ReadHookSessionAnchor(inst.ID); got != id {
+		t.Fatalf(".sid anchor should be preserved when init_script may override env_file CODEX_HOME, got %q", got)
+	}
+}
+
+func TestBuildCodexCommand_RespectsCodexHomeFromInitScript(t *testing.T) {
+	tmpDir := t.TempDir()
+	originalHome := os.Getenv("HOME")
+	os.Setenv("HOME", tmpDir)
+	defer os.Setenv("HOME", originalHome)
+	originalCodexHome, hadCodexHome := os.LookupEnv("CODEX_HOME")
+	os.Setenv("CODEX_HOME", filepath.Join(tmpDir, ".codex-host-empty"))
+	defer func() {
+		if hadCodexHome {
+			_ = os.Setenv("CODEX_HOME", originalCodexHome)
+		} else {
+			_ = os.Unsetenv("CODEX_HOME")
+		}
+	}()
+	ClearUserConfigCache()
+
+	agentDeckDir := filepath.Join(tmpDir, ".agent-deck")
+	if err := os.MkdirAll(agentDeckDir, 0o700); err != nil {
+		t.Fatalf("mkdir %s: %v", agentDeckDir, err)
+	}
+	sessionCodexHome := filepath.Join(tmpDir, ".codex-init")
+	if err := SaveUserConfig(&UserConfig{Shell: ShellSettings{InitScript: "export CODEX_HOME='" + sessionCodexHome + "'"}}); err != nil {
+		t.Fatalf("SaveUserConfig: %v", err)
+	}
+	ClearUserConfigCache()
+
+	inst := NewInstanceWithTool("init-env", filepath.Join(tmpDir, "project"), "codex")
+	id := "eeeeeeee-ffff-0000-1111-222222222222"
+	inst.CodexSessionID = id
+	writeFakeCodexRollout(t, sessionCodexHome, id)
+
+	cmd := inst.buildCodexCommand(inst.Command)
+	if !strings.Contains(cmd, "resume "+id) {
+		t.Fatalf("expected resume using init_script CODEX_HOME=%s, got %q", sessionCodexHome, cmd)
+	}
+	if inst.CodexSessionID != id {
+		t.Fatalf("CodexSessionID should be preserved for init_script CODEX_HOME, got %q", inst.CodexSessionID)
+	}
+}
+
+func TestBuildCodexCommand_DoesNotDropResumeForDynamicCodexHomeInitScript(t *testing.T) {
+	tmpDir := t.TempDir()
+	originalHome := os.Getenv("HOME")
+	os.Setenv("HOME", tmpDir)
+	defer os.Setenv("HOME", originalHome)
+	originalCodexHome, hadCodexHome := os.LookupEnv("CODEX_HOME")
+	os.Setenv("CODEX_HOME", filepath.Join(tmpDir, ".codex-host-empty"))
+	defer func() {
+		if hadCodexHome {
+			_ = os.Setenv("CODEX_HOME", originalCodexHome)
+		} else {
+			_ = os.Unsetenv("CODEX_HOME")
+		}
+	}()
+	ClearUserConfigCache()
+
+	agentDeckDir := filepath.Join(tmpDir, ".agent-deck")
+	if err := os.MkdirAll(agentDeckDir, 0o700); err != nil {
+		t.Fatalf("mkdir %s: %v", agentDeckDir, err)
+	}
+	if err := SaveUserConfig(&UserConfig{Shell: ShellSettings{InitScript: "export CODEX_HOME=$(codex-home-selector)"}}); err != nil {
+		t.Fatalf("SaveUserConfig: %v", err)
+	}
+	ClearUserConfigCache()
+
+	inst := NewInstanceWithTool("dynamic-init-env", filepath.Join(tmpDir, "project"), "codex")
+	id := "ffffffff-0000-1111-2222-333333333333"
+	inst.CodexSessionID = id
+	inst.CodexDetectedAt = time.Now()
+	WriteHookSessionAnchor(inst.ID, id)
+
+	cmd := inst.buildCodexCommand(inst.Command)
+	if !strings.Contains(cmd, "resume "+id) {
+		t.Fatalf("expected resume to be preserved when init_script CODEX_HOME is dynamic, got %q", cmd)
+	}
+	if inst.CodexSessionID != id {
+		t.Fatalf("CodexSessionID should be preserved for dynamic init_script CODEX_HOME, got %q", inst.CodexSessionID)
+	}
+	if got := ReadHookSessionAnchor(inst.ID); got != id {
+		t.Fatalf(".sid anchor should be preserved for dynamic init_script CODEX_HOME, got %q", got)
+	}
+}
+
+func TestBuildCodexCommand_DoesNotDropResumeForVariableCodexHomeInitScript(t *testing.T) {
+	tmpDir := t.TempDir()
+	originalHome := os.Getenv("HOME")
+	os.Setenv("HOME", tmpDir)
+	defer os.Setenv("HOME", originalHome)
+	originalCodexHome, hadCodexHome := os.LookupEnv("CODEX_HOME")
+	os.Setenv("CODEX_HOME", filepath.Join(tmpDir, ".codex-host-empty"))
+	defer func() {
+		if hadCodexHome {
+			_ = os.Setenv("CODEX_HOME", originalCodexHome)
+		} else {
+			_ = os.Unsetenv("CODEX_HOME")
+		}
+	}()
+	ClearUserConfigCache()
+
+	agentDeckDir := filepath.Join(tmpDir, ".agent-deck")
+	if err := os.MkdirAll(agentDeckDir, 0o700); err != nil {
+		t.Fatalf("mkdir %s: %v", agentDeckDir, err)
+	}
+	if err := SaveUserConfig(&UserConfig{Shell: ShellSettings{InitScript: "export BASE=/tmp; export CODEX_HOME=$BASE/.codex"}}); err != nil {
+		t.Fatalf("SaveUserConfig: %v", err)
+	}
+	ClearUserConfigCache()
+
+	inst := NewInstanceWithTool("variable-init-env", filepath.Join(tmpDir, "project"), "codex")
+	id := "22222222-3333-4444-5555-666666666666"
+	inst.CodexSessionID = id
+	inst.CodexDetectedAt = time.Now()
+	WriteHookSessionAnchor(inst.ID, id)
+
+	cmd := inst.buildCodexCommand(inst.Command)
+	if !strings.Contains(cmd, "resume "+id) {
+		t.Fatalf("expected resume to be preserved when init_script CODEX_HOME references another variable, got %q", cmd)
+	}
+	if inst.CodexSessionID != id {
+		t.Fatalf("CodexSessionID should be preserved for variable init_script CODEX_HOME, got %q", inst.CodexSessionID)
+	}
+	if got := ReadHookSessionAnchor(inst.ID); got != id {
+		t.Fatalf(".sid anchor should be preserved for variable init_script CODEX_HOME, got %q", got)
+	}
+}
+
+func TestBuildCodexCommand_DoesNotDropResumeForPowerShellVariableCodexHomeInitScript(t *testing.T) {
+	tmpDir := t.TempDir()
+	originalHome := os.Getenv("HOME")
+	os.Setenv("HOME", tmpDir)
+	defer os.Setenv("HOME", originalHome)
+	originalCodexHome, hadCodexHome := os.LookupEnv("CODEX_HOME")
+	os.Setenv("CODEX_HOME", filepath.Join(tmpDir, ".codex-host-empty"))
+	defer func() {
+		if hadCodexHome {
+			_ = os.Setenv("CODEX_HOME", originalCodexHome)
+		} else {
+			_ = os.Unsetenv("CODEX_HOME")
+		}
+	}()
+	ClearUserConfigCache()
+
+	agentDeckDir := filepath.Join(tmpDir, ".agent-deck")
+	if err := os.MkdirAll(agentDeckDir, 0o700); err != nil {
+		t.Fatalf("mkdir %s: %v", agentDeckDir, err)
+	}
+	if err := SaveUserConfig(&UserConfig{Shell: ShellSettings{InitScript: `$env:CODEX_HOME='$env:LOCALAPPDATA\codex'`}}); err != nil {
+		t.Fatalf("SaveUserConfig: %v", err)
+	}
+	ClearUserConfigCache()
+
+	inst := NewInstanceWithTool("ps-variable-init-env", filepath.Join(tmpDir, "project"), "codex")
+	id := "33333333-4444-5555-6666-777777777777"
+	inst.CodexSessionID = id
+	inst.CodexDetectedAt = time.Now()
+	WriteHookSessionAnchor(inst.ID, id)
+
+	cmd := inst.buildCodexCommand(inst.Command)
+	if !strings.Contains(cmd, "resume "+id) {
+		t.Fatalf("expected resume to be preserved when PowerShell init_script CODEX_HOME references env var, got %q", cmd)
+	}
+	if inst.CodexSessionID != id {
+		t.Fatalf("CodexSessionID should be preserved for PowerShell variable init_script CODEX_HOME, got %q", inst.CodexSessionID)
+	}
+	if got := ReadHookSessionAnchor(inst.ID); got != id {
+		t.Fatalf(".sid anchor should be preserved for PowerShell variable init_script CODEX_HOME, got %q", got)
+	}
+}
+
+func TestBuildCodexCommand_DoesNotDropResumeForOpaqueInitScript(t *testing.T) {
+	tmpDir := t.TempDir()
+	originalHome := os.Getenv("HOME")
+	os.Setenv("HOME", tmpDir)
+	defer os.Setenv("HOME", originalHome)
+	originalCodexHome, hadCodexHome := os.LookupEnv("CODEX_HOME")
+	os.Setenv("CODEX_HOME", filepath.Join(tmpDir, ".codex-host-empty"))
+	defer func() {
+		if hadCodexHome {
+			_ = os.Setenv("CODEX_HOME", originalCodexHome)
+		} else {
+			_ = os.Unsetenv("CODEX_HOME")
+		}
+	}()
+	ClearUserConfigCache()
+
+	agentDeckDir := filepath.Join(tmpDir, ".agent-deck")
+	if err := os.MkdirAll(agentDeckDir, 0o700); err != nil {
+		t.Fatalf("mkdir %s: %v", agentDeckDir, err)
+	}
+	if err := SaveUserConfig(&UserConfig{Shell: ShellSettings{InitScript: `eval "$(direnv export bash)"`}}); err != nil {
+		t.Fatalf("SaveUserConfig: %v", err)
+	}
+	ClearUserConfigCache()
+
+	inst := NewInstanceWithTool("opaque-init", filepath.Join(tmpDir, "project"), "codex")
+	id := "11111111-2222-3333-4444-555555555555"
+	inst.CodexSessionID = id
+	inst.CodexDetectedAt = time.Now()
+	WriteHookSessionAnchor(inst.ID, id)
+
+	cmd := inst.buildCodexCommand(inst.Command)
+	if !strings.Contains(cmd, "resume "+id) {
+		t.Fatalf("expected resume to be preserved when init_script is opaque, got %q", cmd)
+	}
+	if inst.CodexSessionID != id {
+		t.Fatalf("CodexSessionID should be preserved for opaque init_script, got %q", inst.CodexSessionID)
+	}
+	if got := ReadHookSessionAnchor(inst.ID); got != id {
+		t.Fatalf(".sid anchor should be preserved for opaque init_script, got %q", got)
+	}
+}
+
+func TestBuildCodexCommand_RespectsCodexHomeFromToolInlineEnv(t *testing.T) {
+	tmpDir := t.TempDir()
+	originalHome := os.Getenv("HOME")
+	os.Setenv("HOME", tmpDir)
+	defer os.Setenv("HOME", originalHome)
+	originalCodexHome, hadCodexHome := os.LookupEnv("CODEX_HOME")
+	os.Setenv("CODEX_HOME", filepath.Join(tmpDir, ".codex-host-empty"))
+	defer func() {
+		if hadCodexHome {
+			_ = os.Setenv("CODEX_HOME", originalCodexHome)
+		} else {
+			_ = os.Unsetenv("CODEX_HOME")
+		}
+	}()
+	ClearUserConfigCache()
+
+	agentDeckDir := filepath.Join(tmpDir, ".agent-deck")
+	if err := os.MkdirAll(agentDeckDir, 0o700); err != nil {
+		t.Fatalf("mkdir %s: %v", agentDeckDir, err)
+	}
+	sessionCodexHome := filepath.Join(tmpDir, ".codex-tool")
+	cfg := &UserConfig{
+		Tools: map[string]ToolDef{
+			"codex": {
+				Env: map[string]string{"CODEX_HOME": sessionCodexHome},
+			},
+		},
+	}
+	if err := SaveUserConfig(cfg); err != nil {
+		t.Fatalf("SaveUserConfig: %v", err)
+	}
+	ClearUserConfigCache()
+
+	inst := NewInstanceWithTool("tool-env", filepath.Join(tmpDir, "project"), "codex")
+	id := "dddddddd-eeee-ffff-0000-111111111111"
+	inst.CodexSessionID = id
+	writeFakeCodexRollout(t, sessionCodexHome, id)
+
+	cmd := inst.buildCodexCommand(inst.Command)
+	if !strings.Contains(cmd, "resume "+id) {
+		t.Fatalf("expected resume using tool env CODEX_HOME=%s, got %q", sessionCodexHome, cmd)
+	}
+	if inst.CodexSessionID != id {
+		t.Fatalf("CodexSessionID should be preserved for tool env CODEX_HOME, got %q", inst.CodexSessionID)
+	}
+}
+
+func TestBuildCodexCommand_DoesNotDropNonLocalResumeWhenHostRolloutMissing(t *testing.T) {
+	tmpDir := t.TempDir()
+	originalHome := os.Getenv("HOME")
+	os.Setenv("HOME", tmpDir)
+	defer os.Setenv("HOME", originalHome)
+	originalCodexHome, hadCodexHome := os.LookupEnv("CODEX_HOME")
+	os.Setenv("CODEX_HOME", filepath.Join(tmpDir, ".codex-empty"))
+	defer func() {
+		if hadCodexHome {
+			_ = os.Setenv("CODEX_HOME", originalCodexHome)
+		} else {
+			_ = os.Unsetenv("CODEX_HOME")
+		}
+	}()
+	ClearUserConfigCache()
+
+	if err := os.MkdirAll(filepath.Join(tmpDir, ".agent-deck", "hooks"), 0o700); err != nil {
+		t.Fatalf("mkdir hooks: %v", err)
+	}
+
+	staleID := "bbbbbbbb-cccc-dddd-eeee-ffffffffffff"
+	tests := []struct {
+		name   string
+		mutate func(*Instance)
+	}{
+		{
+			name: "ssh",
+			mutate: func(inst *Instance) {
+				inst.SSHHost = "user@example.com"
+			},
+		},
+		{
+			name: "sandbox",
+			mutate: func(inst *Instance) {
+				inst.Sandbox = &SandboxConfig{Enabled: true, Image: "busybox"}
+			},
+		},
+		{
+			name: "wrapper",
+			mutate: func(inst *Instance) {
+				inst.Wrapper = "{command}"
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			inst := NewInstanceWithTool("nonlocal-"+tt.name, "/tmp/nonlocal", "codex")
+			inst.CodexSessionID = staleID
+			inst.CodexDetectedAt = time.Now()
+			WriteHookSessionAnchor(inst.ID, staleID)
+			tt.mutate(inst)
+
+			cmd := inst.buildCodexCommand(inst.Command)
+			if !strings.Contains(cmd, "resume "+staleID) {
+				t.Fatalf("expected non-local resume to be preserved, got %q", cmd)
+			}
+			if inst.CodexSessionID != staleID {
+				t.Fatalf("CodexSessionID should be preserved for non-local launch, got %q", inst.CodexSessionID)
+			}
+			if inst.CodexDetectedAt.IsZero() {
+				t.Fatal("CodexDetectedAt should be preserved for non-local launch")
+			}
+			if got := ReadHookSessionAnchor(inst.ID); got != staleID {
+				t.Fatalf(".sid anchor should be preserved for non-local launch, got %q", got)
+			}
+		})
 	}
 }
 
@@ -1912,6 +2654,69 @@ func TestInstance_ForkOpenCode(t *testing.T) {
 	// tmux set-environment removed: host-side SetEnvironment handles propagation
 	if strings.Contains(script, "tmux set-environment") {
 		t.Errorf("Fork script should NOT contain tmux set-environment (host-side handles it), got: %s", script)
+	}
+}
+
+func TestInstance_ForkOpenCode_WindowsBashScriptUsesPOSIXEnv(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("windows-specific shell syntax")
+	}
+
+	tmpDir := t.TempDir()
+	originalHome := os.Getenv("HOME")
+	os.Setenv("HOME", tmpDir)
+	defer os.Setenv("HOME", originalHome)
+	ClearUserConfigCache()
+	defer ClearUserConfigCache()
+
+	agentDeckDir := filepath.Join(tmpDir, ".agent-deck")
+	if err := os.MkdirAll(agentDeckDir, 0o700); err != nil {
+		t.Fatalf("mkdir %s: %v", agentDeckDir, err)
+	}
+	projectDir := filepath.Join(tmpDir, "project")
+	if err := os.MkdirAll(projectDir, 0o755); err != nil {
+		t.Fatalf("mkdir project: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(projectDir, "opencode.env"), []byte("OPENCODE_FROM_FILE=1\n"), 0o644); err != nil {
+		t.Fatalf("write env file: %v", err)
+	}
+	cfg := &UserConfig{
+		Shell: ShellSettings{EnvFiles: []string{"opencode.env"}},
+		Tools: map[string]ToolDef{
+			"opencode": {
+				Env: map[string]string{"OPENCODE_INLINE": "yes"},
+			},
+		},
+	}
+	if err := SaveUserConfig(cfg); err != nil {
+		t.Fatalf("SaveUserConfig: %v", err)
+	}
+	ClearUserConfigCache()
+
+	inst := NewInstanceWithTool("test", projectDir, "opencode")
+	inst.OpenCodeSessionID = "ses_abc123def456ffe1234567890abcd"
+	inst.OpenCodeDetectedAt = time.Now()
+
+	cmd, err := inst.ForkOpenCode("forked-test", "")
+	if err != nil {
+		t.Fatalf("ForkOpenCode() failed: %v", err)
+	}
+	scriptPath := strings.TrimPrefix(cmd, "bash '")
+	scriptPath = strings.TrimSuffix(scriptPath, "'")
+	scriptContent, err := os.ReadFile(scriptPath)
+	if err != nil {
+		t.Fatalf("read fork script: %v", err)
+	}
+	script := string(scriptContent)
+
+	if strings.Contains(script, "$env:") || strings.Contains(script, "throw 'failed to read env file") {
+		t.Fatalf("OpenCode bash fork script must not contain PowerShell env snippets, got: %s", script)
+	}
+	if !strings.Contains(script, `source "/`) {
+		t.Fatalf("OpenCode bash fork script should source env file with POSIX syntax, got: %s", script)
+	}
+	if !strings.Contains(script, "export OPENCODE_INLINE='yes'") {
+		t.Fatalf("OpenCode bash fork script should use POSIX inline env syntax, got: %s", script)
 	}
 }
 
@@ -2630,6 +3435,194 @@ func TestShouldRunCommandAsInitialProcess_WindowsClaudeFalse(t *testing.T) {
 	inst := &Instance{Tool: "claude"}
 	if inst.shouldRunCommandAsInitialProcess() {
 		t.Fatal("shouldRunCommandAsInitialProcess() = true, want false for Claude on Windows")
+	}
+}
+
+func TestShouldUsePowerShellCommandShell_WindowsExecutionShells(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("windows-specific behavior")
+	}
+
+	cases := []struct {
+		name string
+		inst *Instance
+		want bool
+	}{
+		{
+			name: "local native",
+			inst: &Instance{Tool: "codex"},
+			want: true,
+		},
+		{
+			name: "claude local native",
+			inst: &Instance{Tool: "claude"},
+			want: true,
+		},
+		{
+			name: "gemini local native",
+			inst: &Instance{Tool: "gemini"},
+			want: true,
+		},
+		{
+			name: "opencode local native",
+			inst: &Instance{Tool: "opencode"},
+			want: true,
+		},
+		{
+			name: "shell remains posix",
+			inst: &Instance{Tool: "shell"},
+			want: false,
+		},
+		{
+			name: "generic custom remains posix",
+			inst: &Instance{Tool: "my-tool"},
+			want: false,
+		},
+		{
+			name: "ssh remains posix",
+			inst: &Instance{Tool: "codex", SSHHost: "user@example.com"},
+			want: false,
+		},
+		{
+			name: "sandbox remains posix",
+			inst: &Instance{Tool: "codex", Sandbox: &SandboxConfig{Enabled: true}},
+			want: false,
+		},
+		{
+			name: "wrapper remains posix",
+			inst: &Instance{Tool: "codex", Wrapper: "{command}"},
+			want: false,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := tc.inst.shouldUsePowerShellCommandShell(); got != tc.want {
+				t.Fatalf("shouldUsePowerShellCommandShell() = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestShouldUsePowerShellCommandShellForStart_WindowsClaudeForkStaysPOSIX(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("windows-specific behavior")
+	}
+
+	inst := &Instance{Tool: "claude"}
+	if got := inst.shouldUsePowerShellCommandShellForStart(false); !got {
+		t.Fatal("regular Claude start should use PowerShell on Windows")
+	}
+	if got := inst.shouldUsePowerShellCommandShellForStart(true); got {
+		t.Fatal("verbatim Claude fork command should stay on POSIX shell path")
+	}
+}
+
+func TestBuildCodexCommand_WindowsWrapperEmitsPOSIXEnv(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("windows-specific shell syntax")
+	}
+	tmpDir := t.TempDir()
+	originalHome := os.Getenv("HOME")
+	os.Setenv("HOME", tmpDir)
+	defer os.Setenv("HOME", originalHome)
+	ClearUserConfigCache()
+
+	agentDeckDir := filepath.Join(tmpDir, ".agent-deck")
+	if err := os.MkdirAll(agentDeckDir, 0o700); err != nil {
+		t.Fatalf("mkdir %s: %v", agentDeckDir, err)
+	}
+	cfg := &UserConfig{
+		Tools: map[string]ToolDef{
+			"codex": {
+				Env: map[string]string{"CODEX_HOME": "/tmp/codex-wrapped"},
+			},
+		},
+	}
+	if err := SaveUserConfig(cfg); err != nil {
+		t.Fatalf("SaveUserConfig: %v", err)
+	}
+	ClearUserConfigCache()
+
+	inst := NewInstanceWithTool("wrapped-codex", filepath.Join(tmpDir, "project"), "codex")
+	inst.Wrapper = "{command}"
+
+	cmd := inst.buildCodexCommand(inst.Command)
+	if strings.Contains(cmd, "$env:") {
+		t.Fatalf("wrapped Codex command must not emit PowerShell env syntax, got %q", cmd)
+	}
+	if !strings.Contains(cmd, "export CODEX_HOME='/tmp/codex-wrapped'") {
+		t.Fatalf("wrapped Codex command should emit POSIX tool env, got %q", cmd)
+	}
+	if !strings.Contains(cmd, "export AGENTDECK_TOOL='codex'") {
+		t.Fatalf("wrapped Codex command should emit POSIX agent-deck env, got %q", cmd)
+	}
+}
+
+func TestBuildClaudeCommand_WindowsWrapperEmitsPOSIXEnv(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("windows-specific shell syntax")
+	}
+	tmpDir := t.TempDir()
+	originalHome := os.Getenv("HOME")
+	os.Setenv("HOME", tmpDir)
+	defer os.Setenv("HOME", originalHome)
+	ClearUserConfigCache()
+
+	inst := NewInstanceWithTool("wrapped-claude", filepath.Join(tmpDir, "project"), "claude")
+	inst.Wrapper = "{command}"
+
+	cmd := inst.buildClaudeCommand("claude")
+	if strings.Contains(cmd, "$env:") {
+		t.Fatalf("wrapped Claude command must not emit PowerShell env syntax, got %q", cmd)
+	}
+	if !strings.Contains(cmd, "AGENTDECK_INSTANCE_ID="+inst.ID) {
+		t.Fatalf("wrapped Claude command should emit POSIX inline env, got %q", cmd)
+	}
+}
+
+func TestBuildClaudeCommand_CustomCompatiblePOSIXCommandStaysPOSIXOnWindows(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("windows-specific shell syntax")
+	}
+
+	tmpDir := t.TempDir()
+	originalHome := os.Getenv("HOME")
+	os.Setenv("HOME", tmpDir)
+	defer os.Setenv("HOME", originalHome)
+	ClearUserConfigCache()
+	defer ClearUserConfigCache()
+
+	agentDeckDir := filepath.Join(tmpDir, ".agent-deck")
+	if err := os.MkdirAll(agentDeckDir, 0o700); err != nil {
+		t.Fatalf("mkdir %s: %v", agentDeckDir, err)
+	}
+
+	cfg := &UserConfig{
+		Tools: map[string]ToolDef{
+			"my-posix-claude": {
+				Command:        "export FOO=bar; claude",
+				CompatibleWith: "claude",
+			},
+		},
+	}
+	if err := SaveUserConfig(cfg); err != nil {
+		t.Fatalf("SaveUserConfig: %v", err)
+	}
+	ClearUserConfigCache()
+
+	inst := NewInstanceWithTool("test", "/tmp/test", "my-posix-claude")
+	inst.Command = "export FOO=bar; claude"
+
+	cmd := inst.buildClaudeCommand(inst.Command)
+	if strings.Contains(cmd, "$env:") {
+		t.Fatalf("custom Claude-compatible POSIX command must not emit PowerShell env syntax, got %q", cmd)
+	}
+	if !strings.Contains(cmd, "export FOO=bar; claude") {
+		t.Fatalf("custom Claude-compatible command should be preserved, got %q", cmd)
+	}
+	if got := inst.shouldUsePowerShellCommandShell(); got {
+		t.Fatal("custom Claude-compatible POSIX command should not use PowerShell shell")
 	}
 }
 

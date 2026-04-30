@@ -2371,6 +2371,75 @@ func TestSession_SendCommand(t *testing.T) {
 	}
 }
 
+func TestCaptureFullHistory_FallsBackAfterTimeout(t *testing.T) {
+	installFakeCaptureTmux(t)
+	withShortCaptureTimeout(t)
+	withoutPipeManager(t)
+
+	s := &Session{Name: "fake-session"}
+	content, err := s.CaptureFullHistory()
+	require.NoError(t, err)
+	require.Equal(t, "fallback capture", strings.TrimSpace(content))
+}
+
+func TestCaptureWindowFullHistory_FallsBackAfterTimeout(t *testing.T) {
+	installFakeCaptureTmux(t)
+	withShortCaptureTimeout(t)
+
+	s := &Session{Name: "fake-session"}
+	content, err := s.CaptureWindowFullHistory(0)
+	require.NoError(t, err)
+	require.Equal(t, "fallback capture", strings.TrimSpace(content))
+}
+
+func withShortCaptureTimeout(t *testing.T) {
+	t.Helper()
+	old := capturePaneTimeout
+	capturePaneTimeout = 150 * time.Millisecond
+	t.Cleanup(func() { capturePaneTimeout = old })
+}
+
+func withoutPipeManager(t *testing.T) {
+	t.Helper()
+	old := GetPipeManager()
+	SetPipeManager(nil)
+	t.Cleanup(func() { SetPipeManager(old) })
+}
+
+func installFakeCaptureTmux(t *testing.T) {
+	t.Helper()
+	dir := t.TempDir()
+	var scriptPath string
+	var script string
+	if runtime.GOOS == "windows" {
+		scriptPath = filepath.Join(dir, "tmux.cmd")
+		script = "@echo off\r\n" +
+			":args\r\n" +
+			"if \"%~1\"==\"\" goto done\r\n" +
+			"if \"%~1\"==\"-S\" goto deep\r\n" +
+			"shift\r\n" +
+			"goto args\r\n" +
+			":deep\r\n" +
+			"powershell -NoProfile -Command \"Start-Sleep -Milliseconds 1000\" >NUL\r\n" +
+			"exit /b 124\r\n" +
+			":done\r\n" +
+			"echo fallback capture\r\n" +
+			"exit /b 0\r\n"
+	} else {
+		scriptPath = filepath.Join(dir, "tmux")
+		script = "#!/bin/sh\n" +
+			"for arg in \"$@\"; do\n" +
+			"  if [ \"$arg\" = \"-S\" ]; then\n" +
+			"    sleep 1\n" +
+			"    exit 124\n" +
+			"  fi\n" +
+			"done\n" +
+			"printf 'fallback capture\\n'\n"
+	}
+	require.NoError(t, os.WriteFile(scriptPath, []byte(script), 0o755))
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+}
+
 // =============================================================================
 // Mouse Mode Config Gate Integration Tests (#730)
 // =============================================================================
@@ -2968,6 +3037,7 @@ func TestStartCommandSpec_InitialProcess_WrapsBashRegardlessOfContent(t *testing
 				Name:                       "agentdeck_test_abcdef12",
 				WorkDir:                    "/tmp/project",
 				RunCommandAsInitialProcess: true,
+				CommandUsesPowerShell:      runtime.GOOS == "windows",
 			}
 
 			launcher, args := s.startCommandSpec("/tmp/project", tc.cmd)
@@ -3026,6 +3096,7 @@ func TestStartCommandSpec_InitialProcess_ShellSyntaxValid(t *testing.T) {
 				Name:                       "agentdeck_test_abcdef12",
 				WorkDir:                    "/tmp",
 				RunCommandAsInitialProcess: true,
+				CommandUsesPowerShell:      runtime.GOOS == "windows",
 			}
 			_, args := s.startCommandSpec("/tmp", cmd)
 			wrapped := args[len(args)-1]
@@ -3095,6 +3166,41 @@ func TestWrapRespawnCommand_ErrorsWhenBashUnavailable(t *testing.T) {
 	require.Contains(t, err.Error(), "bash not found")
 }
 
+func TestExecCommandForLauncher_WindowsTmuxStripsPSMUXSession(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("windows-specific psmux environment behavior")
+	}
+	t.Setenv("PSMUX_SESSION", "leader")
+
+	cmd := execCommandForLauncher("tmux", "new-session", "-d")
+	for _, kv := range cmd.Env {
+		require.False(t, strings.HasPrefix(kv, "PSMUX_SESSION="), "PSMUX_SESSION should be stripped, got %q", kv)
+	}
+}
+
+func TestSessionWrapRespawnCommand_WindowsPowerShellWhenMarked(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("windows-specific respawn wrapper behavior")
+	}
+
+	s := &Session{CommandUsesPowerShell: true}
+	cmd := `$env:AGENTDECK_INSTANCE_ID='abc'; codex resume 01234567-89ab-cdef-0123-456789abcdef`
+	wrapped, err := s.wrapRespawnCommand(cmd)
+	require.NoError(t, err)
+	require.Equal(t, cmd, decodePowerShellEncodedCommandForTest(t, wrapped))
+}
+
+func TestSessionWrapRespawnCommand_WindowsPOSIXCommandDoesNotUsePowerShell(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("windows-specific respawn wrapper behavior")
+	}
+
+	s := &Session{CommandUsesPowerShell: false}
+	wrapped, err := s.wrapRespawnCommand(`ssh host 'export FOO=bar; codex'`)
+	require.NoError(t, err)
+	require.Contains(t, wrapped, " -lc ")
+}
+
 func decodePowerShellEncodedCommandForTest(t *testing.T, wrapped string) string {
 	t.Helper()
 
@@ -3117,6 +3223,7 @@ func TestStartCommandSpec_DoesNotDoubleWrapBashC(t *testing.T) {
 		Name:                       "agentdeck_test_abcdef12",
 		WorkDir:                    "/tmp",
 		RunCommandAsInitialProcess: true,
+		CommandUsesPowerShell:      runtime.GOOS == "windows",
 	}
 
 	cmd := `bash -c 'stty susp undef; docker exec -it agent-deck-test bash -c '\''export COLORFGBG='\''\''\''15;0'\''\''\'' && opencode -s ses_abc'\'''`
@@ -3134,6 +3241,7 @@ func TestStartCommandSpec_WrapsNonBashCommands(t *testing.T) {
 		Name:                       "agentdeck_test_abcdef12",
 		WorkDir:                    "/tmp",
 		RunCommandAsInitialProcess: true,
+		CommandUsesPowerShell:      runtime.GOOS == "windows",
 	}
 
 	_, args := s.startCommandSpec("/tmp", `export COLORFGBG='15;0' && opencode -s ses_abc`)
@@ -3143,6 +3251,22 @@ func TestStartCommandSpec_WrapsNonBashCommands(t *testing.T) {
 		return
 	}
 	require.True(t, strings.HasPrefix(args[len(args)-1], "bash -c '"))
+}
+
+func TestStartCommandSpec_WindowsPOSIXCommandDoesNotUsePowerShell(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("windows-specific wrapper behavior")
+	}
+	s := &Session{
+		Name:                       "agentdeck_test_abcdef12",
+		WorkDir:                    "/tmp",
+		RunCommandAsInitialProcess: true,
+		CommandUsesPowerShell:      false,
+	}
+
+	_, args := s.startCommandSpec("/tmp", `ssh host 'export FOO=bar; codex'`)
+	require.NotEmpty(t, args)
+	require.True(t, strings.HasPrefix(args[len(args)-1], "bash -c '"), "POSIX command must not be PowerShell encoded: %s", args[len(args)-1])
 }
 
 func TestResolvedAgentDeckTheme_COLORFGBG(t *testing.T) {

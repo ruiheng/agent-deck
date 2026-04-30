@@ -9,8 +9,10 @@ import (
 	"io"
 	"os"
 	"os/exec"
-	"strings"
+	"time"
 )
+
+const windowsAttachMinInteractiveDuration = 750 * time.Millisecond
 
 // IndexDetachKey returns the index of a control-key sequence in data, or -1 if
 // not found. On Windows we currently only need raw-byte detection for compile-
@@ -33,18 +35,11 @@ func (s *Session) windowsAttachCommand(ctx context.Context, args ...string) *exe
 	// psmux warns about nested sessions when this env var is inherited from the
 	// leader pane. Clearing it allows attaching to another managed session from
 	// inside the current psmux session.
-	env := make([]string, 0, len(os.Environ()))
-	for _, kv := range os.Environ() {
-		if strings.HasPrefix(kv, "PSMUX_SESSION=") {
-			continue
-		}
-		env = append(env, kv)
-	}
-	cmd.Env = env
+	cmd.Env = environWithoutPSMUXSession()
 	return cmd
 }
 
-func windowsAttachExitCodeIsSuccess(exitCode int) bool {
+func windowsAttachExitCodeIsSuccess(exitCode int, attachDuration time.Duration) bool {
 	switch exitCode {
 	case 0:
 		return true
@@ -53,13 +48,17 @@ func windowsAttachExitCodeIsSuccess(exitCode int) bool {
 		// stdin/stdout/stderr inherited directly from the real console: capturing
 		// attach output through Go pipes makes psmux fail with
 		// "incorrect function" because it no longer sees console handles.
-		return true
+		//
+		// Direct psmux existence probes can false-negative even for live
+		// sessions, so elapsed interactive duration is the only local signal
+		// we trust to distinguish attach+detach from immediate target errors.
+		return attachDuration >= windowsAttachMinInteractiveDuration
 	default:
 		return false
 	}
 }
 
-func windowsAttachExitIsSuccess(err error) bool {
+func windowsAttachExitIsSuccess(err error, attachDuration time.Duration) bool {
 	if err == nil {
 		return true
 	}
@@ -67,7 +66,7 @@ func windowsAttachExitIsSuccess(err error) bool {
 	if !ok {
 		return false
 	}
-	return windowsAttachExitCodeIsSuccess(exitErr.ExitCode())
+	return windowsAttachExitCodeIsSuccess(exitErr.ExitCode(), attachDuration)
 }
 
 func windowsDetachKeyName(detachByte byte) string {
@@ -79,19 +78,19 @@ func windowsDetachKeyName(detachByte byte) string {
 
 func (s *Session) bindWindowsDetachKey(detachByte byte) func() {
 	key := windowsDetachKeyName(detachByte)
-	if err := s.tmuxCmd("bind-key", "-n", key, "detach-client").Run(); err != nil {
+	if err := s.windowsAttachCommand(context.Background(), "bind-key", "-n", key, "detach-client").Run(); err != nil {
 		return func() {}
 	}
 	return func() {
-		_ = s.tmuxCmd("unbind-key", "-n", key).Run()
+		_ = s.windowsAttachCommand(context.Background(), "unbind-key", "-n", key).Run()
 	}
 }
 
 // Attach attaches to the session using the current Windows console.
 func (s *Session) Attach(ctx context.Context, detachByte ...byte) error {
-	if !s.ExistsWithConfirmation() {
-		return fmt.Errorf("session %s does not exist", s.Name)
-	}
+	// Do not preflight with has-session on Windows. psmux can report false
+	// negatives from both cached and direct existence probes even when the UI
+	// has a live session. attach-session itself is the authoritative operation.
 	detach := byte(17)
 	if len(detachByte) > 0 && detachByte[0] != 0 {
 		detach = detachByte[0]
@@ -99,9 +98,12 @@ func (s *Session) Attach(ctx context.Context, detachByte ...byte) error {
 	cleanupDetachKey := s.bindWindowsDetachKey(detach)
 	defer cleanupDetachKey()
 
-	cmd := s.windowsAttachCommand(ctx, "attach-session", "-t", s.Name)
+	args := []string{"attach-session", "-t", s.Name}
+	cmd := s.windowsAttachCommand(ctx, args...)
+	startedAt := time.Now()
 	err := cmd.Run()
-	if !windowsAttachExitIsSuccess(err) {
+	attachDuration := time.Since(startedAt)
+	if !windowsAttachExitIsSuccess(err, attachDuration) {
 		return fmt.Errorf("attach command failed: %w", err)
 	}
 	return nil
@@ -110,7 +112,8 @@ func (s *Session) Attach(ctx context.Context, detachByte ...byte) error {
 // AttachWindow attaches to a specific window within this session.
 func (s *Session) AttachWindow(ctx context.Context, windowIndex int, detachByte ...byte) error {
 	target := fmt.Sprintf("%s:%d", s.Name, windowIndex)
-	selectCmd := s.windowsAttachCommand(ctx, "select-window", "-t", target)
+	selectArgs := []string{"select-window", "-t", target}
+	selectCmd := s.windowsAttachCommand(ctx, selectArgs...)
 	if err := selectCmd.Run(); err != nil {
 		return fmt.Errorf("failed to select window %s: %w", target, err)
 	}
@@ -124,15 +127,15 @@ func (s *Session) Resize(cols, rows int) error {
 
 // AttachReadOnly attaches to the session in read-only mode.
 func (s *Session) AttachReadOnly(ctx context.Context) error {
-	if !s.ExistsWithConfirmation() {
-		return fmt.Errorf("session %s does not exist", s.Name)
-	}
 	cleanupDetachKey := s.bindWindowsDetachKey(17)
 	defer cleanupDetachKey()
 
-	cmd := s.windowsAttachCommand(ctx, "attach-session", "-r", "-t", s.Name)
+	args := []string{"attach-session", "-r", "-t", s.Name}
+	cmd := s.windowsAttachCommand(ctx, args...)
+	startedAt := time.Now()
 	err := cmd.Run()
-	if !windowsAttachExitIsSuccess(err) {
+	attachDuration := time.Since(startedAt)
+	if !windowsAttachExitIsSuccess(err, attachDuration) {
 		return fmt.Errorf("attach read-only command failed: %w", err)
 	}
 	return nil

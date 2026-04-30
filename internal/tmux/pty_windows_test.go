@@ -4,8 +4,10 @@ package tmux
 
 import (
 	"context"
+	"reflect"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestWindowsAttachCommandStripsPSMUXSession(t *testing.T) {
@@ -17,6 +19,15 @@ func TestWindowsAttachCommandStripsPSMUXSession(t *testing.T) {
 		if strings.HasPrefix(kv, "PSMUX_SESSION=") {
 			t.Fatalf("PSMUX_SESSION should be stripped from attach env, got %q", kv)
 		}
+	}
+}
+
+func TestWindowsAttachCommandPreservesSocketName(t *testing.T) {
+	s := &Session{SocketName: "agentdeck-test"}
+	cmd := s.windowsAttachCommand(context.Background(), "attach-session", "-t", "demo")
+	want := []string{"tmux", "-L", "agentdeck-test", "attach-session", "-t", "demo"}
+	if !reflect.DeepEqual(cmd.Args, want) {
+		t.Fatalf("Windows native attach must preserve socket isolation\n got:  %v\n want: %v", cmd.Args, want)
 	}
 }
 
@@ -54,13 +65,16 @@ func TestWindowsAttachReadOnlyMissingSession(t *testing.T) {
 }
 
 func TestWindowsAttachExitCodeIsSuccess(t *testing.T) {
-	if !windowsAttachExitCodeIsSuccess(0) {
+	if !windowsAttachExitCodeIsSuccess(0, 0) {
 		t.Fatal("exit 0 should succeed")
 	}
-	if !windowsAttachExitCodeIsSuccess(1) {
-		t.Fatal("exit 1 should succeed")
+	if !windowsAttachExitCodeIsSuccess(1, windowsAttachMinInteractiveDuration) {
+		t.Fatal("exit 1 after interactive duration should succeed")
 	}
-	if windowsAttachExitCodeIsSuccess(2) {
+	if windowsAttachExitCodeIsSuccess(1, windowsAttachMinInteractiveDuration-time.Millisecond) {
+		t.Fatal("quick exit 1 should fail without evidence of an interactive attach")
+	}
+	if windowsAttachExitCodeIsSuccess(2, windowsAttachMinInteractiveDuration) {
 		t.Fatal("unexpected non-zero/non-one exit code should fail")
 	}
 }

@@ -21,6 +21,10 @@ import (
 //  5. Inline env vars from [tools.X].env
 //  6. Conductor-specific env from meta.json (highest priority, overrides tool env)
 func (i *Instance) buildEnvSourceCommand() string {
+	return i.buildEnvSourceCommandForPowerShell(i.shouldUsePowerShellCommandShell())
+}
+
+func (i *Instance) buildEnvSourceCommandForPowerShell(powerShell bool) string {
 	var sources []string
 
 	// 1. Theme environment (COLORFGBG) so tools like Codex detect light/dark theme.
@@ -30,7 +34,7 @@ func (i *Instance) buildEnvSourceCommand() string {
 	// export uses a semicolon-containing value (e.g. "15;0") that becomes fragile
 	// under nested bash -c quoting chains used by sandbox command wrappers.
 	if !i.IsSandboxed() {
-		if themeExport := themeEnvExport(); themeExport != "" {
+		if themeExport := themeEnvExportForPowerShell(powerShell); themeExport != "" {
 			sources = append(sources, themeExport)
 		}
 	}
@@ -40,7 +44,8 @@ func (i *Instance) buildEnvSourceCommand() string {
 		if len(sources) == 0 {
 			return ""
 		}
-		return strings.Join(sources, " && ") + " && "
+		sep := shellCommandSeparatorForPowerShell(powerShell)
+		return strings.Join(sources, sep) + sep
 	}
 
 	ignoreMissing := config.Shell.GetIgnoreMissingEnvFiles()
@@ -48,7 +53,7 @@ func (i *Instance) buildEnvSourceCommand() string {
 	// 2. Global env_files from [shell] section
 	for _, envFile := range config.Shell.EnvFiles {
 		resolved := resolvePath(envFile, i.ProjectPath)
-		sources = append(sources, buildSourceCmd(resolved, ignoreMissing))
+		sources = append(sources, buildSourceCmdForPowerShell(resolved, ignoreMissing, powerShell))
 	}
 
 	// 3. Shell init script (direnv, nvm, pyenv, etc.)
@@ -56,7 +61,7 @@ func (i *Instance) buildEnvSourceCommand() string {
 		script := config.Shell.InitScript
 		if isFilePath(script) {
 			resolved := ExpandPath(script)
-			sources = append(sources, buildScriptSourceCmd(resolved, ignoreMissing))
+			sources = append(sources, buildScriptSourceCmdForPowerShell(resolved, ignoreMissing, powerShell))
 		} else {
 			// Inline command (e.g., 'eval "$(direnv hook bash)"')
 			sources = append(sources, script)
@@ -67,16 +72,16 @@ func (i *Instance) buildEnvSourceCommand() string {
 	toolEnvFile := i.getToolEnvFile()
 	if toolEnvFile != "" {
 		resolved := resolvePath(toolEnvFile, i.ProjectPath)
-		sources = append(sources, buildSourceCmd(resolved, ignoreMissing))
+		sources = append(sources, buildSourceCmdForPowerShell(resolved, ignoreMissing, powerShell))
 	}
 
 	// 5. Inline env vars from [tools.X].env
-	if inlineEnv := i.getToolInlineEnv(); inlineEnv != "" {
+	if inlineEnv := i.getToolInlineEnvForPowerShell(powerShell); inlineEnv != "" {
 		sources = append(sources, inlineEnv)
 	}
 
 	// 6. Conductor-specific env (highest priority, overrides tool env)
-	if conductorEnv := i.getConductorEnv(ignoreMissing); conductorEnv != "" {
+	if conductorEnv := i.getConductorEnvForPowerShell(ignoreMissing, powerShell); conductorEnv != "" {
 		sources = append(sources, conductorEnv)
 	}
 
@@ -95,7 +100,7 @@ func (i *Instance) buildEnvSourceCommand() string {
 	}
 
 	// Join all sources with && and add trailing && for the main command
-	sep := shellCommandSeparator()
+	sep := shellCommandSeparatorForPowerShell(powerShell)
 	return strings.Join(sources, sep) + sep
 }
 
@@ -105,6 +110,10 @@ func (i *Instance) buildEnvSourceCommand() string {
 // Returns empty string if the parent terminal already has COLORFGBG set and
 // it matches the resolved theme (avoid unnecessary override).
 func themeEnvExport() string {
+	return themeEnvExportForPowerShell(runtime.GOOS == "windows")
+}
+
+func themeEnvExportForPowerShell(powerShell bool) string {
 	theme := ResolveTheme()
 
 	// Determine the COLORFGBG value for the resolved theme.
@@ -126,7 +135,7 @@ func themeEnvExport() string {
 		}
 	}
 
-	return shellSetEnvCommand("COLORFGBG", colorfgbg)
+	return shellSetEnvCommandForPowerShell("COLORFGBG", colorfgbg, powerShell)
 }
 
 // ThemeColorFGBG returns the COLORFGBG value for the current resolved theme.
@@ -163,9 +172,14 @@ func colorfgbgMatchesTheme(colorfgbg, theme string) (bool, bool) {
 // buildSourceCmd creates a shell command to source a file.
 // If ignoreMissing is true, wraps in a file existence check.
 func buildSourceCmd(path string, ignoreMissing bool) string {
-	if runtime.GOOS == "windows" {
+	return buildSourceCmdForPowerShell(path, ignoreMissing, runtime.GOOS == "windows")
+}
+
+func buildSourceCmdForPowerShell(path string, ignoreMissing bool, powerShell bool) string {
+	if powerShell {
 		return buildWindowsEnvSourceCmd(path, ignoreMissing)
 	}
+	path = pathForPOSIXShell(path)
 	if ignoreMissing {
 		// Use [ -f file ] && source file pattern for safe sourcing
 		return fmt.Sprintf(`[ -f "%s" ] && source "%s"`, path, path)
@@ -174,16 +188,48 @@ func buildSourceCmd(path string, ignoreMissing bool) string {
 }
 
 func buildScriptSourceCmd(path string, ignoreMissing bool) string {
-	if runtime.GOOS == "windows" {
+	return buildScriptSourceCmdForPowerShell(path, ignoreMissing, runtime.GOOS == "windows")
+}
+
+func buildScriptSourceCmdForPowerShell(path string, ignoreMissing bool, powerShell bool) string {
+	if powerShell {
 		if ignoreMissing {
 			return fmt.Sprintf(`if (Test-Path '%s') { . '%s' }`, path, path)
 		}
 		return fmt.Sprintf(`. '%s'`, path)
 	}
+	path = pathForPOSIXShell(path)
 	if ignoreMissing {
 		return fmt.Sprintf(`[ -f "%s" ] && source "%s"`, path, path)
 	}
 	return fmt.Sprintf(`source "%s"`, path)
+}
+
+func pathForPOSIXShell(path string) string {
+	if runtime.GOOS != "windows" {
+		return path
+	}
+
+	clean := filepath.Clean(path)
+	volume := filepath.VolumeName(clean)
+	if len(volume) == 2 && volume[1] == ':' {
+		drive := strings.ToLower(volume[:1])
+		rest := strings.TrimPrefix(clean[len(volume):], `\`)
+		rest = strings.ReplaceAll(rest, `\`, `/`)
+		if rest == "" {
+			return "/" + drive
+		}
+		return "/" + drive + "/" + rest
+	}
+	if strings.HasPrefix(volume, `\\`) {
+		rest := strings.TrimPrefix(clean[len(volume):], `\`)
+		converted := strings.ReplaceAll(volume, `\`, `/`)
+		if rest == "" {
+			return converted
+		}
+		return converted + "/" + strings.ReplaceAll(rest, `\`, `/`)
+	}
+	return strings.ReplaceAll(clean, `\`, `/`)
 }
 
 func buildWindowsEnvSourceCmd(path string, ignoreMissing bool) string {
@@ -204,12 +250,29 @@ func buildWindowsEnvSourceCmd(path string, ignoreMissing bool) string {
 	if len(assignments) == 0 {
 		return ""
 	}
-	return strings.Join(assignments, shellCommandSeparator())
+	return strings.Join(assignments, shellCommandSeparatorForPowerShell(true))
 }
 
 func parseEnvFileAssignments(content string) ([]string, error) {
+	entries, err := parseEnvFileEntries(content)
+	if err != nil {
+		return nil, err
+	}
+	assignments := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		assignments = append(assignments, shellSetEnvCommand(entry.key, entry.value))
+	}
+	return assignments, nil
+}
+
+type envFileEntry struct {
+	key   string
+	value string
+}
+
+func parseEnvFileEntries(content string) ([]envFileEntry, error) {
 	scanner := bufio.NewScanner(strings.NewReader(content))
-	assignments := []string{}
+	entries := []envFileEntry{}
 	lineNo := 0
 
 	for scanner.Scan() {
@@ -239,12 +302,54 @@ func parseEnvFileAssignments(content string) ([]string, error) {
 			}
 		}
 
-		assignments = append(assignments, shellSetEnvCommand(key, value))
+		entries = append(entries, envFileEntry{key: key, value: value})
 	}
 	if err := scanner.Err(); err != nil {
 		return nil, err
 	}
-	return assignments, nil
+	return entries, nil
+}
+
+func parseShellEnvAssignments(content string) ([]envFileEntry, error) {
+	content = strings.ReplaceAll(content, "&&", "\n")
+	content = strings.ReplaceAll(content, ";", "\n")
+
+	scanner := bufio.NewScanner(strings.NewReader(content))
+	entries := []envFileEntry{}
+	lineNo := 0
+	for scanner.Scan() {
+		lineNo++
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		line = strings.TrimPrefix(line, "export ")
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "$env:") {
+			line = strings.TrimPrefix(line, "$env:")
+		}
+
+		key, value, ok := strings.Cut(line, "=")
+		if !ok {
+			continue
+		}
+		key = strings.TrimSpace(key)
+		value = strings.TrimSpace(value)
+		if !isValidEnvKey(key) {
+			continue
+		}
+		if len(value) >= 2 {
+			if (value[0] == '\'' && value[len(value)-1] == '\'') ||
+				(value[0] == '"' && value[len(value)-1] == '"') {
+				value = value[1 : len(value)-1]
+			}
+		}
+		entries = append(entries, envFileEntry{key: key, value: value})
+	}
+	if err := scanner.Err(); err != nil {
+		return nil, err
+	}
+	return entries, nil
 }
 
 // resolvePath resolves a user-specified config file path:
@@ -301,6 +406,10 @@ func isFilePath(s string) bool {
 // Returns empty string if the tool has no inline env vars defined.
 // Keys are sorted for deterministic output. Single quotes in values are escaped.
 func (i *Instance) getToolInlineEnv() string {
+	return i.getToolInlineEnvForPowerShell(runtime.GOOS == "windows")
+}
+
+func (i *Instance) getToolInlineEnvForPowerShell(powerShell bool) string {
 	def := GetToolDef(i.Tool)
 	if def == nil || len(def.Env) == 0 {
 		return ""
@@ -317,10 +426,10 @@ func (i *Instance) getToolInlineEnv() string {
 	exports := make([]string, 0, len(keys))
 	for _, k := range keys {
 		v := def.Env[k]
-		exports = append(exports, shellSetEnvCommand(k, v))
+		exports = append(exports, shellSetEnvCommandForPowerShell(k, v, powerShell))
 	}
 
-	return strings.Join(exports, shellCommandSeparator())
+	return strings.Join(exports, shellCommandSeparatorForPowerShell(powerShell))
 }
 
 // getToolEnvFile returns the env_file setting for the current tool.
@@ -363,6 +472,10 @@ func (i *Instance) getToolEnvFile() string {
 // Checks if this session is a conductor (title starts with "conductor-") and loads
 // env and env_file from the conductor's meta.json.
 func (i *Instance) getConductorEnv(ignoreMissing bool) string {
+	return i.getConductorEnvForPowerShell(ignoreMissing, runtime.GOOS == "windows")
+}
+
+func (i *Instance) getConductorEnvForPowerShell(ignoreMissing bool, powerShell bool) string {
 	name := strings.TrimPrefix(i.Title, "conductor-")
 	if name == "" || name == i.Title {
 		return "" // not a conductor session
@@ -380,7 +493,7 @@ func (i *Instance) getConductorEnv(ignoreMissing bool) string {
 	// Conductor env_file
 	if meta.EnvFile != "" {
 		resolved := resolvePath(meta.EnvFile, i.ProjectPath)
-		parts = append(parts, buildSourceCmd(resolved, ignoreMissing))
+		parts = append(parts, buildSourceCmdForPowerShell(resolved, ignoreMissing, powerShell))
 	}
 
 	// Conductor inline env vars
@@ -394,15 +507,19 @@ func (i *Instance) getConductorEnv(ignoreMissing bool) string {
 			if !isValidEnvKey(k) {
 				continue // skip invalid env var names
 			}
-			parts = append(parts, shellSetEnvCommand(k, meta.Env[k]))
+			parts = append(parts, shellSetEnvCommandForPowerShell(k, meta.Env[k], powerShell))
 		}
 	}
 
-	return strings.Join(parts, shellCommandSeparator())
+	return strings.Join(parts, shellCommandSeparatorForPowerShell(powerShell))
 }
 
 func shellCommandSeparator() string {
-	if runtime.GOOS == "windows" {
+	return shellCommandSeparatorForPowerShell(runtime.GOOS == "windows")
+}
+
+func shellCommandSeparatorForPowerShell(powerShell bool) string {
+	if powerShell {
 		return "; "
 	}
 	return " && "
@@ -417,7 +534,11 @@ func shellQuotePowerShellSingle(value string) string {
 }
 
 func shellSetEnvCommand(key, value string) string {
-	if runtime.GOOS == "windows" {
+	return shellSetEnvCommandForPowerShell(key, value, runtime.GOOS == "windows")
+}
+
+func shellSetEnvCommandForPowerShell(key, value string, powerShell bool) string {
+	if powerShell {
 		return fmt.Sprintf(`$env:%s='%s'`, key, shellQuotePowerShellSingle(value))
 	}
 	return fmt.Sprintf("export %s='%s'", key, shellQuoteSingle(value))

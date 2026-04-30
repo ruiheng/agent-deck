@@ -1027,12 +1027,14 @@ func (i *Instance) buildCodexCommand(baseCommand string) string {
 	}
 
 	envPrefix := i.buildEnvSourceCommand()
+	powerShell := i.shouldUsePowerShellCommandShell()
 	agentdeckParts := []string{
-		shellSetEnvCommand("AGENTDECK_INSTANCE_ID", i.ID),
-		shellSetEnvCommand("AGENTDECK_TITLE", i.Title),
-		shellSetEnvCommand("AGENTDECK_TOOL", i.Tool),
+		shellSetEnvCommandForPowerShell("AGENTDECK_INSTANCE_ID", i.ID, powerShell),
+		shellSetEnvCommandForPowerShell("AGENTDECK_TITLE", i.Title, powerShell),
+		shellSetEnvCommandForPowerShell("AGENTDECK_TOOL", i.Tool, powerShell),
 	}
-	envPrefix += strings.Join(agentdeckParts, shellCommandSeparator()) + shellCommandSeparator()
+	sep := shellCommandSeparatorForPowerShell(powerShell)
+	envPrefix += strings.Join(agentdeckParts, sep) + sep
 
 	yoloFlag := i.resolveCodexYoloFlag()
 
@@ -1041,12 +1043,226 @@ func (i *Instance) buildCodexCommand(baseCommand string) string {
 		command = "codex"
 	}
 
+	// Gate local `codex resume <sid>` on rollout-file existence. If Codex died
+	// before flushing its rollout JSONL, the stored session ID is not
+	// resumable; repeatedly launching `codex resume <stale-id>` exits
+	// immediately and leaves the managed tmux session dead. Do not apply this
+	// host-local check to SSH, sandbox, wrapper, or custom command launches
+	// because their CODEX_HOME may live outside the agent-deck host process.
+	codexHome, validateCodexHome := i.codexHomeDirForResumeValidation()
+	if i.CodexSessionID != "" && i.shouldValidateCodexResumeOnHost(command) && validateCodexHome && !codexRolloutExistsInHome(codexHome, i.CodexSessionID) {
+		sessionLog.Warn("codex_resume_stale_sid_dropped",
+			slog.String("instance_id", i.ID),
+			slog.String("title", i.Title),
+			slog.String("sid", i.CodexSessionID),
+			slog.String("codex_home", codexHome))
+		i.CodexSessionID = ""
+		i.CodexDetectedAt = time.Time{}
+		ClearHookSessionAnchor(i.ID)
+	}
+
 	if i.CodexSessionID != "" {
 		return envPrefix + fmt.Sprintf("%s%s resume %s",
 			command, yoloFlag, i.CodexSessionID)
 	}
 
 	return envPrefix + command + yoloFlag
+}
+
+// codexRolloutExists reports whether Codex has flushed a rollout JSONL for
+// the given session ID under $CODEX_HOME/sessions.
+//
+// Codex layout: $CODEX_HOME/sessions/YYYY/MM/DD/rollout-<ts>-<uuid>.jsonl
+func codexRolloutExists(sessionID string) bool {
+	return codexRolloutExistsInHome(getCodexHomeDir(), sessionID)
+}
+
+func codexRolloutExistsInHome(codexHome, sessionID string) bool {
+	sessionID = strings.TrimSpace(sessionID)
+	if sessionID == "" {
+		return false
+	}
+	sessionsDir := filepath.Join(codexHome, "sessions")
+	info, err := os.Stat(sessionsDir)
+	if err != nil || !info.IsDir() {
+		return false
+	}
+	wantSuffix := "-" + sessionID + ".jsonl"
+	found := false
+	_ = filepath.WalkDir(sessionsDir, func(path string, d os.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return nil
+		}
+		name := d.Name()
+		if strings.HasPrefix(name, "rollout-") && strings.HasSuffix(name, wantSuffix) {
+			found = true
+			return filepath.SkipAll
+		}
+		return nil
+	})
+	return found
+}
+
+func (i *Instance) codexHomeDirForResumeValidation() (string, bool) {
+	value, ok, reliable := i.launchEnvValue("CODEX_HOME")
+	if !reliable {
+		return "", false
+	}
+	if ok && strings.TrimSpace(value) != "" {
+		return normalizeLaunchEnvPath(value, i.ProjectPath), true
+	}
+	return getCodexHomeDir(), true
+}
+
+func (i *Instance) launchEnvValue(key string) (string, bool, bool) {
+	config, _ := LoadUserConfig()
+	if config == nil {
+		return "", false, true
+	}
+
+	var value string
+	var found bool
+	reliable := true
+	apply := func(v string) {
+		value = v
+		found = true
+		reliable = true
+	}
+
+	ignoreMissing := config.Shell.GetIgnoreMissingEnvFiles()
+	for _, envFile := range config.Shell.EnvFiles {
+		if v, ok, known := envFileValue(resolvePath(envFile, i.ProjectPath), key, ignoreMissing); ok {
+			apply(v)
+		} else if !known {
+			reliable = false
+		}
+	}
+	if config.Shell.InitScript != "" {
+		if v, ok, known := initScriptEnvValue(config.Shell.InitScript, key, ignoreMissing); ok {
+			apply(v)
+		} else if !known {
+			reliable = false
+		}
+	}
+	if toolEnvFile := i.getToolEnvFile(); toolEnvFile != "" {
+		if v, ok, known := envFileValue(resolvePath(toolEnvFile, i.ProjectPath), key, ignoreMissing); ok {
+			apply(v)
+		} else if !known {
+			reliable = false
+		}
+	}
+	if def := GetToolDef(i.Tool); def != nil && def.Env != nil {
+		if v, ok := def.Env[key]; ok {
+			apply(v)
+		}
+	}
+	if name := strings.TrimPrefix(i.Title, "conductor-"); name != "" && name != i.Title {
+		if meta, err := LoadConductorMeta(name); err == nil {
+			if meta.EnvFile != "" {
+				if v, ok, known := envFileValue(resolvePath(meta.EnvFile, i.ProjectPath), key, ignoreMissing); ok {
+					apply(v)
+				} else if !known {
+					reliable = false
+				}
+			}
+			if meta.Env != nil {
+				if v, ok := meta.Env[key]; ok {
+					apply(v)
+				}
+			}
+		}
+	}
+
+	return value, found, reliable
+}
+
+func envFileValue(path, key string, ignoreMissing bool) (string, bool, bool) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if ignoreMissing && os.IsNotExist(err) {
+			return "", false, true
+		}
+		return "", false, false
+	}
+	entries, err := parseEnvFileEntries(string(data))
+	if err != nil {
+		return "", false, false
+	}
+	var value string
+	found := false
+	for _, entry := range entries {
+		if entry.key == key {
+			value = entry.value
+			found = true
+		}
+	}
+	if found && shellEnvValueIsDynamic(value) {
+		return "", false, false
+	}
+	return value, found, true
+}
+
+func initScriptEnvValue(script, key string, ignoreMissing bool) (string, bool, bool) {
+	content := script
+	if isFilePath(script) {
+		path := ExpandPath(script)
+		data, err := os.ReadFile(path)
+		if err != nil {
+			if ignoreMissing && os.IsNotExist(err) {
+				return "", false, true
+			}
+			return "", false, false
+		}
+		content = string(data)
+	}
+
+	entries, err := parseShellEnvAssignments(content)
+	if err != nil {
+		return "", false, false
+	}
+	var value string
+	found := false
+	for _, entry := range entries {
+		if entry.key == key {
+			value = entry.value
+			found = true
+		}
+	}
+	if found {
+		if shellEnvValueIsDynamic(value) {
+			return "", false, false
+		}
+		return value, true, true
+	}
+	return "", false, false
+}
+
+func shellEnvValueIsDynamic(value string) bool {
+	value = strings.TrimSpace(value)
+	if strings.Contains(value, "$(") || strings.Contains(value, "`") || strings.Contains(value, "$env:") {
+		return true
+	}
+	for i := 0; i < len(value); i++ {
+		if value[i] != '$' {
+			continue
+		}
+		if i+1 >= len(value) {
+			continue
+		}
+		next := value[i+1]
+		if next == '{' || next == '_' || (next >= 'A' && next <= 'Z') || (next >= 'a' && next <= 'z') {
+			return true
+		}
+	}
+	return false
+}
+
+func normalizeLaunchEnvPath(value, workDir string) string {
+	expanded := ExpandPath(strings.TrimSpace(value))
+	if filepath.IsAbs(expanded) {
+		return filepath.Clean(expanded)
+	}
+	return filepath.Clean(filepath.Join(workDir, expanded))
 }
 
 // detectOpenCodeSessionAsync detects the OpenCode session ID after startup
@@ -2196,6 +2412,7 @@ func (i *Instance) Start() error {
 	// Build command based on tool type
 	// Priority: claude-compatible (built-in + custom wrapping claude) → built-in tools → custom tools → raw command
 	var command string
+	commandRequiresPOSIXShell := false
 	switch {
 	case IsClaudeCompatible(i.Tool):
 		// #745 fork guard: a fork target arrives here with i.Command
@@ -2208,6 +2425,7 @@ func (i *Instance) Start() error {
 		// sentinel so a subsequent Restart() takes the normal resume path.
 		if i.IsForkAwaitingStart {
 			command = i.Command
+			commandRequiresPOSIXShell = true
 			i.IsForkAwaitingStart = false
 			sessionLog.Info("resume: none reason=fork_awaiting_start",
 				slog.String("instance_id", i.ID),
@@ -2277,6 +2495,7 @@ func (i *Instance) Start() error {
 	// Sandbox sessions also get remain-on-exit for dead-pane detection.
 	i.tmuxSession.OptionOverrides = i.buildTmuxOptionOverrides()
 	i.tmuxSession.RunCommandAsInitialProcess = i.shouldRunCommandAsInitialProcess()
+	i.tmuxSession.CommandUsesPowerShell = i.shouldUsePowerShellCommandShellForStart(commandRequiresPOSIXShell)
 	i.tmuxSession.LaunchInUserScope = GetTmuxSettings().GetLaunchInUserScope()
 	i.tmuxSession.LaunchAs = GetTmuxSettings().GetLaunchAs()
 
@@ -2374,6 +2593,7 @@ func (i *Instance) StartWithMessage(message string) error {
 	// Start session normally (no embedded message logic)
 	// Priority: built-in tools (claude, gemini, opencode, codex) → custom tools from config.toml → raw command
 	var command string
+	commandRequiresPOSIXShell := false
 	switch {
 	case IsClaudeCompatible(i.Tool):
 		// #745 fork guard: mirrors the Start() branch above. A fork target
@@ -2382,6 +2602,7 @@ func (i *Instance) StartWithMessage(message string) error {
 		// --resume <parent>/--fork-session flags are silently dropped.
 		if i.IsForkAwaitingStart {
 			command = i.Command
+			commandRequiresPOSIXShell = true
 			i.IsForkAwaitingStart = false
 			sessionLog.Info("resume: none reason=fork_awaiting_start",
 				slog.String("instance_id", i.ID),
@@ -2449,6 +2670,7 @@ func (i *Instance) StartWithMessage(message string) error {
 	// Sandbox sessions also get remain-on-exit for dead-pane detection.
 	i.tmuxSession.OptionOverrides = i.buildTmuxOptionOverrides()
 	i.tmuxSession.RunCommandAsInitialProcess = i.shouldRunCommandAsInitialProcess()
+	i.tmuxSession.CommandUsesPowerShell = i.shouldUsePowerShellCommandShellForStart(commandRequiresPOSIXShell)
 	i.tmuxSession.LaunchInUserScope = GetTmuxSettings().GetLaunchInUserScope()
 	i.tmuxSession.LaunchAs = GetTmuxSettings().GetLaunchAs()
 
@@ -4347,6 +4569,10 @@ func (i *Instance) Restart() error {
 	// Skip if MCP dialog just wrote the config (avoids race condition).
 	i.prepareRestartMCPConfig()
 
+	if i.tmuxSession != nil {
+		i.tmuxSession.CommandUsesPowerShell = i.shouldUsePowerShellCommandShell()
+	}
+
 	// If Claude session with known ID AND tmux session exists, use respawn-pane.
 	if IsClaudeCompatible(i.Tool) && i.ClaudeSessionID != "" && i.tmuxSession != nil && i.tmuxSession.Exists() {
 		resumeCmd, containerName, err := i.prepareCommand(i.buildClaudeResumeCommand())
@@ -4640,6 +4866,7 @@ func (i *Instance) Restart() error {
 	// Sandbox sessions also get remain-on-exit for dead-pane detection.
 	i.tmuxSession.OptionOverrides = i.buildTmuxOptionOverrides()
 	i.tmuxSession.RunCommandAsInitialProcess = i.shouldRunCommandAsInitialProcess()
+	i.tmuxSession.CommandUsesPowerShell = i.shouldUsePowerShellCommandShell()
 	i.tmuxSession.LaunchInUserScope = GetTmuxSettings().GetLaunchInUserScope()
 	i.tmuxSession.LaunchAs = GetTmuxSettings().GetLaunchAs()
 
@@ -5074,7 +5301,7 @@ func (i *Instance) ForkOpenCodeWithOptions(newTitle, newGroupPath string, opts *
 	}
 
 	workDir := i.ProjectPath
-	envPrefix := i.buildEnvSourceCommand()
+	envPrefix := i.buildEnvSourceCommandForPowerShell(false)
 
 	// Build extra flags from options (for fork, exclude session mode flags)
 	var extraFlags string
@@ -5919,13 +6146,45 @@ func (i *Instance) shouldRunCommandAsInitialProcess() bool {
 	if i.Tool == "shell" {
 		return false
 	}
-	// Claude launch/resume builders still emit POSIX shell fragments on
-	// native Windows, so they must continue to use the interactive pane
-	// send-keys path rather than PowerShell initial-process launch.
+	// Claude stays on the interactive pane send-keys path on native Windows,
+	// but the command string itself may still be PowerShell syntax. The outer
+	// shell is selected separately via CommandUsesPowerShell.
 	if runtime.GOOS == "windows" && IsClaudeCompatible(i.Tool) {
 		return false
 	}
 	return true
+}
+
+func (i *Instance) shouldUsePowerShellCommandShell() bool {
+	return runtime.GOOS == "windows" &&
+		!i.IsSSH() &&
+		!i.IsSandboxed() &&
+		!i.hasEffectiveWrapper() &&
+		i.commandBuilderEmitsPowerShell()
+}
+
+func (i *Instance) shouldUsePowerShellCommandShellForStart(commandRequiresPOSIXShell bool) bool {
+	if commandRequiresPOSIXShell {
+		return false
+	}
+	return i.shouldUsePowerShellCommandShell()
+}
+
+func (i *Instance) commandBuilderEmitsPowerShell() bool {
+	switch i.Tool {
+	case "claude", "codex", "gemini", "opencode":
+		return true
+	default:
+		return false
+	}
+}
+
+func (i *Instance) shouldValidateCodexResumeOnHost(command string) bool {
+	return i.Tool == "codex" &&
+		strings.TrimSpace(command) == "codex" &&
+		!i.IsSSH() &&
+		!i.IsSandboxed() &&
+		!i.hasEffectiveWrapper()
 }
 
 // terminalEnvVars are always passed through to containers for proper UI/theming.

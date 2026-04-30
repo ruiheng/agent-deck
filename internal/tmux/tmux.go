@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -13,11 +14,13 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
 	"syscall"
 	"time"
+	"unicode/utf16"
 
 	"al.essio.dev/pkg/shellescape"
 	"golang.org/x/sync/singleflight"
@@ -41,6 +44,14 @@ var (
 // the default. See TestStartCommandSpec_FallsBackToDirect in
 // tmux_fallback_test.go for the contract.
 var execCommand = exec.Command
+
+func execCommandForLauncher(launcher string, args ...string) *exec.Cmd {
+	cmd := execCommand(launcher, args...)
+	if launcher == "tmux" && runtime.GOOS == "windows" {
+		cmd.Env = environWithoutPSMUXSession()
+	}
+	return cmd
+}
 
 type tmuxThemeStyle struct {
 	windowStyle       string
@@ -129,6 +140,8 @@ func (s *Session) projectDisplayName() string {
 // ErrCaptureTimeout is returned when CapturePane exceeds its timeout.
 // Callers should preserve previous state rather than transitioning to error/inactive.
 var ErrCaptureTimeout = errors.New("capture-pane timed out")
+
+var capturePaneTimeout = 3 * time.Second
 
 const SessionPrefix = "agentdeck_"
 
@@ -778,6 +791,12 @@ type Session struct {
 	// Sandbox sessions enable this so pane-dead detection can restart exited tools.
 	RunCommandAsInitialProcess bool
 
+	// CommandUsesPowerShell is set by session construction when the command
+	// string was built for native Windows PowerShell syntax. Windows hosts can
+	// still launch POSIX command strings for SSH, sandbox, or wrapper paths, so
+	// runtime.GOOS alone is not enough to choose the outer shell wrapper.
+	CommandUsesPowerShell bool
+
 	// LaunchInUserScope starts the tmux server through systemd-run --user --scope
 	// so the server is owned by the user's systemd manager instead of the current
 	// login session scope.
@@ -952,6 +971,16 @@ func isSystemdUserScopeAvailable() bool {
 	return systemdUserRunProbe()
 }
 
+func powerShellEncodedWrap(command string) string {
+	encoded := utf16.Encode([]rune(command))
+	buf := make([]byte, len(encoded)*2)
+	for i, r := range encoded {
+		buf[i*2] = byte(r)
+		buf[i*2+1] = byte(r >> 8)
+	}
+	return "pwsh -NoLogo -EncodedCommand " + base64.StdEncoding.EncodeToString(buf)
+}
+
 func (s *Session) startCommandSpec(workDir, command string) (string, []string) {
 	startWithInitialProcess := command != "" && s.RunCommandAsInitialProcess
 	// Socket isolation (issue #687, v1.7.50): prepend `-L <name>` to the
@@ -967,7 +996,9 @@ func (s *Session) startCommandSpec(workDir, command string) (string, []string) {
 		// double-wrapping payloads that are already `bash -c '…'`.
 		// wrapIgnoreSuspend() already returns that shape; re-wrapping it can
 		// corrupt quoting for nested payloads like docker exec bash -c ... .
-		if isBashCWrapped(command) {
+		if runtime.GOOS == "windows" && s.CommandUsesPowerShell {
+			tmuxArgs = append(tmuxArgs, powerShellEncodedWrap(command))
+		} else if isBashCWrapped(command) {
 			tmuxArgs = append(tmuxArgs, command)
 		} else {
 			tmuxArgs = append(tmuxArgs, bashCWrap(command))
@@ -1694,7 +1725,7 @@ func (s *Session) Start(command string) error {
 	// process. This avoids the slow shell-wait-sendkeys path (~2s pane ready poll).
 	// Commands containing bash-specific syntax are wrapped for fish compatibility.
 	launcher, args := s.startCommandSpec(workDir, command)
-	cmd := execCommand(launcher, args...)
+	cmd := execCommandForLauncher(launcher, args...)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		if launcher == "tmux" {
@@ -1707,7 +1738,7 @@ func (s *Session) Start(command string) error {
 				statusLog.Warn("tmux_start_retry_after_socket_recovery",
 					slog.String("session", s.Name),
 				)
-				output, err = execCommand(launcher, args...).CombinedOutput()
+				output, err = execCommandForLauncher(launcher, args...).CombinedOutput()
 			}
 		}
 	}
@@ -1769,7 +1800,7 @@ func (s *Session) Start(command string) error {
 		// initial attempt was scope-mode, in which case it's the next
 		// tier down).
 		if err != nil {
-			retryOutput, retryErr := execCommand("tmux", tmuxArgs...).CombinedOutput()
+			retryOutput, retryErr := execCommandForLauncher("tmux", tmuxArgs...).CombinedOutput()
 			if retryErr == nil {
 				output = retryOutput
 				err = nil
@@ -1886,9 +1917,11 @@ func (s *Session) Start(command string) error {
 
 	// Fallback: if RunCommandAsInitialProcess is false, send command via send-keys.
 	if command != "" && !s.RunCommandAsInitialProcess {
-		// Always wrap in bash -c so the command runs under bash regardless
-		// of the user's login shell. See #526 and bashCWrap for details.
-		if err := s.SendKeysAndEnter(bashCWrap(command)); err != nil {
+		wrapped := bashCWrap(command)
+		if runtime.GOOS == "windows" && s.CommandUsesPowerShell {
+			wrapped = powerShellEncodedWrap(command)
+		}
+		if err := s.SendKeysAndEnter(wrapped); err != nil {
 			return fmt.Errorf("failed to send command: %w", err)
 		}
 	}
@@ -2330,7 +2363,7 @@ func (s *Session) RespawnPane(command string) error {
 	target := s.Name + ":" // Append colon to target the active pane
 	args := []string{"respawn-pane", "-k", "-t", target}
 	if command != "" {
-		wrapped, wrapErr := wrapRespawnCommand(command)
+		wrapped, wrapErr := s.wrapRespawnCommand(command)
 		if wrapErr != nil {
 			return wrapErr
 		}
@@ -2381,6 +2414,13 @@ func (s *Session) RespawnPane(command string) error {
 
 func wrapRespawnCommand(command string) (string, error) {
 	return wrapRespawnCommandWithResolver(command, exec.LookPath)
+}
+
+func (s *Session) wrapRespawnCommand(command string) (string, error) {
+	if runtime.GOOS == "windows" && s.CommandUsesPowerShell {
+		return powerShellEncodedWrap(command), nil
+	}
+	return wrapRespawnCommand(command)
 }
 
 func wrapRespawnCommandWithResolver(command string, lookPath func(string) (string, error)) (string, error) {
@@ -2478,10 +2518,10 @@ func (s *Session) CapturePane() (string, error) {
 			statusLog.Debug("capture_pane_subprocess_fallback", slog.String("session", s.Name))
 		}
 
-		// Subprocess fallback: 3s timeout
+		// Subprocess fallback: bounded timeout
 		finish := logging.TraceOp(perfLog, "capture_pane_subprocess", 200*time.Millisecond,
 			slog.String("session", s.Name))
-		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		ctx, cancel := context.WithTimeout(context.Background(), capturePaneTimeout)
 		defer cancel()
 		cmd := s.tmuxCmdContext(ctx, "capture-pane", "-t", s.Name, "-p", "-e")
 		output, err := cmd.Output()
@@ -2515,7 +2555,7 @@ func (s *Session) CapturePane() (string, error) {
 func (s *Session) CapturePaneFresh() (string, error) {
 	s.invalidateCache()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), capturePaneTimeout)
 	defer cancel()
 	cmd := s.tmuxCmdContext(ctx, "capture-pane", "-t", s.Name, "-p", "-e")
 	output, err := cmd.Output()
@@ -2539,9 +2579,17 @@ func (s *Session) CapturePaneFresh() (string, error) {
 func (s *Session) CaptureFullHistory() (string, error) {
 	// Limit to last 2000 lines to balance content availability with memory usage
 	// AI agent conversations can be long - 2000 lines captures ~40-80 screens of content
-	cmd := s.tmuxCmd("capture-pane", "-t", s.Name, "-p", "-e", "-S", "-2000")
+	ctx, cancel := context.WithTimeout(context.Background(), capturePaneTimeout)
+	defer cancel()
+	cmd := s.tmuxCmdContext(ctx, "capture-pane", "-t", s.Name, "-p", "-e", "-S", "-2000")
 	output, err := cmd.Output()
 	if err != nil {
+		if content, fallbackErr := s.CapturePane(); fallbackErr == nil {
+			return content, nil
+		}
+		if ctx.Err() == context.DeadlineExceeded {
+			return "", ErrCaptureTimeout
+		}
 		return "", fmt.Errorf("failed to capture history: %w", err)
 	}
 	return string(output), nil
@@ -2550,9 +2598,20 @@ func (s *Session) CaptureFullHistory() (string, error) {
 // CaptureWindowFullHistory captures the scrollback history of a specific window (last 2000 lines).
 func (s *Session) CaptureWindowFullHistory(windowIndex int) (string, error) {
 	target := fmt.Sprintf("%s:%d", s.Name, windowIndex)
-	cmd := s.tmuxCmd("capture-pane", "-t", target, "-p", "-e", "-S", "-2000")
+	ctx, cancel := context.WithTimeout(context.Background(), capturePaneTimeout)
+	defer cancel()
+	cmd := s.tmuxCmdContext(ctx, "capture-pane", "-t", target, "-p", "-e", "-S", "-2000")
 	output, err := cmd.Output()
 	if err != nil {
+		fallbackCtx, fallbackCancel := context.WithTimeout(context.Background(), capturePaneTimeout)
+		defer fallbackCancel()
+		fallbackCmd := s.tmuxCmdContext(fallbackCtx, "capture-pane", "-t", target, "-p", "-e")
+		if fallbackOutput, fallbackErr := fallbackCmd.Output(); fallbackErr == nil {
+			return string(fallbackOutput), nil
+		}
+		if ctx.Err() == context.DeadlineExceeded {
+			return "", ErrCaptureTimeout
+		}
 		return "", fmt.Errorf("failed to capture window %d history: %w", windowIndex, err)
 	}
 	return string(output), nil

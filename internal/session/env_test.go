@@ -161,6 +161,40 @@ func TestBuildSourceCmd(t *testing.T) {
 	}
 }
 
+func TestBuildSourceCmdForPowerShell_POSIXWindowsPath(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("windows-specific path conversion")
+	}
+
+	path := `C:\Users\Alice\project\.env`
+	result := buildSourceCmdForPowerShell(path, false, false)
+	if strings.Contains(result, `C:\`) {
+		t.Fatalf("POSIX source command should not contain native Windows path, got %q", result)
+	}
+	if !strings.Contains(result, `source "/c/Users/Alice/project/.env"`) {
+		t.Fatalf("POSIX source command should use MSYS path, got %q", result)
+	}
+
+	ignoreMissing := buildSourceCmdForPowerShell(path, true, false)
+	if !strings.Contains(ignoreMissing, `[ -f "/c/Users/Alice/project/.env" ]`) {
+		t.Fatalf("POSIX missing-file guard should use MSYS path, got %q", ignoreMissing)
+	}
+}
+
+func TestBuildScriptSourceCmdForPowerShell_POSIXWindowsPath(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("windows-specific path conversion")
+	}
+
+	result := buildScriptSourceCmdForPowerShell(`C:\Users\Alice\init.sh`, false, false)
+	if strings.Contains(result, `C:\`) {
+		t.Fatalf("POSIX script source command should not contain native Windows path, got %q", result)
+	}
+	if !strings.Contains(result, `source "/c/Users/Alice/init.sh"`) {
+		t.Fatalf("POSIX script source command should use MSYS path, got %q", result)
+	}
+}
+
 func TestParseEnvFileAssignments(t *testing.T) {
 	assignments, err := parseEnvFileAssignments("export FOO=bar\nBAR='baz qux'\n# comment\n")
 	if err != nil {
