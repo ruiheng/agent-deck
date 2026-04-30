@@ -42,6 +42,10 @@ assume every tmux behavior matches Unix tmux exactly.
   not inherit stale rollout IDs from older sessions in the same project. Disk
   scans must be scoped by project and start time, and live-process probes must
   not claim another instance's session ID.
+- If a change touches native Windows built-in Codex launch or restart, verify
+  the command still disables Codex's alternate screen with `--no-alt-screen`.
+  psmux capture/preview can lose track of Codex when it switches buffers,
+  leaving only the parent PowerShell prompt visible.
 - If a change touches stored status, distinguish conversation state from runtime
   state. A stored `waiting`/`connected` conversation can still have no live tmux
   session.
@@ -119,6 +123,14 @@ Important differences observed on Windows:
   can confuse nested tmux commands. Strip it from agent-deck subprocesses.
 - Direct `tmux` commands outside `s.tmuxCmd*` often lose socket isolation and
   can query the wrong server.
+- Native Windows built-in Codex should be launched and resumed with
+  `--no-alt-screen`. Codex's alternate screen can interact badly with psmux
+  capture/preview after `Ctrl+C` or restart: the live pane may show the
+  PowerShell parent prompt even though the stored session is still a Codex
+  session. Agent-deck's auto wrapper for built-in Codex extra args
+  (`{command} ...`) should preserve this flag. Do not apply it blindly to SSH,
+  sandbox, tool-config wrappers, or custom Codex-compatible commands; their
+  final shell and CLI flags are owned by that command path.
 
 ## Socket Isolation Rules
 
@@ -230,6 +242,10 @@ Live smoke checks on native Windows:
   `no tmux session running`.
 - Select the Codex session. Preview should show content or a diagnostic, never
   permanent loading.
+- In a native Windows Codex session, press `Ctrl+C` so the pane returns to
+  PowerShell, then restart/resume the session. The restored command should use
+  `codex --no-alt-screen resume <id>` and should return to the Codex transcript,
+  not stay as a shell.
 - Restart a Windows session. It should preserve socket targeting and reconnect
   control pipe/capture.
 - If using the installed binary, ensure `C:\Users\<user>\.local\bin\agent-deck.exe`

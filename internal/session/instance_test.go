@@ -111,6 +111,10 @@ func TestShouldAdoptDetectedTool(t *testing.T) {
 		{name: "codex keeps codex", currentTool: "codex", detectedTool: "codex", want: true},
 		{name: "shell stays shell when codex seen in content", currentTool: "shell", detectedTool: "codex", want: false},
 		{name: "shell may remain shell", currentTool: "shell", detectedTool: "shell", want: true},
+		{name: "codex must not downgrade to shell after ctrl-c", currentTool: "codex", detectedTool: "shell", want: false},
+		{name: "claude must not downgrade to shell after exit", currentTool: "claude", detectedTool: "shell", want: false},
+		{name: "gemini must not downgrade to shell after exit", currentTool: "gemini", detectedTool: "shell", want: false},
+		{name: "opencode must not downgrade to shell after exit", currentTool: "opencode", detectedTool: "shell", want: false},
 		{name: "custom tool ignores shell fallback", currentTool: "openclaw", detectedTool: "shell", want: false},
 	}
 
@@ -3556,6 +3560,76 @@ func TestBuildCodexCommand_WindowsWrapperEmitsPOSIXEnv(t *testing.T) {
 	}
 	if !strings.Contains(cmd, "export AGENTDECK_TOOL='codex'") {
 		t.Fatalf("wrapped Codex command should emit POSIX agent-deck env, got %q", cmd)
+	}
+}
+
+func TestBuildCodexCommand_WindowsBuiltInUsesNoAltScreen(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("windows-specific Codex TUI behavior")
+	}
+
+	tmpDir := t.TempDir()
+	originalHome := os.Getenv("HOME")
+	os.Setenv("HOME", tmpDir)
+	defer os.Setenv("HOME", originalHome)
+	originalCodexHome, hadCodexHome := os.LookupEnv("CODEX_HOME")
+	os.Unsetenv("CODEX_HOME")
+	defer func() {
+		if hadCodexHome {
+			_ = os.Setenv("CODEX_HOME", originalCodexHome)
+		} else {
+			_ = os.Unsetenv("CODEX_HOME")
+		}
+	}()
+	ClearUserConfigCache()
+	defer ClearUserConfigCache()
+
+	inst := NewInstanceWithTool("windows-codex", filepath.Join(tmpDir, "project"), "codex")
+	id := "019ddde5-d48a-7f13-ae4f-880fe2c5d342"
+	inst.CodexSessionID = id
+	writeFakeCodexRollout(t, filepath.Join(tmpDir, ".codex"), id)
+
+	cmd := inst.buildCodexCommand(inst.Command)
+	if !strings.Contains(cmd, "codex --no-alt-screen resume "+id) {
+		t.Fatalf("Windows Codex resume should disable alt screen for psmux, got %q", cmd)
+	}
+
+	inst.CodexSessionID = ""
+	cmd = inst.buildCodexCommand(inst.Command)
+	if !strings.Contains(cmd, "codex --no-alt-screen") {
+		t.Fatalf("Windows Codex fresh start should disable alt screen for psmux, got %q", cmd)
+	}
+}
+
+func TestBuildCodexCommand_WindowsAutoWrapperUsesNoAltScreen(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("windows-specific Codex TUI behavior")
+	}
+
+	tmpDir := t.TempDir()
+	originalHome := os.Getenv("HOME")
+	os.Setenv("HOME", tmpDir)
+	defer os.Setenv("HOME", originalHome)
+	originalCodexHome, hadCodexHome := os.LookupEnv("CODEX_HOME")
+	os.Unsetenv("CODEX_HOME")
+	defer func() {
+		if hadCodexHome {
+			_ = os.Setenv("CODEX_HOME", originalCodexHome)
+		} else {
+			_ = os.Unsetenv("CODEX_HOME")
+		}
+	}()
+	ClearUserConfigCache()
+	defer ClearUserConfigCache()
+
+	inst := NewInstanceWithTool("windows-codex-extra-args", filepath.Join(tmpDir, "project"), "codex")
+	inst.Wrapper = "{command} --model gpt-5.5"
+	id := "019ddde5-d48a-7f13-ae4f-880fe2c5d342"
+	inst.CodexSessionID = id
+
+	cmd := inst.buildCodexCommand(inst.Command)
+	if !strings.Contains(cmd, "codex --no-alt-screen resume "+id) {
+		t.Fatalf("Windows Codex extra-args wrapper should disable alt screen for psmux, got %q", cmd)
 	}
 }
 

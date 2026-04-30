@@ -1042,6 +1042,7 @@ func (i *Instance) buildCodexCommand(baseCommand string) string {
 	if command == "" {
 		command = "codex"
 	}
+	launchFlags := yoloFlag + i.resolveCodexNoAltScreenFlag(command)
 
 	// Gate local `codex resume <sid>` on rollout-file existence. If Codex died
 	// before flushing its rollout JSONL, the stored session ID is not
@@ -1063,10 +1064,10 @@ func (i *Instance) buildCodexCommand(baseCommand string) string {
 
 	if i.CodexSessionID != "" {
 		return envPrefix + fmt.Sprintf("%s%s resume %s",
-			command, yoloFlag, i.CodexSessionID)
+			command, launchFlags, i.CodexSessionID)
 	}
 
-	return envPrefix + command + yoloFlag
+	return envPrefix + command + launchFlags
 }
 
 // codexRolloutExists reports whether Codex has flushed a rollout JSONL for
@@ -3173,7 +3174,7 @@ func shouldAdoptDetectedTool(currentTool, detectedTool string) bool {
 		}
 	case "shell":
 		switch currentTool {
-		case "", "shell", "claude", "gemini", "opencode", "codex":
+		case "", "shell":
 			return true
 		default:
 			return false
@@ -6185,6 +6186,23 @@ func (i *Instance) shouldValidateCodexResumeOnHost(command string) bool {
 		!i.IsSSH() &&
 		!i.IsSandboxed() &&
 		!i.hasEffectiveWrapper()
+}
+
+func (i *Instance) resolveCodexNoAltScreenFlag(command string) string {
+	if runtime.GOOS != "windows" ||
+		i.Tool != "codex" ||
+		strings.TrimSpace(command) != "codex" ||
+		i.IsSSH() ||
+		i.IsSandboxed() ||
+		(i.hasEffectiveWrapper() && !i.hasCodexExtraArgsWrapper()) {
+		return ""
+	}
+	return " --no-alt-screen"
+}
+
+func (i *Instance) hasCodexExtraArgsWrapper() bool {
+	wrapper := strings.TrimSpace(i.Wrapper)
+	return strings.HasPrefix(wrapper, wrapperPlaceholder+" ")
 }
 
 // terminalEnvVars are always passed through to containers for proper UI/theming.
