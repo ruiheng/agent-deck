@@ -3659,6 +3659,9 @@ func (i *Instance) Preview() (string, error) {
 	if i.tmuxSession == nil {
 		return "", fmt.Errorf("tmux session not initialized")
 	}
+	if !i.tmuxSession.ExistsWithConfirmation() {
+		return "", fmt.Errorf("no tmux session running")
+	}
 
 	backend := i.GetSessionBackend()
 	if backend == nil {
@@ -3680,6 +3683,13 @@ func (i *Instance) Preview() (string, error) {
 
 // PreviewFull returns all terminal output
 func (i *Instance) PreviewFull() (string, error) {
+	if i.tmuxSession == nil {
+		return "", fmt.Errorf("tmux session not initialized")
+	}
+	if !i.tmuxSession.ExistsWithConfirmation() {
+		return "", fmt.Errorf("no tmux session running")
+	}
+
 	backend := i.GetSessionBackend()
 	if backend == nil {
 		return "", fmt.Errorf("tmux session not initialized")
@@ -3690,6 +3700,13 @@ func (i *Instance) PreviewFull() (string, error) {
 
 // PreviewWindowFull returns the full scrollback of a specific tmux window.
 func (i *Instance) PreviewWindowFull(windowIndex int) (string, error) {
+	if i.tmuxSession == nil {
+		return "", fmt.Errorf("tmux session not initialized")
+	}
+	if !i.tmuxSession.ExistsWithConfirmation() {
+		return "", fmt.Errorf("no tmux session running")
+	}
+
 	backend := i.GetSessionBackend()
 	if backend == nil {
 		return "", fmt.Errorf("tmux session not initialized")

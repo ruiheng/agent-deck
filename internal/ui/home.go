@@ -581,9 +581,11 @@ type (
 
 // previewFetchedMsg is sent when async preview content is ready
 type previewFetchedMsg struct {
-	previewKey string // cache key: sessionID or sessionID:windowIndex
-	content    string
-	err        error
+	previewKey      string // cache key: sessionID or sessionID:windowIndex
+	sessionID       string // local session ID; empty for remote previews
+	tmuxSessionName string // local tmux session name captured when fetch started
+	content         string
+	err             error
 }
 
 // previewDebounceMsg signals debounce period elapsed for preview fetch
@@ -2297,6 +2299,11 @@ func (h *Home) fetchPreview(inst *session.Instance, key string, windowIndex int)
 	if inst == nil {
 		return nil
 	}
+	sessionID := inst.ID
+	tmuxSessionName := ""
+	if tmuxSess := inst.GetTmuxSession(); tmuxSess != nil {
+		tmuxSessionName = tmuxSess.Name
+	}
 	return func() tea.Msg {
 		var content string
 		var err error
@@ -2306,9 +2313,11 @@ func (h *Home) fetchPreview(inst *session.Instance, key string, windowIndex int)
 			content, err = inst.PreviewFull()
 		}
 		return previewFetchedMsg{
-			previewKey: key,
-			content:    content,
-			err:        err,
+			previewKey:      key,
+			sessionID:       sessionID,
+			tmuxSessionName: tmuxSessionName,
+			content:         content,
+			err:             err,
 		}
 	}
 }
@@ -3943,6 +3952,7 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return h, nil
 
 	case sessionRestartedMsg:
+		var previewCmd tea.Cmd
 		if msg.err != nil {
 			// Restart failed - clear resuming animation immediately so user can retry.
 			delete(h.resumingSessions, msg.sessionID)
@@ -3956,6 +3966,10 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if inst := h.getInstanceByID(msg.sessionID); inst != nil {
 				// Refresh the loaded MCPs to match the new config
 				inst.CaptureLoadedMCPs()
+				h.previewCacheMu.Lock()
+				h.previewFetchingID = msg.sessionID
+				h.previewCacheMu.Unlock()
+				previewCmd = h.fetchPreview(inst, msg.sessionID, -1)
 			}
 			// Run dedup in-memory before saving, mirroring sessionCreatedMsg pattern (line ~2864)
 			h.instancesMu.Lock()
@@ -3970,7 +3984,7 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		// Clear animation so ENTER can attach immediately.
 		delete(h.resumingSessions, msg.sessionID)
-		return h, nil
+		return h, previewCmd
 
 	case mcpRestartedMsg:
 		if msg.err != nil {
@@ -4379,6 +4393,30 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return h, nil
 
 	case previewFetchedMsg:
+		if msg.sessionID != "" && msg.tmuxSessionName != "" {
+			h.instancesMu.RLock()
+			current := h.instanceByID[msg.sessionID]
+			h.instancesMu.RUnlock()
+			currentTmuxName := ""
+			if current != nil {
+				if tmuxSess := current.GetTmuxSession(); tmuxSess != nil {
+					currentTmuxName = tmuxSess.Name
+				}
+			}
+			if currentTmuxName != msg.tmuxSessionName {
+				h.previewCacheMu.Lock()
+				if h.previewFetchingID == msg.previewKey {
+					h.previewFetchingID = ""
+				}
+				h.previewCacheMu.Unlock()
+				uiLog.Debug("preview_fetch_stale_discarded",
+					slog.String("preview_key", msg.previewKey),
+					slog.String("session_id", msg.sessionID),
+					slog.String("source_tmux", msg.tmuxSessionName),
+					slog.String("current_tmux", currentTmuxName))
+				return h, nil
+			}
+		}
 		// Async preview content received - always advance the TTL so failures
 		// and empty responses don't trigger a fetch on every tick.
 		// Protect both previewFetchingID and previewCache with the same mutex

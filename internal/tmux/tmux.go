@@ -1742,6 +1742,14 @@ func (s *Session) Start(command string) error {
 			}
 		}
 	}
+	if err != nil && s.ExistsWithConfirmation() {
+		statusLog.Warn("tmux_start_reported_error_but_session_exists",
+			slog.String("session", s.Name),
+			slog.String("launcher", launcher),
+			slog.String("error", err.Error()),
+			slog.String("output", string(output)))
+		err = nil
+	}
 	if err != nil && launcher == "systemd-run" {
 		// systemd-run detection said yes but invocation failed (e.g. dbus
 		// down, lingering disabled, broken user manager). Log a structured
@@ -1802,6 +1810,13 @@ func (s *Session) Start(command string) error {
 		if err != nil {
 			retryOutput, retryErr := execCommandForLauncher("tmux", tmuxArgs...).CombinedOutput()
 			if retryErr == nil {
+				output = retryOutput
+				err = nil
+			} else if s.ExistsWithConfirmation() {
+				statusLog.Warn("tmux_start_direct_retry_reported_error_but_session_exists",
+					slog.String("session", s.Name),
+					slog.String("error", retryErr.Error()),
+					slog.String("output", string(retryOutput)))
 				output = retryOutput
 				err = nil
 			} else {

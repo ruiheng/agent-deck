@@ -445,6 +445,28 @@ func (s *Storage) Load() ([]*Instance, error) {
 	return instances, err
 }
 
+func normalizeLoadedTool(tool, command string) string {
+	if strings.TrimSpace(tool) != "shell" {
+		return tool
+	}
+	switch {
+	case isClaudeCommand(command):
+		return "claude"
+	case isCodexCommand(command):
+		return "codex"
+	case isCommand(command, "gemini"):
+		return "gemini"
+	case isCommand(command, "opencode") || isCommand(command, "open-code"):
+		return "opencode"
+	case isCommand(command, "copilot"):
+		return "copilot"
+	case isCommand(command, "pi"):
+		return "pi"
+	default:
+		return tool
+	}
+}
+
 // LoadLite reads session data from SQLite without tmux reconnection.
 // This is a fast path for operations that only need to read session metadata
 // (e.g., finding current session by tmux name) without initializing full Instance objects.
@@ -487,6 +509,7 @@ func (s *Storage) LoadLite() ([]*InstanceData, []*GroupData, error) {
 			color2 := statedb.UnmarshalToolData(r.ToolData)
 		sandboxCfg := decodeSandboxConfig(sandboxJSON)
 
+		tool := normalizeLoadedTool(r.Tool, r.Command)
 		instances[i] = &InstanceData{
 			ID:                 r.ID,
 			Title:              r.Title,
@@ -499,7 +522,7 @@ func (s *Storage) LoadLite() ([]*InstanceData, []*GroupData, error) {
 			TitleLocked:        r.TitleLocked,
 			Command:            r.Command,
 			Wrapper:            r.Wrapper,
-			Tool:               r.Tool,
+			Tool:               tool,
 			Status:             Status(r.Status),
 			CreatedAt:          r.CreatedAt,
 			LastAccessedAt:     r.LastAccessed,
@@ -593,6 +616,7 @@ func (s *Storage) LoadWithGroups() ([]*Instance, []*GroupData, error) {
 			color := statedb.UnmarshalToolData(r.ToolData)
 		sandboxCfg := decodeSandboxConfig(sandboxJSON)
 
+		tool := normalizeLoadedTool(r.Tool, r.Command)
 		data.Instances[i] = &InstanceData{
 			ID:                 r.ID,
 			Title:              r.Title,
@@ -605,7 +629,7 @@ func (s *Storage) LoadWithGroups() ([]*Instance, []*GroupData, error) {
 			TitleLocked:        r.TitleLocked,
 			Command:            r.Command,
 			Wrapper:            r.Wrapper,
-			Tool:               r.Tool,
+			Tool:               tool,
 			Status:             Status(r.Status),
 			CreatedAt:          r.CreatedAt,
 			LastAccessedAt:     r.LastAccessed,

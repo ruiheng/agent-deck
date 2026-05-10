@@ -1549,6 +1549,35 @@ func TestPreviewFetchedMsgUpdatesCacheTimeOnError(t *testing.T) {
 	}
 }
 
+func TestPreviewFetchedMsgDiscardsStaleTmuxSessionResult(t *testing.T) {
+	home := NewHome()
+	inst := session.NewInstanceWithTool("preview-stale", t.TempDir(), "codex")
+	oldTmuxName := inst.GetTmuxSession().Name
+	inst.GetTmuxSession().Name = oldTmuxName + "_new"
+
+	home.instances = []*session.Instance{inst}
+	home.instanceByID[inst.ID] = inst
+	home.previewFetchingID = inst.ID
+
+	model, _ := home.Update(previewFetchedMsg{
+		previewKey:      inst.ID,
+		sessionID:       inst.ID,
+		tmuxSessionName: oldTmuxName,
+		err:             fmt.Errorf("failed to capture history: exit status 1"),
+	})
+	updated := model.(*Home)
+
+	if updated.previewFetchingID != "" {
+		t.Fatal("stale preview result should clear previewFetchingID")
+	}
+	if _, ok := updated.previewCache[inst.ID]; ok {
+		t.Fatal("stale preview result must not overwrite cache for the replacement tmux session")
+	}
+	if _, ok := updated.previewCacheTime[inst.ID]; ok {
+		t.Fatal("stale preview result must not update cache time")
+	}
+}
+
 func TestRenderHelpBarTiny(t *testing.T) {
 	home := NewHome()
 	home.width = 45 // Tiny mode (<50 cols)

@@ -24,6 +24,29 @@ func newTestStorage(t *testing.T) *Storage {
 	return &Storage{db: db, dbPath: dbPath, profile: "_test"}
 }
 
+func TestNormalizeLoadedTool_RepairsShellDowngradeForBuiltinCommands(t *testing.T) {
+	tests := []struct {
+		name    string
+		tool    string
+		command string
+		want    string
+	}{
+		{name: "codex command repairs shell", tool: "shell", command: "codex", want: "codex"},
+		{name: "codex exe repairs shell", tool: "shell", command: "codex.exe --model gpt-5.5", want: "codex"},
+		{name: "claude command repairs shell", tool: "shell", command: "claude --resume abc", want: "claude"},
+		{name: "generic shell stays shell", tool: "shell", command: "pwsh -NoLogo", want: "shell"},
+		{name: "explicit codex remains codex", tool: "codex", command: "codex", want: "codex"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := normalizeLoadedTool(tt.tool, tt.command); got != tt.want {
+				t.Fatalf("normalizeLoadedTool(%q, %q) = %q, want %q", tt.tool, tt.command, got, tt.want)
+			}
+		})
+	}
+}
+
 // TestStorageUpdatedAtTimestamp verifies that SaveWithGroups sets the UpdatedAt timestamp
 // and GetUpdatedAt() returns it correctly.
 func TestStorageUpdatedAtTimestamp(t *testing.T) {
