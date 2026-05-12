@@ -3068,6 +3068,24 @@ func TestStartCommandSpec_InitialProcess_WrapsBashRegardlessOfContent(t *testing
 	}
 }
 
+func TestStartCommandSpec_WindowsCmdWhenMarked(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("windows-specific command wrapper behavior")
+	}
+
+	cmd := `cmd.exe /d /s /c "set ""AGENTDECK_TOOL=codex"" && codex --no-alt-screen"`
+	s := &Session{
+		Name:                       "agentdeck_test_abcdef12",
+		WorkDir:                    "/tmp/project",
+		RunCommandAsInitialProcess: true,
+		CommandUsesWindowsCmd:      true,
+	}
+
+	launcher, args := s.startCommandSpec("/tmp/project", cmd)
+	require.Equal(t, "tmux", launcher)
+	require.Equal(t, cmd, args[len(args)-1])
+}
+
 // TestStartCommandSpec_InitialProcess_ShellSyntaxValid verifies that the
 // wrapped command (the full `bash -c '…'` string) is itself syntactically
 // valid when invoked via `sh -c`, which is how tmux delivers it. This is
@@ -3188,6 +3206,18 @@ func TestSessionWrapRespawnCommand_WindowsPowerShellWhenMarked(t *testing.T) {
 	wrapped, err := s.wrapRespawnCommand(cmd)
 	require.NoError(t, err)
 	require.Equal(t, cmd, decodePowerShellEncodedCommandForTest(t, wrapped))
+}
+
+func TestSessionWrapRespawnCommand_WindowsCmdWhenMarked(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("windows-specific respawn wrapper behavior")
+	}
+
+	s := &Session{CommandUsesWindowsCmd: true}
+	cmd := `cmd.exe /d /s /c "set ""AGENTDECK_TOOL=codex"" && codex --no-alt-screen"`
+	wrapped, err := s.wrapRespawnCommand(cmd)
+	require.NoError(t, err)
+	require.Equal(t, cmd, wrapped)
 }
 
 func TestSessionWrapRespawnCommand_WindowsPOSIXCommandDoesNotUsePowerShell(t *testing.T) {

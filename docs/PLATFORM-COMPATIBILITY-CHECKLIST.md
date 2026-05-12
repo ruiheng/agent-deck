@@ -46,6 +46,11 @@ assume every tmux behavior matches Unix tmux exactly.
   the command still disables Codex's alternate screen with `--no-alt-screen`.
   psmux capture/preview can lose track of Codex when it switches buffers,
   leaving only the parent PowerShell prompt visible.
+- If a change touches native Windows built-in Codex restart, verify the live
+  tmux pane does not become a shell after restart. On psmux, `respawn-pane` with
+  `pwsh -EncodedCommand` has been observed to report success while leaving the
+  pane at a PowerShell prompt. The supported path for local unwrapped built-in
+  Codex is kill/recreate + initial-process launch through `cmd.exe /d /s /c`.
 - If a change touches stored status, distinguish conversation state from runtime
   state. A stored `waiting`/`connected` conversation can still have no live tmux
   session.
@@ -63,7 +68,7 @@ a specific final shell.
 Native Windows local PowerShell fragments look like:
 
 ```powershell
-$env:AGENTDECK_INSTANCE_ID='...'; $env:AGENTDECK_TOOL='codex'; codex
+$env:AGENTDECK_INSTANCE_ID='...'; $env:AGENTDECK_TOOL='claude'; claude --session-id <id>
 ```
 
 POSIX fragments look like:
@@ -72,21 +77,36 @@ POSIX fragments look like:
 export AGENTDECK_INSTANCE_ID=...; unset TELEGRAM_STATE_DIR; exec claude
 ```
 
+Native Windows local cmd fragments used for unwrapped built-in Codex look like:
+
+```cmd
+cmd.exe /d /s /c "set ""AGENTDECK_INSTANCE_ID=..."" && set ""AGENTDECK_TOOL=codex"" && codex --no-alt-screen resume <id>"
+```
+
 Rules:
 
 - Choose env assignment syntax based on the final execution shell, not just the
   host OS.
-- Native Windows local initial-process launch should wrap the command as
-  `pwsh -NoLogo -EncodedCommand ...`.
+- Native Windows local PowerShell initial-process launch should wrap the command
+  as `pwsh -NoLogo -EncodedCommand ...`.
+- Native Windows local, unwrapped, built-in Codex is a psmux compatibility
+  exception: build a cmd-compatible command and launch it as the pane's initial
+  process. Do not route this path through PowerShell or POSIX shell wrappers.
 - `respawn-pane` is also a launch path. It must use the same shell marker as
   `new-session`; otherwise Windows local restarts can fail while fresh starts
   appear correct.
+- Do not use `respawn-pane` for native Windows local, unwrapped, built-in Codex.
+  The observed failure mode is especially misleading: `respawn-pane` succeeds,
+  but the pane remains at `PS ...>` and agent-deck preview/attach sees a shell.
 - The PowerShell shell marker means the command string was generated with
   PowerShell syntax. Set it for native Windows built-in builders that emit
   `$env:...` assignments, including Claude even when Claude uses the send-keys
-  launch path. Do not set it for raw shell sessions or generic custom tools
-  just because the host is Windows; they may intentionally contain POSIX shell
-  fragments.
+  launch path. Do not set it for built-in Codex when it is using the cmd
+  compatibility path, raw shell sessions, or generic custom tools just because
+  the host is Windows; they may intentionally contain POSIX shell fragments.
+- The cmd shell marker means the command string was generated for `cmd.exe`.
+  Carry this marker through `tmux.Session` just like the PowerShell marker so
+  `new-session`, send-keys fallback, and respawn wrapping do not reinterpret it.
 - Windows SSH, sandbox, and wrapper launches may still be initial-process
   launches, but they must not be PowerShell encoded if the command string is
   POSIX. This includes commands containing POSIX single-quote escaping such as
@@ -131,6 +151,14 @@ Important differences observed on Windows:
   (`{command} ...`) should preserve this flag. Do not apply it blindly to SSH,
   sandbox, tool-config wrappers, or custom Codex-compatible commands; their
   final shell and CLI flags are owned by that command path.
+- Native Windows local, unwrapped, built-in Codex restart should not use
+  `respawn-pane`. Preserve `CodexSessionID`, recreate the tmux/psmux session,
+  rebuild the session backend, and launch `codex --no-alt-screen resume <id>` as
+  the new pane's initial process through `cmd.exe /d /s /c`.
+- `respawn-pane` success is not proof that the intended agent process is alive.
+  For Codex on psmux, verify by pane content or attach behavior: seeing
+  `PS <path>>` means restart produced a shell, regardless of stored
+  `CodexSessionID`.
 
 ## Socket Isolation Rules
 
@@ -213,23 +241,25 @@ Checklist:
 
 ## Windows Validation Commands
 
-Use repo-local caches to avoid default Go cache permission issues in sandboxed
-Windows environments:
+Use a user-level Go cache to avoid workspace churn and sandbox permission
+surprises in Windows environments:
 
 ```powershell
-$goCacheRoot = Join-Path (Get-Location) '.tmp-go'
+$goCacheRoot = Join-Path $env:LOCALAPPDATA 'agent-deck\go'
 $env:GOCACHE = Join-Path $goCacheRoot 'build'
 $env:GOMODCACHE = Join-Path $goCacheRoot 'mod'
 ```
 
-The `.tmp-go/` tree is ignored by git and by repo-wide source lints; do not use
-separate top-level `.tmp-gocache/` or `.tmp-gomodcache/` directories.
+Do not introduce repo-local `.gocache`, `.tmp-gocache`, or `.tmp-gomodcache`
+directories unless a specific task explicitly requires isolated caches.
 
 Recommended targeted checks after Windows/session changes:
 
 ```powershell
 go test ./internal/tmux -run "TestWindowsAttach|TestStartCommandSpec|TestWindowsDetachKeyName|TestCapture" -count=1
 go test ./internal/session -run "TestShouldRunCommandAsInitialProcess|TestBuildCodexCommand|TestBuildClaudeCommand_Windows|TestPrepareCommand_Windows|TestInstance_UpdateCodexSession|TestIssue680|TestS8" -count=1
+go test ./internal/tmux -run "TestStartCommandSpec_WindowsCmdWhenMarked|TestSessionWrapRespawnCommand_WindowsCmdWhenMarked|TestSessionWrapRespawnCommand_WindowsPowerShellWhenMarked" -count=1
+go test ./internal/session -run "TestRecreateTmuxSession|TestShouldUsePowerShellCommandShell|TestBuildCodexCommand_WindowsNativeCodexUsesCmd" -count=1
 go test ./internal/ui -run "TestPreviewFetchedMsgUpdatesCacheTimeOnError|TestShouldAttachExistingSession|TestShouldRenderMissingTmuxError|TestEffectiveDisplayStatus" -count=1
 .\dev.ps1 build
 ```
@@ -244,8 +274,8 @@ Live smoke checks on native Windows:
   permanent loading.
 - In a native Windows Codex session, press `Ctrl+C` so the pane returns to
   PowerShell, then restart/resume the session. The restored command should use
-  `codex --no-alt-screen resume <id>` and should return to the Codex transcript,
-  not stay as a shell.
+  `cmd.exe /d /s /c ... codex --no-alt-screen resume <id>` and should return to
+  the Codex transcript, not stay as a shell.
 - Restart a Windows session. It should preserve socket targeting and reconnect
   control pipe/capture.
 - If using the installed binary, ensure `C:\Users\<user>\.local\bin\agent-deck.exe`

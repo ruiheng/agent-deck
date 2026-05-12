@@ -797,6 +797,10 @@ type Session struct {
 	// runtime.GOOS alone is not enough to choose the outer shell wrapper.
 	CommandUsesPowerShell bool
 
+	// CommandUsesWindowsCmd is set for native Windows commands that must run
+	// through cmd.exe directly instead of PowerShell or POSIX shell wrappers.
+	CommandUsesWindowsCmd bool
+
 	// LaunchInUserScope starts the tmux server through systemd-run --user --scope
 	// so the server is owned by the user's systemd manager instead of the current
 	// login session scope.
@@ -996,7 +1000,9 @@ func (s *Session) startCommandSpec(workDir, command string) (string, []string) {
 		// double-wrapping payloads that are already `bash -c '…'`.
 		// wrapIgnoreSuspend() already returns that shape; re-wrapping it can
 		// corrupt quoting for nested payloads like docker exec bash -c ... .
-		if runtime.GOOS == "windows" && s.CommandUsesPowerShell {
+		if runtime.GOOS == "windows" && s.CommandUsesWindowsCmd {
+			tmuxArgs = append(tmuxArgs, command)
+		} else if runtime.GOOS == "windows" && s.CommandUsesPowerShell {
 			tmuxArgs = append(tmuxArgs, powerShellEncodedWrap(command))
 		} else if isBashCWrapped(command) {
 			tmuxArgs = append(tmuxArgs, command)
@@ -1933,7 +1939,9 @@ func (s *Session) Start(command string) error {
 	// Fallback: if RunCommandAsInitialProcess is false, send command via send-keys.
 	if command != "" && !s.RunCommandAsInitialProcess {
 		wrapped := bashCWrap(command)
-		if runtime.GOOS == "windows" && s.CommandUsesPowerShell {
+		if runtime.GOOS == "windows" && s.CommandUsesWindowsCmd {
+			wrapped = command
+		} else if runtime.GOOS == "windows" && s.CommandUsesPowerShell {
 			wrapped = powerShellEncodedWrap(command)
 		}
 		if err := s.SendKeysAndEnter(wrapped); err != nil {
@@ -2432,6 +2440,9 @@ func wrapRespawnCommand(command string) (string, error) {
 }
 
 func (s *Session) wrapRespawnCommand(command string) (string, error) {
+	if runtime.GOOS == "windows" && s.CommandUsesWindowsCmd {
+		return command, nil
+	}
 	if runtime.GOOS == "windows" && s.CommandUsesPowerShell {
 		return powerShellEncodedWrap(command), nil
 	}

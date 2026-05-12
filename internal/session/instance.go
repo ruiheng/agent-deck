@@ -1026,16 +1026,6 @@ func (i *Instance) buildCodexCommand(baseCommand string) string {
 		return baseCommand
 	}
 
-	envPrefix := i.buildEnvSourceCommand()
-	powerShell := i.shouldUsePowerShellCommandShell()
-	agentdeckParts := []string{
-		shellSetEnvCommandForPowerShell("AGENTDECK_INSTANCE_ID", i.ID, powerShell),
-		shellSetEnvCommandForPowerShell("AGENTDECK_TITLE", i.Title, powerShell),
-		shellSetEnvCommandForPowerShell("AGENTDECK_TOOL", i.Tool, powerShell),
-	}
-	sep := shellCommandSeparatorForPowerShell(powerShell)
-	envPrefix += strings.Join(agentdeckParts, sep) + sep
-
 	yoloFlag := i.resolveCodexYoloFlag()
 
 	command := strings.TrimSpace(baseCommand)
@@ -1063,11 +1053,173 @@ func (i *Instance) buildCodexCommand(baseCommand string) string {
 	}
 
 	if i.CodexSessionID != "" {
-		return envPrefix + fmt.Sprintf("%s%s resume %s",
-			command, launchFlags, i.CodexSessionID)
+		launchCommand := fmt.Sprintf("%s%s resume %s", command, launchFlags, i.CodexSessionID)
+		if i.shouldUseWindowsCmdCommandShell(command) {
+			return shellCmdExeWrap(i.buildWindowsCmdCodexEnv(), launchCommand)
+		}
+		return i.buildCodexEnvPrefix(command) + launchCommand
 	}
 
-	return envPrefix + command + launchFlags
+	launchCommand := command + launchFlags
+	if i.shouldUseWindowsCmdCommandShell(command) {
+		return shellCmdExeWrap(i.buildWindowsCmdCodexEnv(), launchCommand)
+	}
+	return i.buildCodexEnvPrefix(command) + launchCommand
+}
+
+func (i *Instance) buildCodexEnvPrefix(command string) string {
+	powerShell := i.shouldUsePowerShellCommandShellForCommand(command)
+	agentdeckParts := []string{
+		shellSetEnvCommandForPowerShell("AGENTDECK_INSTANCE_ID", i.ID, powerShell),
+		shellSetEnvCommandForPowerShell("AGENTDECK_TITLE", i.Title, powerShell),
+		shellSetEnvCommandForPowerShell("AGENTDECK_TOOL", i.Tool, powerShell),
+	}
+	sep := shellCommandSeparatorForPowerShell(powerShell)
+	return i.buildEnvSourceCommandForPowerShell(powerShell) + strings.Join(agentdeckParts, sep) + sep
+}
+
+func (i *Instance) buildWindowsCmdCodexEnv() []string {
+	parts := []string{
+		shellSetEnvCommandForCmd("COLORFGBG", ThemeColorFGBG()),
+	}
+	parts = append(parts, i.buildWindowsCmdEnvSourceCommands()...)
+	parts = append(parts,
+		shellSetEnvCommandForCmd("AGENTDECK_INSTANCE_ID", i.ID),
+		shellSetEnvCommandForCmd("AGENTDECK_TITLE", i.Title),
+		shellSetEnvCommandForCmd("AGENTDECK_TOOL", i.Tool),
+	)
+	return parts
+}
+
+func (i *Instance) buildWindowsCmdEnvSourceCommands() []string {
+	config, _ := LoadUserConfig()
+	if config == nil {
+		return nil
+	}
+
+	var parts []string
+	ignoreMissing := config.Shell.GetIgnoreMissingEnvFiles()
+	for _, envFile := range config.Shell.EnvFiles {
+		parts = append(parts, windowsCmdEnvFileCommands(resolvePath(envFile, i.ProjectPath), ignoreMissing)...)
+	}
+	if config.Shell.InitScript != "" {
+		parts = append(parts, windowsCmdInitScriptCommands(config.Shell.InitScript, ignoreMissing)...)
+	}
+	if toolEnvFile := i.getToolEnvFile(); toolEnvFile != "" {
+		parts = append(parts, windowsCmdEnvFileCommands(resolvePath(toolEnvFile, i.ProjectPath), ignoreMissing)...)
+	}
+	if def := GetToolDef(i.Tool); def != nil && len(def.Env) > 0 {
+		keys := make([]string, 0, len(def.Env))
+		for key := range def.Env {
+			keys = append(keys, key)
+		}
+		sort.Strings(keys)
+		for _, key := range keys {
+			if isValidEnvKey(key) {
+				parts = append(parts, shellSetEnvCommandForCmd(key, def.Env[key]))
+			}
+		}
+	}
+	if name := strings.TrimPrefix(i.Title, "conductor-"); name != "" && name != i.Title {
+		if meta, err := LoadConductorMeta(name); err == nil {
+			if meta.EnvFile != "" {
+				parts = append(parts, windowsCmdEnvFileCommands(resolvePath(meta.EnvFile, i.ProjectPath), ignoreMissing)...)
+			}
+			if len(meta.Env) > 0 {
+				keys := make([]string, 0, len(meta.Env))
+				for key := range meta.Env {
+					keys = append(keys, key)
+				}
+				sort.Strings(keys)
+				for _, key := range keys {
+					if isValidEnvKey(key) {
+						parts = append(parts, shellSetEnvCommandForCmd(key, meta.Env[key]))
+					}
+				}
+			}
+		}
+	}
+	return parts
+}
+
+func windowsCmdEnvFileCommands(path string, ignoreMissing bool) []string {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if ignoreMissing && os.IsNotExist(err) {
+			return nil
+		}
+		return []string{shellFailCommandForCmd(fmt.Sprintf("failed to read env file: %s", path))}
+	}
+	entries, err := parseEnvFileEntries(string(data))
+	if err != nil {
+		return []string{shellFailCommandForCmd(fmt.Sprintf("failed to parse env file %s: %s", path, err.Error()))}
+	}
+	return windowsCmdEnvEntryCommands(entries)
+}
+
+func windowsCmdInitScriptCommands(script string, ignoreMissing bool) []string {
+	scriptPath := ""
+	if isFilePath(script) {
+		scriptPath = ExpandPath(script)
+		if _, err := os.Stat(scriptPath); err != nil {
+			if ignoreMissing && os.IsNotExist(err) {
+				return nil
+			}
+			return []string{shellFailCommandForCmd(fmt.Sprintf("failed to read init script: %s", scriptPath))}
+		}
+	}
+	if strings.TrimSpace(script) == "" {
+		return nil
+	}
+	return []string{windowsCmdPowerShellInitScriptCommand(script, scriptPath)}
+}
+
+func windowsCmdPowerShellInitScriptCommand(script, scriptPath string) string {
+	var sourceCommand string
+	if scriptPath != "" {
+		sourceCommand = fmt.Sprintf(`. '%s'`, shellQuotePowerShellSingle(scriptPath))
+	} else {
+		sourceCommand = script
+	}
+	ps := strings.Replace(`
+$before = @{}
+Get-ChildItem Env: | ForEach-Object { $before[$_.Name] = $_.Value }
+& {
+__SOURCE_COMMAND__
+} | Out-Null
+$cmdPath = [System.IO.Path]::Combine([System.IO.Path]::GetTempPath(), ('agent-deck-env-' + [System.Guid]::NewGuid().ToString('N') + '.cmd'))
+$lines = [System.Collections.Generic.List[string]]::new()
+$lines.Add('@echo off')
+function Add-AgentDeckEnvLine([string] $Name, [string] $Value) {
+  if ($Name -notmatch '^[A-Za-z_][A-Za-z0-9_]*$') { return }
+  $escaped = $Value.Replace('%', '%%')
+  $lines.Add(('set "' + $Name + '=' + $escaped + '"'))
+}
+Get-ChildItem Env: | Sort-Object Name | ForEach-Object {
+  if ($_.Name -match '^[A-Za-z_][A-Za-z0-9_]*$' -and ((-not $before.ContainsKey($_.Name)) -or $before[$_.Name] -ne $_.Value)) {
+    Add-AgentDeckEnvLine $_.Name $_.Value
+  }
+}
+$before.Keys | Sort-Object | ForEach-Object {
+  if ($_ -match '^[A-Za-z_][A-Za-z0-9_]*$' -and -not (Test-Path ('Env:' + $_))) {
+    Add-AgentDeckEnvLine $_ ''
+  }
+}
+$lines.Add('del "%~f0" >nul 2>nul')
+[System.IO.File]::WriteAllLines($cmdPath, $lines, [System.Text.Encoding]::UTF8)
+[Console]::Out.Write($cmdPath)
+`, "__SOURCE_COMMAND__", sourceCommand, 1)
+	return `for /f "delims=" %A in ('pwsh -NoLogo -NoProfile -EncodedCommand ` + encodePowerShellCommand(ps) + `') do call "%A"`
+}
+
+func windowsCmdEnvEntryCommands(entries []envFileEntry) []string {
+	parts := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		if isValidEnvKey(entry.key) {
+			parts = append(parts, shellSetEnvCommandForCmd(entry.key, entry.value))
+		}
+	}
+	return parts
 }
 
 // codexRolloutExists reports whether Codex has flushed a rollout JSONL for
@@ -2497,6 +2649,7 @@ func (i *Instance) Start() error {
 	i.tmuxSession.OptionOverrides = i.buildTmuxOptionOverrides()
 	i.tmuxSession.RunCommandAsInitialProcess = i.shouldRunCommandAsInitialProcess()
 	i.tmuxSession.CommandUsesPowerShell = i.shouldUsePowerShellCommandShellForStart(commandRequiresPOSIXShell)
+	i.tmuxSession.CommandUsesWindowsCmd = i.shouldUseWindowsCmdCommandShell(i.Command)
 	i.tmuxSession.LaunchInUserScope = GetTmuxSettings().GetLaunchInUserScope()
 	i.tmuxSession.LaunchAs = GetTmuxSettings().GetLaunchAs()
 
@@ -2672,6 +2825,7 @@ func (i *Instance) StartWithMessage(message string) error {
 	i.tmuxSession.OptionOverrides = i.buildTmuxOptionOverrides()
 	i.tmuxSession.RunCommandAsInitialProcess = i.shouldRunCommandAsInitialProcess()
 	i.tmuxSession.CommandUsesPowerShell = i.shouldUsePowerShellCommandShellForStart(commandRequiresPOSIXShell)
+	i.tmuxSession.CommandUsesWindowsCmd = i.shouldUseWindowsCmdCommandShell(i.Command)
 	i.tmuxSession.LaunchInUserScope = GetTmuxSettings().GetLaunchInUserScope()
 	i.tmuxSession.LaunchAs = GetTmuxSettings().GetLaunchAs()
 
@@ -3795,7 +3949,7 @@ func (i *Instance) recreateTmuxSession() {
 	// Issue #663: multi-repo sessions must cwd into MultiRepoTempDir, not
 	// ProjectPath (which is a symlink into that parent dir). Delegates to
 	// EffectiveWorkingDir so single-repo sessions keep using ProjectPath.
-	i.tmuxSession = tmux.NewSession(i.Title, i.EffectiveWorkingDir())
+	i.setTmuxSession(tmux.NewSession(i.Title, i.EffectiveWorkingDir()))
 	// Preserve the socket the instance was originally created on (issue
 	// #687). A restart/respawn cycle must NOT silently relocate the session
 	// to the current default socket — that would strand the old tmux pane
@@ -4589,6 +4743,7 @@ func (i *Instance) Restart() error {
 
 	if i.tmuxSession != nil {
 		i.tmuxSession.CommandUsesPowerShell = i.shouldUsePowerShellCommandShell()
+		i.tmuxSession.CommandUsesWindowsCmd = i.shouldUseWindowsCmdCommandShell(i.Command)
 	}
 
 	// If Claude session with known ID AND tmux session exists, use respawn-pane.
@@ -4736,7 +4891,7 @@ func (i *Instance) Restart() error {
 	}
 
 	// If Codex session AND tmux session exists, use respawn-pane
-	if IsCodexCompatible(i.Tool) && i.tmuxSession != nil && i.tmuxSession.Exists() {
+	if IsCodexCompatible(i.Tool) && !i.shouldUseWindowsCmdCommandShell(i.Command) && i.tmuxSession != nil && i.tmuxSession.Exists() {
 		// Try to get session ID from tmux environment if not already set
 		if i.CodexSessionID == "" {
 			if envID, err := i.tmuxSession.GetEnvironment("CODEX_SESSION_ID"); err == nil && envID != "" {
@@ -4885,6 +5040,7 @@ func (i *Instance) Restart() error {
 	i.tmuxSession.OptionOverrides = i.buildTmuxOptionOverrides()
 	i.tmuxSession.RunCommandAsInitialProcess = i.shouldRunCommandAsInitialProcess()
 	i.tmuxSession.CommandUsesPowerShell = i.shouldUsePowerShellCommandShell()
+	i.tmuxSession.CommandUsesWindowsCmd = i.shouldUseWindowsCmdCommandShell(i.Command)
 	i.tmuxSession.LaunchInUserScope = GetTmuxSettings().GetLaunchInUserScope()
 	i.tmuxSession.LaunchAs = GetTmuxSettings().GetLaunchAs()
 
@@ -6174,11 +6330,26 @@ func (i *Instance) shouldRunCommandAsInitialProcess() bool {
 }
 
 func (i *Instance) shouldUsePowerShellCommandShell() bool {
+	return i.shouldUsePowerShellCommandShellForCommand(i.Command)
+}
+
+func (i *Instance) shouldUsePowerShellCommandShellForCommand(command string) bool {
 	return runtime.GOOS == "windows" &&
 		!i.IsSSH() &&
 		!i.IsSandboxed() &&
 		!i.hasEffectiveWrapper() &&
+		!i.shouldUseWindowsCmdCommandShell(command) &&
 		i.commandBuilderEmitsPowerShell()
+}
+
+func (i *Instance) shouldUseWindowsCmdCommandShell(command string) bool {
+	trimmed := strings.TrimSpace(command)
+	return runtime.GOOS == "windows" &&
+		i.Tool == "codex" &&
+		(trimmed == "" || trimmed == "codex") &&
+		!i.IsSSH() &&
+		!i.IsSandboxed() &&
+		!i.hasEffectiveWrapper()
 }
 
 func (i *Instance) shouldUsePowerShellCommandShellForStart(commandRequiresPOSIXShell bool) bool {

@@ -2,6 +2,7 @@ package session
 
 import (
 	"bufio"
+	"encoding/base64"
 	"fmt"
 	"log/slog"
 	"os"
@@ -9,6 +10,7 @@ import (
 	"runtime"
 	"sort"
 	"strings"
+	"unicode/utf16"
 )
 
 // buildEnvSourceCommand builds shell commands to source .env files before the main command.
@@ -542,6 +544,35 @@ func shellSetEnvCommandForPowerShell(key, value string, powerShell bool) string 
 		return fmt.Sprintf(`$env:%s='%s'`, key, shellQuotePowerShellSingle(value))
 	}
 	return fmt.Sprintf("export %s='%s'", key, shellQuoteSingle(value))
+}
+
+func shellSetEnvCommandForCmd(key, value string) string {
+	if value != "" && strings.ContainsAny(value, `%"`) {
+		script := fmt.Sprintf(`[Console]::Out.Write('%s')`, shellQuotePowerShellSingle(value))
+		encoded := encodePowerShellCommand(script)
+		return `for /f "delims=" %A in ('pwsh -NoLogo -NoProfile -EncodedCommand ` + encoded + `') do set ""` + key + `=%A""`
+	}
+	return fmt.Sprintf(`set ""%s=%s""`, key, strings.ReplaceAll(value, `"`, `""`))
+}
+
+func encodePowerShellCommand(command string) string {
+	encoded := utf16.Encode([]rune(command))
+	buf := make([]byte, len(encoded)*2)
+	for i, r := range encoded {
+		buf[i*2] = byte(r)
+		buf[i*2+1] = byte(r >> 8)
+	}
+	return base64.StdEncoding.EncodeToString(buf)
+}
+
+func shellFailCommandForCmd(message string) string {
+	message = strings.NewReplacer(`"`, `'`, `&`, `^&`, `|`, `^|`, `<`, `^<`, `>`, `^>`).Replace(message)
+	return fmt.Sprintf(`echo agent-deck: %s 1>&2 && exit /b 1`, message)
+}
+
+func shellCmdExeWrap(parts []string, launchCommand string) string {
+	all := append(append([]string{}, parts...), launchCommand)
+	return fmt.Sprintf(`cmd.exe /d /s /c "%s"`, strings.Join(all, " && "))
 }
 
 func shellUnsetEnvCommand(key string, powerShell bool) string {

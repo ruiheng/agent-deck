@@ -3453,9 +3453,9 @@ func TestShouldUsePowerShellCommandShell_WindowsExecutionShells(t *testing.T) {
 		want bool
 	}{
 		{
-			name: "local native",
+			name: "codex local native uses cmd",
 			inst: &Instance{Tool: "codex"},
-			want: true,
+			want: false,
 		},
 		{
 			name: "claude local native",
@@ -3506,6 +3506,156 @@ func TestShouldUsePowerShellCommandShell_WindowsExecutionShells(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestBuildCodexCommand_WindowsNativeCodexUsesCmd(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("windows-specific behavior")
+	}
+
+	inst := &Instance{ID: "abc123", Title: "fix-clash", Tool: "codex", Command: "codex"}
+	cmd := inst.buildCodexCommand("codex")
+
+	require.Contains(t, cmd, `cmd.exe /d /s /c "`)
+	require.Contains(t, cmd, `set ""AGENTDECK_INSTANCE_ID=abc123""`)
+	require.Contains(t, cmd, `set ""AGENTDECK_TITLE=fix-clash""`)
+	require.Contains(t, cmd, `set ""AGENTDECK_TOOL=codex""`)
+	require.Contains(t, cmd, `&& codex --no-alt-screen`)
+	require.NotContains(t, cmd, "$env:")
+	require.NotContains(t, cmd, "pwsh -NoLogo -EncodedCommand")
+}
+
+func TestBuildCodexCommand_WindowsNativeCodexCmdPreservesEnvSources(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("windows-specific behavior")
+	}
+
+	tempDir := t.TempDir()
+	t.Setenv("HOME", tempDir)
+	ClearUserConfigCache()
+
+	projectDir := filepath.Join(tempDir, "project")
+	require.NoError(t, os.MkdirAll(projectDir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(projectDir, "codex.env"), []byte("API_KEY=from-env-file\nSHARED=env-file\n"), 0o644))
+	require.NoError(t, SaveUserConfig(&UserConfig{
+		Shell: ShellSettings{
+			EnvFiles:   []string{"codex.env"},
+			InitScript: `$env:INIT_ONLY='from-init'; $env:SHARED='init-wins'`,
+		},
+	}))
+	ClearUserConfigCache()
+
+	inst := NewInstanceWithTool("cmd-env", projectDir, "codex")
+	cmd := inst.buildCodexCommand(inst.Command)
+
+	require.Contains(t, cmd, `cmd.exe /d /s /c "`)
+	require.Contains(t, cmd, `set ""API_KEY=from-env-file""`)
+	require.Contains(t, cmd, `set ""SHARED=env-file""`)
+	require.Contains(t, cmd, `for /f "delims=" %A in ('pwsh -NoLogo -NoProfile -EncodedCommand `)
+	require.Contains(t, cmd, `do call "%A"`)
+	require.Contains(t, cmd, `&& codex --no-alt-screen`)
+	require.NotContains(t, cmd, "$env:API_KEY")
+}
+
+func TestBuildCodexCommand_WindowsNativeCodexCmdPreservesPercentLiterals(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("windows-specific behavior")
+	}
+
+	tempDir := t.TempDir()
+	t.Setenv("HOME", tempDir)
+	ClearUserConfigCache()
+
+	projectDir := filepath.Join(tempDir, "project")
+	require.NoError(t, os.MkdirAll(projectDir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(projectDir, "codex.env"), []byte("TOKEN=abc%PATH%def\n"), 0o644))
+	require.NoError(t, SaveUserConfig(&UserConfig{Shell: ShellSettings{EnvFiles: []string{"codex.env"}}}))
+	ClearUserConfigCache()
+
+	inst := NewInstanceWithTool("cmd-percent", projectDir, "codex")
+	cmd := inst.buildCodexCommand(inst.Command)
+
+	require.Contains(t, cmd, `for /f "delims=" %A in ('pwsh -NoLogo -NoProfile -EncodedCommand `)
+	require.Contains(t, cmd, `do set ""TOKEN=%A""`)
+	require.NotContains(t, cmd, `%%A`)
+	require.NotContains(t, cmd, `set ""TOKEN=abc%PATH%def""`)
+	require.Contains(t, cmd, `&& codex --no-alt-screen`)
+}
+
+func TestBuildCodexCommand_WindowsNativeCodexCmdPreservesQuoteLiterals(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("windows-specific behavior")
+	}
+
+	tempDir := t.TempDir()
+	t.Setenv("HOME", tempDir)
+	ClearUserConfigCache()
+
+	projectDir := filepath.Join(tempDir, "project")
+	require.NoError(t, os.MkdirAll(projectDir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(projectDir, "codex.env"), []byte(`JSON={"token":"abc"}`+"\n"), 0o644))
+	require.NoError(t, SaveUserConfig(&UserConfig{Shell: ShellSettings{EnvFiles: []string{"codex.env"}}}))
+	ClearUserConfigCache()
+
+	inst := NewInstanceWithTool("cmd-quote", projectDir, "codex")
+	cmd := inst.buildCodexCommand(inst.Command)
+
+	require.Contains(t, cmd, `for /f "delims=" %A in ('pwsh -NoLogo -NoProfile -EncodedCommand `)
+	require.Contains(t, cmd, `do set ""JSON=%A""`)
+	require.NotContains(t, cmd, `set ""JSON={""token"":""abc""}""`)
+	require.Contains(t, cmd, `&& codex --no-alt-screen`)
+}
+
+func TestBuildCodexCommand_WindowsNativeCodexCmdRunsDynamicInlineInitScript(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("windows-specific behavior")
+	}
+
+	tempDir := t.TempDir()
+	t.Setenv("HOME", tempDir)
+	ClearUserConfigCache()
+
+	projectDir := filepath.Join(tempDir, "project")
+	require.NoError(t, os.MkdirAll(projectDir, 0o755))
+	require.NoError(t, SaveUserConfig(&UserConfig{
+		Shell: ShellSettings{InitScript: `$env:FROM_DYNAMIC_SCRIPT = $env:COMPUTERNAME`},
+	}))
+	ClearUserConfigCache()
+
+	inst := NewInstanceWithTool("cmd-init", projectDir, "codex")
+	cmd := inst.buildCodexCommand(inst.Command)
+
+	require.Contains(t, cmd, `for /f "delims=" %A in ('pwsh -NoLogo -NoProfile -EncodedCommand `)
+	require.Contains(t, cmd, `do call "%A"`)
+	require.NotContains(t, cmd, `%%A`)
+	require.NotContains(t, cmd, `set ""FROM_DYNAMIC_SCRIPT=$env:COMPUTERNAME""`)
+	require.Contains(t, cmd, `&& codex --no-alt-screen`)
+}
+
+func TestBuildCodexCommand_WindowsNativeCodexCmdRunsMixedInlineInitScript(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("windows-specific behavior")
+	}
+
+	tempDir := t.TempDir()
+	t.Setenv("HOME", tempDir)
+	ClearUserConfigCache()
+
+	projectDir := filepath.Join(tempDir, "project")
+	require.NoError(t, os.MkdirAll(projectDir, 0o755))
+	require.NoError(t, SaveUserConfig(&UserConfig{
+		Shell: ShellSettings{InitScript: `Write-Output "setup"; $env:FROM_MIXED='abc%PATH%def'`},
+	}))
+	ClearUserConfigCache()
+
+	inst := NewInstanceWithTool("cmd-mixed-init", projectDir, "codex")
+	cmd := inst.buildCodexCommand(inst.Command)
+
+	require.Contains(t, cmd, `for /f "delims=" %A in ('pwsh -NoLogo -NoProfile -EncodedCommand `)
+	require.Contains(t, cmd, `do call "%A"`)
+	require.NotContains(t, cmd, `set ""FROM_MIXED=abc%PATH%def""`)
+	require.NotContains(t, cmd, `%%A`)
+	require.Contains(t, cmd, `&& codex --no-alt-screen`)
 }
 
 func TestShouldUsePowerShellCommandShellForStart_WindowsClaudeForkStaysPOSIX(t *testing.T) {

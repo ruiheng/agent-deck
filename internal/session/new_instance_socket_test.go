@@ -146,3 +146,39 @@ socket_name = "new-socket"
 		t.Fatalf("recreateTmuxSession leaked new config socket onto existing instance; got %q want %q", ts.SocketName, "old-socket")
 	}
 }
+
+func TestRecreateTmuxSession_RebuildsBackend(t *testing.T) {
+	tempDir := t.TempDir()
+	t.Setenv("HOME", tempDir)
+	ClearUserConfigCache()
+
+	inst := NewInstance("restart-backend", tempDir)
+	oldTmux := inst.GetTmuxSession()
+	if oldTmux == nil {
+		t.Fatal("NewInstance must allocate a tmux.Session")
+	}
+	oldBackend := inst.GetSessionBackend()
+	if oldBackend == nil {
+		t.Fatal("NewInstance must allocate a backend")
+	}
+
+	inst.recreateTmuxSession()
+
+	newTmux := inst.GetTmuxSession()
+	if newTmux == nil {
+		t.Fatal("recreateTmuxSession must allocate a new tmux.Session")
+	}
+	if newTmux.Name == oldTmux.Name {
+		t.Fatalf("test requires a different recreated tmux session name; both were %q", newTmux.Name)
+	}
+	newBackend := inst.GetSessionBackend()
+	if newBackend == nil {
+		t.Fatal("recreateTmuxSession must keep backend initialized")
+	}
+	if newBackend.Name() != newTmux.Name {
+		t.Fatalf("backend must wrap recreated tmux session; backend=%q tmux=%q old=%q", newBackend.Name(), newTmux.Name, oldTmux.Name)
+	}
+	if newBackend.Name() == oldBackend.Name() {
+		t.Fatalf("backend still points at old tmux session %q", oldBackend.Name())
+	}
+}
