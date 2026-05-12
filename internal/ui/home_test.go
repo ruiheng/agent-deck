@@ -106,32 +106,12 @@ func TestShouldRenderMissingTmuxError_NilInstance(t *testing.T) {
 	}
 }
 
-func TestEffectiveDisplayStatus_ConnectedCodexSuppressesError(t *testing.T) {
-	inst := session.NewInstanceWithTool("codex-test", "/tmp/test", "codex")
-	inst.CodexSessionID = "sess-123"
-	inst.CodexDetectedAt = time.Now()
-	got := effectiveDisplayStatus(inst, session.StatusError)
-	if got != session.StatusError {
-		t.Fatalf("effectiveDisplayStatus() = %q, want %q when tmux session cannot be confirmed", got, session.StatusError)
-	}
-}
-
-func TestShouldRenderMissingTmuxError_ConnectedCodexSuppressesPanel(t *testing.T) {
+func TestShouldRenderMissingTmuxError_ConnectedCodexWithoutTmuxShowsPanel(t *testing.T) {
 	inst := session.NewInstanceWithTool("codex-test", "/tmp/test", "codex")
 	inst.CodexSessionID = "sess-123"
 	inst.CodexDetectedAt = time.Now()
 	if !shouldRenderMissingTmuxError(inst, session.StatusError) {
 		t.Fatal("shouldRenderMissingTmuxError returned false when tmux session cannot be confirmed")
-	}
-}
-
-func TestEffectiveDisplayStatus_StaleConnectedCodexStaysError(t *testing.T) {
-	inst := session.NewInstanceWithTool("codex-test", "/tmp/test", "codex")
-	inst.CodexSessionID = "sess-123"
-	inst.CodexDetectedAt = time.Now().Add(-1 * time.Minute)
-	got := effectiveDisplayStatus(inst, session.StatusError)
-	if got != session.StatusError {
-		t.Fatalf("effectiveDisplayStatus() = %q, want %q for stale connected session", got, session.StatusError)
 	}
 }
 

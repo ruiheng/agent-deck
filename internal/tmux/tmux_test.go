@@ -3395,3 +3395,28 @@ func TestSupportsDeadPaneDetection(t *testing.T) {
 	sess.OptionOverrides["remain-on-exit"] = "on"
 	assert.True(t, sess.supportsDeadPaneDetection())
 }
+
+func TestIsPaneDeadRequiresDeadPaneDetectionSupport(t *testing.T) {
+	const sessionName = "dead-pane-unsupported"
+
+	paneCacheMu.Lock()
+	previousData := paneCacheData
+	previousTime := paneCacheTime
+	paneCacheData = map[string]PaneInfo{
+		sessionName: {Dead: true},
+	}
+	paneCacheTime = time.Now()
+	paneCacheMu.Unlock()
+	t.Cleanup(func() {
+		paneCacheMu.Lock()
+		paneCacheData = previousData
+		paneCacheTime = previousTime
+		paneCacheMu.Unlock()
+	})
+
+	sess := &Session{Name: sessionName}
+	assert.False(t, sess.IsPaneDead())
+
+	sess.OptionOverrides = map[string]string{"remain-on-exit": "on"}
+	assert.True(t, sess.IsPaneDead())
+}

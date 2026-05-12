@@ -24,27 +24,96 @@ func newTestStorage(t *testing.T) *Storage {
 	return &Storage{db: db, dbPath: dbPath, profile: "_test"}
 }
 
-func TestNormalizeLoadedTool_RepairsShellDowngradeForBuiltinCommands(t *testing.T) {
-	tests := []struct {
-		name    string
-		tool    string
-		command string
-		want    string
-	}{
-		{name: "codex command repairs shell", tool: "shell", command: "codex", want: "codex"},
-		{name: "codex exe repairs shell", tool: "shell", command: "codex.exe --model gpt-5.5", want: "codex"},
-		{name: "claude command repairs shell", tool: "shell", command: "claude --resume abc", want: "claude"},
-		{name: "generic shell stays shell", tool: "shell", command: "pwsh -NoLogo", want: "shell"},
-		{name: "explicit codex remains codex", tool: "codex", command: "codex", want: "codex"},
+func TestStorageLoad_RepairsShellDowngradeOnlyWithPersistentToolEvidence(t *testing.T) {
+	s := newTestStorage(t)
+	now := time.Now()
+	codexOptions, err := MarshalToolOptions(&CodexOptions{})
+	if err != nil {
+		t.Fatalf("MarshalToolOptions() failed: %v", err)
 	}
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			if got := normalizeLoadedTool(tt.tool, tt.command); got != tt.want {
-				t.Fatalf("normalizeLoadedTool(%q, %q) = %q, want %q", tt.tool, tt.command, got, tt.want)
-			}
-		})
+	instances := []*Instance{
+		{
+			ID:             "downgraded-codex",
+			Title:          "Downgraded Codex",
+			ProjectPath:    "/tmp/codex",
+			GroupPath:      "grp",
+			Command:        "codex",
+			Tool:           "shell",
+			Status:         StatusIdle,
+			CreatedAt:      now,
+			CodexSessionID: "codex-sid",
+		},
+		{
+			ID:               "downgraded-claude",
+			Title:            "Downgraded Claude",
+			ProjectPath:      "/tmp/claude",
+			GroupPath:        "grp",
+			Command:          "claude --resume abc",
+			Tool:             "shell",
+			Status:           StatusIdle,
+			CreatedAt:        now,
+			ClaudeSessionID:  "claude-sid",
+			ClaudeDetectedAt: now,
+		},
+		{
+			ID:              "codex-options",
+			Title:           "Codex Options",
+			ProjectPath:     "/tmp/codex-options",
+			GroupPath:       "grp",
+			Command:         "codex",
+			Tool:            "shell",
+			Status:          StatusIdle,
+			CreatedAt:       now,
+			ToolOptionsJSON: codexOptions,
+		},
+		{
+			ID:          "legit-shell-codex",
+			Title:       "Legit Shell Codex",
+			ProjectPath: "/tmp/shell",
+			GroupPath:   "grp",
+			Command:     "codex",
+			Tool:        "shell",
+			Status:      StatusIdle,
+			CreatedAt:   now,
+		},
 	}
+
+	if err := s.SaveWithGroups(instances, nil); err != nil {
+		t.Fatalf("SaveWithGroups failed: %v", err)
+	}
+
+	lite, _, err := s.LoadLite()
+	if err != nil {
+		t.Fatalf("LoadLite failed: %v", err)
+	}
+	if got := toolByIDLite(lite); got["downgraded-codex"] != "codex" || got["downgraded-claude"] != "claude" || got["codex-options"] != "codex" || got["legit-shell-codex"] != "shell" {
+		t.Fatalf("LoadLite repaired tools = %#v", got)
+	}
+
+	loaded, _, err := s.LoadWithGroups()
+	if err != nil {
+		t.Fatalf("LoadWithGroups failed: %v", err)
+	}
+	if got := toolByID(loaded); got["downgraded-codex"] != "codex" || got["downgraded-claude"] != "claude" || got["codex-options"] != "codex" || got["legit-shell-codex"] != "shell" {
+		t.Fatalf("LoadWithGroups repaired tools = %#v", got)
+	}
+}
+
+func toolByIDLite(instances []*InstanceData) map[string]string {
+	result := make(map[string]string, len(instances))
+	for _, inst := range instances {
+		result[inst.ID] = inst.Tool
+	}
+	return result
+}
+
+func toolByID(instances []*Instance) map[string]string {
+	result := make(map[string]string, len(instances))
+	for _, inst := range instances {
+		result[inst.ID] = inst.Tool
+	}
+	return result
 }
 
 // TestStorageUpdatedAtTimestamp verifies that SaveWithGroups sets the UpdatedAt timestamp

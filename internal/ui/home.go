@@ -2593,7 +2593,7 @@ func (h *Home) refreshSessionRenderSnapshot(instances []*session.Instance) {
 			continue
 		}
 		state := sessionRenderState{
-			status: effectiveDisplayStatus(inst, inst.GetStatusThreadSafe()),
+			status: inst.GetStatusThreadSafe(),
 			tool:   inst.GetToolThreadSafe(),
 		}
 		// Look up pane title from the already-refreshed tmux cache.
@@ -2618,7 +2618,7 @@ func (h *Home) getSessionRenderState(inst *session.Instance) sessionRenderState 
 	}
 	// Fallback for newly-added sessions before snapshot refresh.
 	return sessionRenderState{
-		status: effectiveDisplayStatus(inst, inst.GetStatusThreadSafe()),
+		status: inst.GetStatusThreadSafe(),
 		tool:   inst.GetToolThreadSafe(),
 	}
 }
@@ -11934,7 +11934,7 @@ func (h *Home) renderPreviewPane(width, height int) string {
 
 	// Session info header box
 	// Cache status once to avoid races with background status updates
-	selectedStatus := effectiveDisplayStatus(selected, selected.GetStatusThreadSafe())
+	selectedStatus := selected.GetStatusThreadSafe()
 	statusIcon := "○"
 	statusColor := ColorTextDim
 	switch selectedStatus {
@@ -12530,8 +12530,6 @@ func (h *Home) renderPreviewPane(width, height int) string {
 	}
 
 	// Special handling for error state - crash/unexpected failure with diagnostic guidance.
-	// Status persistence can lag behind the real tmux/psmux runtime on Windows,
-	// so only show the missing-session panel when the session is actually gone.
 	if shouldRenderMissingTmuxError(selected, selectedStatus) {
 		errorHeader := renderSectionDivider("Session Error", width-4)
 		b.WriteString(errorHeader)
@@ -13633,16 +13631,12 @@ func shouldAttachExistingSession(inst *session.Instance) bool {
 	if inst == nil {
 		return false
 	}
-	displayStatus := effectiveDisplayStatus(inst, inst.GetStatusThreadSafe())
-	if displayStatus == session.StatusStopped {
+	status := inst.GetStatusThreadSafe()
+	if status == session.StatusStopped {
 		return false
 	}
-	if shouldRenderMissingTmuxError(inst, displayStatus) {
+	if shouldRenderMissingTmuxError(inst, status) {
 		return false
-	}
-
-	if shouldTreatConnectedSessionAsTemporarilyAlive(inst) {
-		return true
 	}
 
 	tmuxSess := inst.GetTmuxSession()
@@ -13659,70 +13653,7 @@ func shouldRenderMissingTmuxError(inst *session.Instance, status session.Status)
 	if status != session.StatusError || inst == nil {
 		return false
 	}
-	if shouldTreatConnectedSessionAsTemporarilyAlive(inst) {
-		return false
-	}
 	return !inst.Exists()
-}
-
-func effectiveDisplayStatus(inst *session.Instance, status session.Status) session.Status {
-	if status != session.StatusError || inst == nil {
-		return status
-	}
-	if shouldTreatConnectedSessionAsTemporarilyAlive(inst) {
-		return session.StatusWaiting
-	}
-	return status
-}
-
-func hasConnectedConversation(inst *session.Instance) bool {
-	if inst == nil {
-		return false
-	}
-	if session.IsClaudeCompatible(inst.Tool) && inst.ClaudeSessionID != "" {
-		return true
-	}
-	if inst.GeminiSessionID != "" || inst.OpenCodeSessionID != "" || inst.CodexSessionID != "" {
-		return true
-	}
-	return false
-}
-
-func shouldTreatConnectedSessionAsTemporarilyAlive(inst *session.Instance) bool {
-	if inst == nil || !hasConnectedConversation(inst) {
-		return false
-	}
-	tmuxSess := inst.GetTmuxSession()
-	if tmuxSess == nil {
-		return false
-	}
-	if tmuxSess.IsPaneDead() || !tmuxSess.ExistsWithConfirmation() {
-		return false
-	}
-
-	if hookStatus, fresh := inst.GetHookStatus(); fresh {
-		switch hookStatus {
-		case "running", "waiting", "idle":
-			return true
-		case "dead":
-			return false
-		}
-	}
-
-	const recentDetectionGrace = 20 * time.Second
-	var detectedAt time.Time
-	switch {
-	case session.IsClaudeCompatible(inst.Tool):
-		detectedAt = inst.ClaudeDetectedAt
-	case inst.Tool == "gemini":
-		detectedAt = inst.GeminiDetectedAt
-	case inst.Tool == "opencode":
-		detectedAt = inst.OpenCodeDetectedAt
-	case inst.Tool == "codex":
-		detectedAt = inst.CodexDetectedAt
-	}
-
-	return !detectedAt.IsZero() && time.Since(detectedAt) < recentDetectionGrace
 }
 
 func trimTrailingVisuallyEmptyLines(lines []string) []string {

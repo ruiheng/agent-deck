@@ -445,26 +445,40 @@ func (s *Storage) Load() ([]*Instance, error) {
 	return instances, err
 }
 
-func normalizeLoadedTool(tool, command string) string {
+func repairLoadedTool(tool, command string, claudeSID, geminiSID, opencodeSID, codexSID string, toolOpts json.RawMessage) string {
 	if strings.TrimSpace(tool) != "shell" {
 		return tool
 	}
+	optionsTool := toolNameFromOptions(toolOpts)
+	hasEvidence := func(name string, sessionID string) bool {
+		return strings.TrimSpace(sessionID) != "" || optionsTool == name
+	}
+
 	switch {
-	case isClaudeCommand(command):
+	case hasEvidence("claude", claudeSID) && isClaudeCommand(command):
 		return "claude"
-	case isCodexCommand(command):
+	case hasEvidence("codex", codexSID) && isCodexCommand(command):
 		return "codex"
-	case isCommand(command, "gemini"):
+	case hasEvidence("gemini", geminiSID) && isCommand(command, "gemini"):
 		return "gemini"
-	case isCommand(command, "opencode") || isCommand(command, "open-code"):
+	case hasEvidence("opencode", opencodeSID) && (isCommand(command, "opencode") || isCommand(command, "open-code")):
 		return "opencode"
-	case isCommand(command, "copilot"):
+	case optionsTool == "copilot" && isCommand(command, "copilot"):
 		return "copilot"
-	case isCommand(command, "pi"):
-		return "pi"
 	default:
 		return tool
 	}
+}
+
+func toolNameFromOptions(raw json.RawMessage) string {
+	if len(raw) == 0 {
+		return ""
+	}
+	var wrapper ToolOptionsWrapper
+	if err := json.Unmarshal(raw, &wrapper); err != nil {
+		return ""
+	}
+	return strings.TrimSpace(wrapper.Tool)
 }
 
 // LoadLite reads session data from SQLite without tmux reconnection.
@@ -508,8 +522,8 @@ func (s *Storage) LoadLite() ([]*InstanceData, []*GroupData, error) {
 			extraArgs2,
 			color2 := statedb.UnmarshalToolData(r.ToolData)
 		sandboxCfg := decodeSandboxConfig(sandboxJSON)
+		tool := repairLoadedTool(r.Tool, r.Command, claudeSID, geminiSID, opencodeSID, codexSID, toolOpts)
 
-		tool := normalizeLoadedTool(r.Tool, r.Command)
 		instances[i] = &InstanceData{
 			ID:                 r.ID,
 			Title:              r.Title,
@@ -615,8 +629,8 @@ func (s *Storage) LoadWithGroups() ([]*Instance, []*GroupData, error) {
 			extraArgs,
 			color := statedb.UnmarshalToolData(r.ToolData)
 		sandboxCfg := decodeSandboxConfig(sandboxJSON)
+		tool := repairLoadedTool(r.Tool, r.Command, claudeSID, geminiSID, opencodeSID, codexSID, toolOpts)
 
-		tool := normalizeLoadedTool(r.Tool, r.Command)
 		data.Instances[i] = &InstanceData{
 			ID:                 r.ID,
 			Title:              r.Title,

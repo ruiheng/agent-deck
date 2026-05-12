@@ -1748,7 +1748,7 @@ func (s *Session) Start(command string) error {
 			}
 		}
 	}
-	if err != nil && s.ExistsWithConfirmation() {
+	if err != nil && runtime.GOOS == "windows" && s.ExistsWithConfirmation() {
 		statusLog.Warn("tmux_start_reported_error_but_session_exists",
 			slog.String("session", s.Name),
 			slog.String("launcher", launcher),
@@ -1818,7 +1818,7 @@ func (s *Session) Start(command string) error {
 			if retryErr == nil {
 				output = retryOutput
 				err = nil
-			} else if s.ExistsWithConfirmation() {
+			} else if runtime.GOOS == "windows" && s.ExistsWithConfirmation() {
 				statusLog.Warn("tmux_start_direct_retry_reported_error_but_session_exists",
 					slog.String("session", s.Name),
 					slog.String("error", retryErr.Error()),

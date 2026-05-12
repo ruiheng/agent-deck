@@ -31,17 +31,3 @@ func TestTmuxBackendWrapsSessionMetadata(t *testing.T) {
 		t.Fatalf("SetDisplayName did not update wrapped session, got %q", got)
 	}
 }
-
-func TestWindowsBackendWrapsSessionMetadata(t *testing.T) {
-	sess := tmux.NewSession("test-title", "/tmp/project")
-	b := NewWindowsBackend(sess)
-	if b == nil {
-		t.Fatal("expected non-nil backend")
-	}
-	if got := b.Name(); got != sess.Name {
-		t.Fatalf("Name() = %q, want %q", got, sess.Name)
-	}
-	if got := b.WorkDir(); got != sess.WorkDir {
-		t.Fatalf("WorkDir() = %q, want %q", got, sess.WorkDir)
-	}
-}

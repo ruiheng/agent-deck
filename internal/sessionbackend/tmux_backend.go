@@ -2,7 +2,6 @@ package sessionbackend
 
 import (
 	"context"
-	"runtime"
 	"time"
 
 	"github.com/asheshgoplani/agent-deck/internal/tmux"
@@ -23,9 +22,6 @@ func NewTmuxBackend(session *tmux.Session) *TmuxBackend {
 func NewBackend(session *tmux.Session) SessionBackend {
 	if session == nil {
 		return nil
-	}
-	if runtime.GOOS == "windows" {
-		return NewWindowsBackend(session)
 	}
 	return NewTmuxBackend(session)
 }
