@@ -121,6 +121,10 @@ regressions below passed Unix tests while failing only on native Windows.
   `SocketName`, and option overrides consistently.
 - If a change touches web terminal attach, verify its environment filtering and
   session lookup follow the same rules as TUI/CLI attach.
+- If a change touches web terminal attach on native Windows, do not assume a
+  Unix PTY library can attach to psmux. `creack/pty` returns unsupported on
+  Windows; use a psmux-compatible fallback such as bounded `capture-pane`
+  polling plus `send-keys` input forwarding.
 - If a change touches web static assets, verify browser module scripts are served
   with JavaScript MIME types. Do not rely on host MIME registration for `.mjs`;
   Windows machines can map it to `text/plain`, and browsers will reject
@@ -396,6 +400,57 @@ the server responded with a MIME type of "text/plain".
 If that appears for `htm.mjs`, `preact.mjs`, xterm, or another import-map
 module, fix the server MIME mapping first. Rebuilding frontend assets will not
 help.
+
+## Web Terminal Bridge
+
+The browser terminal has a different constraint from CLI/TUI attach: the server
+process must bridge bytes over WebSocket. On Unix this can be implemented by
+starting `tmux attach-session` under a PTY. Native Windows psmux cannot use that
+same path.
+
+Checklist:
+
+- Do not call `pty.Start(tmux attach-session ...)` on native Windows.
+  `github.com/creack/pty` reports `unsupported`, which surfaces in the browser
+  as `TERMINAL_ATTACH_FAILED`.
+- Use the session's stored socket name for every bridge operation:
+  `has-session`, `capture-pane`, `resize-window`, and `send-keys` must target
+  the same server as TUI/CLI operations.
+- Strip `TMUX*` and `PSMUX_SESSION` from bridge subprocesses just like other
+  tmux subprocesses. A web server launched from inside psmux can otherwise
+  inherit the wrong leader context.
+- A Windows fallback can be degraded but must be usable: poll
+  `capture-pane -p -e` on a bounded interval, send changed content to xterm.js,
+  and forward browser input with `send-keys`. Map common control bytes
+  explicitly (`Enter`, `Backspace`, `Ctrl+C`, `Ctrl+D`) instead of sending them
+  as plain text.
+- When polling, account for full-screen alternate-screen applications. If tmux
+  reports alternate screen active, capture with `capture-pane -a` first; plain
+  `capture-pane -p -e` can show stale main-screen history while Codex, vim, or
+  another TUI is actually alive on the alternate screen.
+- The polling fallback is snapshot-based, so pane width and browser xterm width
+  must stay aligned. If the browser panel is narrower than the tmux pane, long
+  lines wrap differently in xterm.js and cursor placement appears wrong even
+  when psmux reports the correct `#{cursor_x},#{cursor_y}`. Send resize events
+  after attach and prefer testing with a wide enough terminal panel. This is
+  different from the Unix PTY attach path, where the web client participates in
+  normal tmux client-size negotiation and tmux effectively renders to the
+  smallest attached client; the polling fallback must actively resize the pane
+  to the browser's xterm dimensions.
+- Keep Unix and Windows bridge tests separate. Unix PTY integration tests should
+  remain `!windows`; Windows tests should validate command construction,
+  environment filtering, MIME/static boot, and the polling/send fallback.
+
+Failure signature:
+
+```text
+Connecting to terminal...
+
+[error:TERMINAL_ATTACH_FAILED] failed to attach terminal bridge
+```
+
+If logs include `start tmux pty: unsupported`, the fix is not session lookup or
+auth. Replace the PTY attach path for native Windows.
 
 ## Session IDs And Runtime State
 

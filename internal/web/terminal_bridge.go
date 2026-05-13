@@ -42,11 +42,16 @@ func (w *wsConnWriter) WriteBinary(data []byte) error {
 	return w.conn.WriteMessage(websocket.BinaryMessage, data)
 }
 
+type terminalWriter interface {
+	WriteJSON(v any) error
+	WriteBinary(data []byte) error
+}
+
 type tmuxPTYBridge struct {
 	tmuxSession    string
 	tmuxSocketName string // tmux -L selector captured from Instance (issue #687)
 	sessionID      string
-	writer         *wsConnWriter
+	writer         terminalWriter
 
 	cmd *exec.Cmd
 
@@ -60,6 +65,11 @@ type tmuxPTYBridge struct {
 
 	closeOnce sync.Once
 	done      chan struct{}
+
+	polling  bool
+	pollStop chan struct{}
+	pollMu   sync.Mutex
+	pollLast string
 }
 
 func newTmuxPTYBridge(tmuxSession, tmuxSocketName, sessionID string, writer *wsConnWriter) (*tmuxPTYBridge, error) {
@@ -77,8 +87,21 @@ func newTmuxPTYBridge(tmuxSession, tmuxSocketName, sessionID string, writer *wsC
 		return nil, fmt.Errorf("%w: %s", ErrTmuxSessionNotFound, tmuxSession)
 	}
 
-	cmd := tmuxAttachCommand(tmuxSession, tmuxSocketName)
+	if runtime.GOOS == "windows" {
+		b := &tmuxPTYBridge{
+			tmuxSession:    tmuxSession,
+			tmuxSocketName: tmuxSocketName,
+			sessionID:      sessionID,
+			writer:         writer,
+			done:           make(chan struct{}),
+			polling:        true,
+			pollStop:       make(chan struct{}),
+		}
+		go b.pollOutput()
+		return b, nil
+	}
 
+	cmd := tmuxAttachCommand(tmuxSession, tmuxSocketName)
 	ptmx, err := pty.Start(cmd)
 	if err != nil {
 		return nil, fmt.Errorf("start tmux pty: %w", err)
@@ -96,6 +119,88 @@ func newTmuxPTYBridge(tmuxSession, tmuxSocketName, sessionID string, writer *wsC
 
 	go b.streamOutput()
 	return b, nil
+}
+
+func (b *tmuxPTYBridge) pollOutput() {
+	defer close(b.done)
+
+	ticker := time.NewTicker(500 * time.Millisecond)
+	defer ticker.Stop()
+
+	_ = b.captureAndWriteIfChanged(true)
+	for {
+		select {
+		case <-b.pollStop:
+			return
+		case <-ticker.C:
+			if err := b.captureAndWriteIfChanged(false); err != nil {
+				_ = b.writer.WriteJSON(wsServerMessage{
+					Type:      "status",
+					Event:     "session_closed",
+					SessionID: b.sessionID,
+					Time:      time.Now().UTC(),
+				})
+				b.Close()
+				return
+			}
+		}
+	}
+}
+
+func (b *tmuxPTYBridge) captureAndWriteIfChanged(force bool) error {
+	b.pollMu.Lock()
+	defer b.pollMu.Unlock()
+
+	output, err := b.capturePaneOutput()
+	if err != nil {
+		return err
+	}
+	content := string(output)
+	cursorX, cursorY, hasCursor := b.cursorPosition()
+	signature := content
+	if hasCursor {
+		signature = fmt.Sprintf("%s\x00%d,%d", content, cursorX, cursorY)
+	}
+	if !force && signature == b.pollLast {
+		return nil
+	}
+	b.pollLast = signature
+	return b.writer.WriteBinary([]byte(formatPollingCaptureForTerminal(content, cursorX, cursorY, hasCursor)))
+}
+
+func (b *tmuxPTYBridge) capturePaneOutput() ([]byte, error) {
+	args := []string{"capture-pane", "-t", b.tmuxSession, "-p", "-e"}
+	if b.alternateScreenActive() {
+		if output, err := tmuxCommand(b.tmuxSocketName, append(args, "-a")...).Output(); err == nil {
+			return output, nil
+		}
+	}
+	return tmuxCommand(b.tmuxSocketName, args...).Output()
+}
+
+func (b *tmuxPTYBridge) alternateScreenActive() bool {
+	output, err := tmuxCommand(b.tmuxSocketName, "display-message", "-p", "-t", b.tmuxSession, "#{alternate_on}").Output()
+	if err != nil {
+		return false
+	}
+	return strings.TrimSpace(string(output)) == "1"
+}
+
+func (b *tmuxPTYBridge) cursorPosition() (int, int, bool) {
+	output, err := tmuxCommand(b.tmuxSocketName, "display-message", "-p", "-t", b.tmuxSession, "#{cursor_x},#{cursor_y}").Output()
+	if err != nil {
+		return 0, 0, false
+	}
+	parts := strings.Split(strings.TrimSpace(string(output)), ",")
+	if len(parts) != 2 {
+		return 0, 0, false
+	}
+	x, errX := strconv.Atoi(parts[0])
+	y, errY := strconv.Atoi(parts[1])
+	if errX != nil || errY != nil || x < 0 || y < 0 {
+		return 0, 0, false
+	}
+	return x, y, true
 }
 
 func (b *tmuxPTYBridge) streamOutput() {
@@ -129,14 +234,126 @@ func (b *tmuxPTYBridge) streamOutput() {
 }
 
 func (b *tmuxPTYBridge) WriteInput(data string) error {
-	if b == nil || b.ptmx == nil {
+	if b == nil {
 		return fmt.Errorf("bridge not initialized")
 	}
 	if data == "" {
 		return nil
 	}
+	if b.polling {
+		return b.sendPollingInput(data)
+	}
+	if b.ptmx == nil {
+		return fmt.Errorf("bridge not initialized")
+	}
 	_, err := b.ptmx.Write([]byte(data))
 	return err
+}
+
+func (b *tmuxPTYBridge) sendPollingInput(data string) error {
+	for _, op := range splitPollingInput(data) {
+		if op.literal != "" {
+			if err := tmuxCommand(b.tmuxSocketName, "send-keys", "-l", "-t", b.tmuxSession, "--", op.literal).Run(); err != nil {
+				return err
+			}
+			continue
+		}
+		if op.key != "" {
+			if err := tmuxCommand(b.tmuxSocketName, "send-keys", "-t", b.tmuxSession, op.key).Run(); err != nil {
+				return err
+			}
+		}
+	}
+	return b.captureAndWriteIfChanged(true)
+}
+
+type pollingInputOp struct {
+	literal string
+	key     string
+}
+
+func splitPollingInput(data string) []pollingInputOp {
+	var ops []pollingInputOp
+	var literal strings.Builder
+
+	flushLiteral := func() {
+		if literal.Len() == 0 {
+			return
+		}
+		ops = append(ops, pollingInputOp{literal: literal.String()})
+		literal.Reset()
+	}
+
+	for _, r := range data {
+		switch r {
+		case '\r', '\n':
+			flushLiteral()
+			ops = append(ops, pollingInputOp{key: "Enter"})
+		case '\x03':
+			flushLiteral()
+			ops = append(ops, pollingInputOp{key: "C-c"})
+		case '\x04':
+			flushLiteral()
+			ops = append(ops, pollingInputOp{key: "C-d"})
+		case '\b', '\x7f':
+			flushLiteral()
+			ops = append(ops, pollingInputOp{key: "BSpace"})
+		default:
+			literal.WriteRune(r)
+		}
+	}
+	flushLiteral()
+	return ops
+}
+
+func formatPollingCaptureForTerminal(content string, cursorX, cursorY int, hasCursor bool) string {
+	// capture-pane returns plain LF-delimited lines. xterm.js runs with
+	// convertEol=false so LF moves down without carriage return, producing a
+	// staircase layout. It also includes blank rows below the prompt; trim
+	// those or the browser cursor lands at the bottom of the terminal instead
+	// of the active input line.
+	minRows := 0
+	if hasCursor {
+		minRows = cursorY + 1
+	}
+	trimmed := trimTrailingBlankCaptureRows(content, minRows)
+	formatted := "\x1b[H\x1b[2J" + strings.ReplaceAll(trimmed, "\n", "\r\n")
+	if hasCursor {
+		formatted += fmt.Sprintf("\x1b[%d;%dH", cursorY+1, cursorX+1)
+	}
+	return formatted
+}
+
+func trimTrailingBlankCaptureRows(content string, minRows int) string {
+	lines := strings.Split(strings.ReplaceAll(content, "\r\n", "\n"), "\n")
+	for len(lines) > minRows && isBlankCaptureRow(lines[len(lines)-1]) {
+		lines = lines[:len(lines)-1]
+	}
+	return strings.Join(lines, "\n")
+}
+
+func isBlankCaptureRow(line string) bool {
+	return strings.TrimSpace(stripSimpleANSI(line)) == ""
+}
+
+func stripSimpleANSI(s string) string {
+	var b strings.Builder
+	for i := 0; i < len(s); {
+		if s[i] == 0x1b && i+1 < len(s) && s[i+1] == '[' {
+			i += 2
+			for i < len(s) {
+				c := s[i]
+				i++
+				if c >= 0x40 && c <= 0x7e {
+					break
+				}
+			}
+			continue
+		}
+		b.WriteByte(s[i])
+		i++
+	}
+	return b.String()
 }
 
 func (b *tmuxPTYBridge) Resize(cols, rows int) error {
@@ -145,6 +362,12 @@ func (b *tmuxPTYBridge) Resize(cols, rows int) error {
 	}
 	if cols <= 0 || rows <= 0 {
 		return fmt.Errorf("invalid dimensions: cols=%d rows=%d", cols, rows)
+	}
+	if b.polling {
+		if err := b.resizeTmuxWindow(cols, rows); err != nil {
+			return err
+		}
+		return b.captureAndWriteIfChanged(true)
 	}
 
 	b.ptmxMu.RLock()
@@ -170,16 +393,23 @@ func (b *tmuxPTYBridge) Resize(cols, rows int) error {
 	// Step 2: Tell the tmux server the new window dimensions (per D-01).
 	// Required because ignore-size prevents the server from adopting the
 	// attach client's PTY size automatically.
+	if err := b.resizeTmuxWindow(cols, rows); err != nil && firstErr == nil {
+		firstErr = err
+	}
+
+	return firstErr
+}
+
+func (b *tmuxPTYBridge) resizeTmuxWindow(cols, rows int) error {
 	args := []string{
 		"resize-window", "-t", b.tmuxSession,
 		"-x", strconv.Itoa(cols),
 		"-y", strconv.Itoa(rows),
 	}
-	if output, err := tmuxCommand(b.tmuxSocketName, args...).CombinedOutput(); err != nil && firstErr == nil {
-		firstErr = fmt.Errorf("tmux resize-window: %w (output: %s)", err, strings.TrimSpace(string(output)))
+	if output, err := tmuxCommand(b.tmuxSocketName, args...).CombinedOutput(); err != nil {
+		return fmt.Errorf("tmux resize-window: %w (output: %s)", err, strings.TrimSpace(string(output)))
 	}
-
-	return firstErr
+	return nil
 }
 
 func (b *tmuxPTYBridge) Close() {
@@ -187,6 +417,9 @@ func (b *tmuxPTYBridge) Close() {
 		return
 	}
 	b.closeOnce.Do(func() {
+		if b.pollStop != nil {
+			close(b.pollStop)
+		}
 		b.ptmxMu.Lock()
 		if b.ptmx != nil {
 			_ = b.ptmx.Close()
