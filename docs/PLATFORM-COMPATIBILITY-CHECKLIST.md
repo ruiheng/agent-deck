@@ -1,12 +1,44 @@
 # Platform Compatibility Checklist
 
-This checklist captures the non-obvious Windows/Unix compatibility traps in
-agent-deck. Use it before rebases, upstream release ports, or broad changes in
-`internal/tmux`, `internal/session`, `internal/sessionbackend`, `internal/ui`, and
-`internal/web`.
+This document is intentionally more than a checklist. It is the portable memory
+of the Windows/psmux port: if the Windows branch is lost or cannot be merged,
+this file should be enough for another engineer or agent to re-implement native
+Windows support on top of a newer upstream tree without repeating the same
+failed experiments.
+
+Use it before rebases, upstream release ports, or broad changes in
+`internal/tmux`, `internal/session`, `internal/sessionbackend`, `internal/ui`,
+`internal/web`, test infrastructure, or any code that launches subprocesses.
 
 Native Windows currently uses `psmux` as the tmux-compatible substrate. Do not
 assume every tmux behavior matches Unix tmux exactly.
+
+## Reconstruction Goal
+
+The goal is feature-equivalent native Windows behavior, not line-for-line
+recreation of this branch.
+
+Port in layers:
+
+- Establish the Windows substrate first: every tmux subprocess must go through a
+  socket-aware wrapper, strip inherited `PSMUX_SESSION`, and preserve real
+  console handles for interactive attach.
+- Then fix command launch semantics: command strings must carry their intended
+  final shell (`PowerShell`, `cmd.exe`, or POSIX) instead of deriving syntax from
+  `runtime.GOOS`.
+- Then add degraded-but-usable status and preview: capture failures must be
+  bounded and recoverable, and UI state must show diagnostics rather than
+  permanent loading.
+- Then restore agent-specific behavior: Codex/Claude/Gemini session IDs,
+  restart/resume, `CODEX_HOME` handling, and built-in Codex `--no-alt-screen`.
+- Then make tests portable: isolate HOME/profile state correctly, translate
+  Unix fixtures into intent-based fixtures, and skip psmux load tests that only
+  prove Unix tmux stress behavior.
+- Finally verify web/static behavior and filesystem behavior. These look
+  unrelated to tmux, but they are common Windows breakpoints.
+
+Treat a passing Linux/macOS test suite as necessary but not sufficient. Most
+regressions below passed Unix tests while failing only on native Windows.
 
 ## Merge Checklist
 
@@ -89,11 +121,21 @@ assume every tmux behavior matches Unix tmux exactly.
   `SocketName`, and option overrides consistently.
 - If a change touches web terminal attach, verify its environment filtering and
   session lookup follow the same rules as TUI/CLI attach.
+- If a change touches web static assets, verify browser module scripts are served
+  with JavaScript MIME types. Do not rely on host MIME registration for `.mjs`;
+  Windows machines can map it to `text/plain`, and browsers will reject
+  `<script type="module">` imports before the app boots.
 
 ## Shell And Command Semantics
 
 Command strings in this repo are not portable by default. They are fragments for
 a specific final shell.
+
+The most important design rule is to separate "where the program is running"
+from "which shell will interpret this exact string." Native Windows can still
+launch POSIX commands through SSH, sandbox wrappers, or user wrappers. Native
+Windows can also need `cmd.exe` instead of PowerShell for specific psmux
+compatibility paths.
 
 Native Windows local PowerShell fragments look like:
 
@@ -151,9 +193,23 @@ Rules:
 - A wrapper template can move the command across shell boundaries. Re-check shell
   semantics after wrapper substitution, not before.
 
+Failure signatures:
+
+- Seeing `bash -c '$env:FOO=...'` means PowerShell syntax leaked into a POSIX
+  shell.
+- Seeing `unset FOO` in a Windows local PowerShell launch means POSIX cleanup
+  syntax leaked into PowerShell.
+- Seeing a pane at `PS <path>>` after a Codex restart usually means the restart
+  shell succeeded but did not exec Codex.
+
 ## tmux And psmux Differences
 
 The code should treat psmux as tmux-like, not tmux-identical.
+
+Implementation rule: centralize all tmux process creation. A scattered
+`exec.Command("tmux", ...)` port will regress socket targeting, psmux leader
+environment cleanup, or Windows console behavior. Use package-level wrappers for
+global probes and per-session wrappers for session-scoped operations.
 
 Important differences observed on Windows:
 
@@ -207,6 +263,10 @@ Important differences observed on Windows:
   `PS <path>>` means restart produced a shell, regardless of stored
   `CodexSessionID`.
 
+Do not chase these by adding arbitrary sleeps. Prefer a stronger readiness
+signal, bounded retry around the operation that actually matters, or a Windows
+skip when the test is only Unix tmux stress coverage.
+
 ## Socket Isolation Rules
 
 Socket isolation is per session and immutable after creation.
@@ -231,9 +291,47 @@ Checklist:
   symlink-first, copy-fallback mirror. This preserves the common Unix fast path
   without making Windows developer-mode or admin privileges a product
   requirement.
+- A copy fallback must behave like a mirror, not a one-time snapshot. On every
+  reuse, keep live symlinks, refresh copied files/directories that still exist
+  in the source, and prune copied entries that were deleted or renamed from the
+  source. Otherwise a reused scratch/profile dir can load stale configuration
+  that Unix symlinks would not expose.
 - If a test specifically validates symlink identity, skip on platforms or
   configurations that cannot create symlinks. If the behavior under test is
   file visibility, test the fallback result instead of testing the mechanism.
+
+Common case: worker scratch `CLAUDE_CONFIG_DIR` mirrors the user's Claude
+profile while mutating `settings.json`. If symlinks fail on Windows, the copied
+mirror must still track added, changed, and removed top-level profile entries
+across restarts.
+
+## Test Environment And Home Isolation
+
+Windows has two different "home" problems. Do not solve them with one helper.
+
+Checklist:
+
+- For pure config/unit tests, isolate the home directory consistently:
+  `HOME`, `USERPROFILE`, `HOMEDRIVE`, and `HOMEPATH` may all matter because
+  Go's `os.UserHomeDir` and application code can consult different variables on
+  Windows. Clear any process-wide config cache after changing them.
+- For live psmux/tmux integration tests, do not blindly point `USERPROFILE` at a
+  temporary Unix-style home. psmux is tied to the user's Windows console/profile
+  environment, and over-isolating it can create failures that users will never
+  see. Prefer isolating Agent Deck's own profile/data while preserving the
+  Windows console environment psmux needs.
+- Always strip inherited `TMUX*` and `PSMUX_SESSION` from tmux subprocesses in
+  tests. A test launched from inside a psmux pane can otherwise target or inherit
+  the wrong leader session.
+- Generated Windows binaries launched through tmux/psmux must end in `.exe`.
+  This applies to smoke-test binaries and helper CLIs, not just production
+  builds.
+- TUI smoke tests intentionally nesting Agent Deck inside psmux must opt in with
+  `AGENT_DECK_ALLOW_OUTER_TMUX=1`; otherwise the production "run outside tmux"
+  guard is doing the right thing.
+- When a test only validates Unix tmux load behavior, skip or redesign it for
+  native Windows. psmux can become unstable under many concurrent live sessions,
+  and that instability can leak into later tests in the same package.
 
 ## Attach And Detach Rules
 
@@ -267,6 +365,37 @@ Checklist:
   session dead solely because one capture form failed.
 - Slow capture should be logged with enough context: session name, socket name,
   command form, and error.
+
+## Web Static Assets
+
+The web UI must work from embedded assets on native Windows without relying on
+the user's registry or browser leniency.
+
+Checklist:
+
+- Register `.mjs` explicitly as `application/javascript; charset=utf-8` in the
+  Go web process before serving embedded files. `http.FileServer` uses Go's MIME
+  lookup, which can consult host mappings; on some Windows machines `.mjs`
+  resolves to `text/plain`.
+- Add a regression test that requests every vendored `.mjs` module used by the
+  import map (`preact`, `htm`, signals, xterm, addons) and asserts the response
+  `Content-Type` starts with `application/javascript`.
+- Treat this as a boot-blocking compatibility issue, not a cosmetic warning. A
+  browser enforcing strict module MIME checks will refuse to load the first bad
+  module, leaving the web UI blank even though `/` returns `200`.
+- For PWA/mobile metadata, include the standards-track
+  `mobile-web-app-capable` meta tag alongside any Apple-specific legacy tag.
+
+Failure signature:
+
+```text
+Failed to load module script: Expected a JavaScript-or-Wasm module script but
+the server responded with a MIME type of "text/plain".
+```
+
+If that appears for `htm.mjs`, `preact.mjs`, xterm, or another import-map
+module, fix the server MIME mapping first. Rebuilding frontend assets will not
+help.
 
 ## Session IDs And Runtime State
 
@@ -321,7 +450,9 @@ go test ./internal/tmux -run "TestWindowsAttach|TestStartCommandSpec|TestWindows
 go test ./internal/session -run "TestShouldRunCommandAsInitialProcess|TestBuildCodexCommand|TestBuildClaudeCommand_Windows|TestPrepareCommand_Windows|TestInstance_UpdateCodexSession|TestIssue680|TestS8" -count=1
 go test ./internal/tmux -run "TestStartCommandSpec_WindowsCmdWhenMarked|TestSessionWrapRespawnCommand_WindowsCmdWhenMarked|TestSessionWrapRespawnCommand_WindowsPowerShellWhenMarked" -count=1
 go test ./internal/session -run "TestRecreateTmuxSession|TestShouldUsePowerShellCommandShell|TestBuildCodexCommand_WindowsNativeCodexUsesCmd" -count=1
+go test ./internal/session -run "TestEnsureWorkerScratchConfigDir|TestMirrorProfileEntries|TestBuildClaudeCommand_UsesWorkerScratchConfigDir" -count=1
 go test ./internal/ui -run "TestPreviewFetchedMsgUpdatesCacheTimeOnError|TestShouldAttachExistingSession|TestShouldRenderMissingTmuxError|TestEffectiveDisplayStatus" -count=1
+go test ./internal/web -run "TestVendorModuleFilesUseJavaScriptMimeType|TestVendorFilesServed|TestIndex" -count=1
 .\dev.ps1 build
 ```
 
@@ -339,6 +470,10 @@ Live smoke checks on native Windows:
   the Codex transcript, not stay as a shell.
 - Restart a Windows session. It should preserve socket targeting and reconnect
   control pipe/capture.
+- Start `agent-deck web`, open the browser console, and reload `/`. The app must
+  boot without `.mjs` strict MIME errors. Directly requesting
+  `/static/vendor/htm.mjs` should return `application/javascript`, not
+  `text/plain`.
 - If using the installed binary, ensure `C:\Users\<user>\.local\bin\agent-deck.exe`
   was actually overwritten; a running process can keep the old binary locked.
 

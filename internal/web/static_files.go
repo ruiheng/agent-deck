@@ -4,6 +4,7 @@ import (
 	"embed"
 	"fmt"
 	"io/fs"
+	"mime"
 	"net/http"
 	"strings"
 	"sync"
@@ -13,6 +14,12 @@ import (
 
 //go:embed static/*
 var embeddedStaticFiles embed.FS
+
+func init() {
+	// Go's MIME lookup can fall back to the host registry on Windows. Some
+	// machines map .mjs to text/plain, which browsers reject for module scripts.
+	_ = mime.AddExtensionType(".mjs", "application/javascript; charset=utf-8")
+}
 
 // webAssets is the process-wide Assets instance used by handleIndex to
 // substitute {{ASSET:...}} placeholders in index.html. Loaded lazily on

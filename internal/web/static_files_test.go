@@ -103,6 +103,33 @@ func TestVendorFilesServed(t *testing.T) {
 	}
 }
 
+func TestVendorModuleFilesUseJavaScriptMimeType(t *testing.T) {
+	s := NewServer(Config{})
+	mux := http.NewServeMux()
+	mux.Handle("/static/", http.StripPrefix("/static/", s.staticFileServer()))
+
+	for _, path := range []string{
+		"/static/vendor/htm.mjs",
+		"/static/vendor/preact.mjs",
+		"/static/vendor/preact-hooks.mjs",
+		"/static/vendor/signals.mjs",
+		"/static/vendor/xterm.mjs",
+		"/static/vendor/addon-fit.mjs",
+		"/static/vendor/addon-webgl.mjs",
+	} {
+		req := httptest.NewRequest(http.MethodGet, path, nil)
+		w := httptest.NewRecorder()
+		mux.ServeHTTP(w, req)
+		if w.Code != http.StatusOK {
+			t.Fatalf("GET %s: expected 200, got %d", path, w.Code)
+		}
+		ct := w.Header().Get("Content-Type")
+		if !strings.HasPrefix(ct, "application/javascript") {
+			t.Fatalf("GET %s: Content-Type = %q, want application/javascript", path, ct)
+		}
+	}
+}
+
 // TestAddonCanvasDeleted is the regression gate for Phase 8 / Plan 03
 // (PERF-C). xterm v6 never references the canvas renderer, so the 94 KB
 // vendor file was dead weight. This test ensures the file stays deleted:
