@@ -19,6 +19,8 @@ func TestMain(m *testing.M) {
 	// See internal/testutil/tmuxenv.go for the full postmortem.
 	cleanupTmux := testutil.IsolateTmuxSocket()
 	defer cleanupTmux()
+	cleanupHome := testutil.IsolateHome("agentdeck-ui-home-")
+	defer cleanupHome()
 
 	// Force _test profile for all tests in this package
 	os.Setenv("AGENTDECK_PROFILE", "_test")

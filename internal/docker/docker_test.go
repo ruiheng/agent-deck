@@ -1,7 +1,6 @@
 package docker
 
 import (
-	"os"
 	"path/filepath"
 	"testing"
 
@@ -499,7 +498,7 @@ func TestNewContainerConfig_ExtraVolumes_ResolvesSymlinks(t *testing.T) {
 	targetDir := t.TempDir()
 	linkDir := t.TempDir()
 	link := filepath.Join(linkDir, "link")
-	require.NoError(t, os.Symlink(targetDir, link))
+	requireSymlink(t, targetDir, link)
 
 	cfg := NewContainerConfig("/project",
 		WithExtraVolumes(map[string]string{
@@ -522,7 +521,7 @@ func TestNewContainerConfig_ExtraVolumes_SymlinkBypassBlocked(t *testing.T) {
 	// Create a symlink pointing to a blocked path (/etc is always blocked).
 	dir := t.TempDir()
 	link := filepath.Join(dir, "sneaky-link")
-	require.NoError(t, os.Symlink("/etc", link))
+	requireSymlink(t, "/etc", link)
 
 	cfg := NewContainerConfig("/project",
 		WithExtraVolumes(map[string]string{
@@ -540,7 +539,7 @@ func TestNewContainerConfig_ExtraVolumes_BrokenSymlinkRejected(t *testing.T) {
 	// Create a symlink pointing to a non-existent target.
 	dir := t.TempDir()
 	link := filepath.Join(dir, "broken-link")
-	require.NoError(t, os.Symlink("/nonexistent/path", link))
+	requireSymlink(t, "/nonexistent/path", link)
 
 	cfg := NewContainerConfig("/project",
 		WithExtraVolumes(map[string]string{

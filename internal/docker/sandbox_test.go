@@ -162,12 +162,12 @@ func TestSyncAgentConfig_FollowsSymlinks(t *testing.T) {
 	realDir := filepath.Join(hostDir, "real-skills")
 	require.NoError(t, os.MkdirAll(realDir, 0o755))
 	require.NoError(t, os.WriteFile(filepath.Join(realDir, "skill.yaml"), []byte("skill"), 0o644))
-	require.NoError(t, os.Symlink(realDir, filepath.Join(hostDir, "skills")))
+	requireSymlink(t, realDir, filepath.Join(hostDir, "skills"))
 
 	// Also create a symlinked file within the host dir.
 	realFile := filepath.Join(hostDir, "real-config.json")
 	require.NoError(t, os.WriteFile(realFile, []byte("symlinked"), 0o644))
-	require.NoError(t, os.Symlink(realFile, filepath.Join(hostDir, "config.json")))
+	requireSymlink(t, realFile, filepath.Join(hostDir, "config.json"))
 
 	mount := AgentConfigMount{
 		hostRel:     ".claude",
@@ -198,7 +198,7 @@ func TestSyncAgentConfig_RejectsExternalSymlinks(t *testing.T) {
 	// Create a symlink pointing outside the host dir.
 	externalDir := t.TempDir()
 	require.NoError(t, os.WriteFile(filepath.Join(externalDir, "secret.txt"), []byte("secret"), 0o644))
-	require.NoError(t, os.Symlink(filepath.Join(externalDir, "secret.txt"), filepath.Join(hostDir, "secret.txt")))
+	requireSymlink(t, filepath.Join(externalDir, "secret.txt"), filepath.Join(hostDir, "secret.txt"))
 
 	// Also create a valid local file so we can verify sync still works.
 	require.NoError(t, os.WriteFile(filepath.Join(hostDir, "local.txt"), []byte("local"), 0o644))
@@ -364,7 +364,7 @@ func TestSandboxDir(t *testing.T) {
 	t.Parallel()
 
 	dir := SandboxDir("/home/user", ".claude")
-	require.Equal(t, "/home/user/.claude/sandbox", dir)
+	require.Equal(t, filepath.Join("/home/user", ".claude", "sandbox"), dir)
 }
 
 func TestCopyDirRecursive(t *testing.T) {
@@ -437,7 +437,7 @@ func TestResolveAndValidateSymlink(t *testing.T) {
 		target := filepath.Join(dir, "real.txt")
 		require.NoError(t, os.WriteFile(target, []byte("data"), 0o644))
 		link := filepath.Join(dir, "link.txt")
-		require.NoError(t, os.Symlink(target, link))
+		requireSymlink(t, target, link)
 
 		resolved, err := resolveAndValidateSymlink(link, dir)
 		require.NoError(t, err)
@@ -455,7 +455,7 @@ func TestResolveAndValidateSymlink(t *testing.T) {
 		target := filepath.Join(external, "secret.txt")
 		require.NoError(t, os.WriteFile(target, []byte("secret"), 0o644))
 		link := filepath.Join(boundary, "escape.txt")
-		require.NoError(t, os.Symlink(target, link))
+		requireSymlink(t, target, link)
 
 		_, err := resolveAndValidateSymlink(link, boundary)
 		require.Error(t, err)
@@ -466,7 +466,7 @@ func TestResolveAndValidateSymlink(t *testing.T) {
 		t.Parallel()
 		dir := t.TempDir()
 		link := filepath.Join(dir, "broken.txt")
-		require.NoError(t, os.Symlink("/nonexistent/target", link))
+		requireSymlink(t, "/nonexistent/target", link)
 
 		_, err := resolveAndValidateSymlink(link, dir)
 		require.Error(t, err)

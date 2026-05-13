@@ -79,17 +79,12 @@ func TestVerifyPromptConsumedAfterLaunch_UnsentFirstWindow_RetryThenConsumed_One
 	// Expect exactly one SendKeysAndEnter retry and no warning.
 	msg := "explain this code"
 	mock := &mockSendRetryTarget{
-		panes: []string{
-			paneUnsent(msg), paneUnsent(msg), paneUnsent(msg), paneUnsent(msg),
-			paneUnsent(msg), paneUnsent(msg), paneUnsent(msg), paneUnsent(msg),
-			paneUnsent(msg), paneUnsent(msg), paneUnsent(msg), paneUnsent(msg),
-			// After the retry kicks in, subsequent captures show consumed.
-			paneConsumed, paneConsumed, paneConsumed,
-		},
+		panes:          []string{paneUnsent(msg)},
+		panesAfterSend: []string{paneConsumed},
 	}
 	var warn bytes.Buffer
 
-	verifyPromptConsumedAfterLaunch(mock, msg, 20*time.Millisecond, 2*time.Millisecond, &warn)
+	verifyPromptConsumedAfterLaunch(mock, msg, 5*time.Millisecond, time.Millisecond, &warn)
 
 	if got := atomic.LoadInt32(&mock.sendKeysCalls); got != 1 {
 		t.Fatalf("SendKeysAndEnter retry count: got %d, want exactly 1", got)

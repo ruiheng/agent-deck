@@ -3,10 +3,12 @@ package watcher
 import (
 	"bufio"
 	"bytes"
+	"errors"
 	"log/slog"
 	"os"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -47,7 +49,7 @@ func agentDeckDir(t *testing.T) string {
 // ~/.agent-deck/watcher/{CLAUDE.md, POLICY.md, LEARNINGS.md, clients.json} when the
 // directory does not yet exist.
 func TestLayout_FreshInstallCreatesLayout(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
+	setWatcherTestHome(t)
 
 	if err := ScaffoldWatcherLayout(); err != nil {
 		t.Fatalf("ScaffoldWatcherLayout: %v", err)
@@ -72,7 +74,7 @@ func TestLayout_FreshInstallCreatesLayout(t *testing.T) {
 // and idempotent re-run.
 func TestLayout_LegacyMigrationAtomic(t *testing.T) {
 	t.Run("happy_path", func(t *testing.T) {
-		t.Setenv("HOME", t.TempDir())
+		setWatcherTestHome(t)
 		buf := captureLog(t)
 
 		deck := agentDeckDir(t)
@@ -108,6 +110,9 @@ func TestLayout_LegacyMigrationAtomic(t *testing.T) {
 		watchersPath := filepath.Join(deck, "watchers")
 		fi, err := os.Lstat(watchersPath)
 		if err != nil {
+			if runtime.GOOS == "windows" && errors.Is(err, os.ErrNotExist) {
+				t.Skip("Windows symlink privilege unavailable; migration itself was verified")
+			}
 			t.Fatalf("Lstat watchers: %v", err)
 		}
 		if fi.Mode()&os.ModeSymlink == 0 {
@@ -136,7 +141,7 @@ func TestLayout_LegacyMigrationAtomic(t *testing.T) {
 	})
 
 	t.Run("collision", func(t *testing.T) {
-		t.Setenv("HOME", t.TempDir())
+		setWatcherTestHome(t)
 		buf := captureLog(t)
 
 		deck := agentDeckDir(t)
@@ -168,7 +173,7 @@ func TestLayout_LegacyMigrationAtomic(t *testing.T) {
 	})
 
 	t.Run("symlink_attack", func(t *testing.T) {
-		t.Setenv("HOME", t.TempDir())
+		setWatcherTestHome(t)
 
 		deck := agentDeckDir(t)
 		if err := os.MkdirAll(deck, 0o755); err != nil {
@@ -177,9 +182,7 @@ func TestLayout_LegacyMigrationAtomic(t *testing.T) {
 		// Pre-create watcher/ as a symlink pointing outside the deck dir (T-21-SL).
 		outside := t.TempDir()
 		watcherPath := filepath.Join(deck, "watcher")
-		if err := os.Symlink(outside, watcherPath); err != nil {
-			t.Fatalf("Symlink: %v", err)
-		}
+		requireWatcherSymlink(t, outside, watcherPath)
 
 		err := MigrateLegacyWatchersDir()
 		if err == nil {
@@ -191,7 +194,7 @@ func TestLayout_LegacyMigrationAtomic(t *testing.T) {
 	})
 
 	t.Run("idempotent", func(t *testing.T) {
-		t.Setenv("HOME", t.TempDir())
+		setWatcherTestHome(t)
 
 		deck := agentDeckDir(t)
 		legacyDir := filepath.Join(deck, "watchers")
@@ -214,7 +217,7 @@ func TestLayout_LegacyMigrationAtomic(t *testing.T) {
 // TestLayout_SymlinkResolves verifies that after migration, the compatibility symlink
 // allows reads through watchers/clients.json that resolve to watcher/clients.json.
 func TestLayout_SymlinkResolves(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
+	setWatcherTestHome(t)
 
 	deck := agentDeckDir(t)
 	// Seed clients.json in the legacy location.
@@ -238,6 +241,9 @@ func TestLayout_SymlinkResolves(t *testing.T) {
 	}
 	viaOld, err := os.ReadFile(filepath.Join(deck, "watchers", "clients.json"))
 	if err != nil {
+		if runtime.GOOS == "windows" && errors.Is(err, os.ErrNotExist) {
+			t.Skip("Windows symlink privilege unavailable; compatibility symlink not created")
+		}
 		t.Fatalf("ReadFile via watchers/ (symlink): %v", err)
 	}
 	if !bytes.Equal(viaNew, viaOld) {
@@ -248,7 +254,7 @@ func TestLayout_SymlinkResolves(t *testing.T) {
 // TestLayout_StateRoundtrip verifies SaveState/LoadState round-trip all WatcherState fields,
 // and that LoadState returns (nil, nil) when state.json is absent.
 func TestLayout_StateRoundtrip(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
+	setWatcherTestHome(t)
 
 	t0 := time.Now().UTC().Truncate(time.Second)
 	original := &WatcherState{
@@ -298,7 +304,7 @@ func TestLayout_StateRoundtrip(t *testing.T) {
 // TestLayout_EventLogAppendAtomic verifies AppendEventLog writes complete lines,
 // and that concurrent appends do not produce torn lines.
 func TestLayout_EventLogAppendAtomic(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
+	setWatcherTestHome(t)
 
 	entries := []string{
 		"## 2026-04-16T12:00:00Z - webhook: evt1",
@@ -340,7 +346,7 @@ func TestLayout_EventLogAppendAtomic(t *testing.T) {
 
 	// Concurrency sub-test: 2 goroutines × 50 appends = 100 total lines, no torn lines.
 	t.Run("concurrent", func(t *testing.T) {
-		t.Setenv("HOME", t.TempDir())
+		setWatcherTestHome(t)
 
 		lineRe := regexp.MustCompile(`^## .+$`)
 		var wg sync.WaitGroup
@@ -386,7 +392,7 @@ func TestLayout_EventLogAppendAtomic(t *testing.T) {
 
 // TestLayout_HotReloadSafe verifies LoadState always reads from disk (no in-process cache).
 func TestLayout_HotReloadSafe(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
+	setWatcherTestHome(t)
 
 	t0 := time.Now().UTC().Truncate(time.Second)
 	stateV1 := &WatcherState{LastEventTS: t0, ErrorCount: 1, AdapterHealthy: true}
@@ -419,7 +425,7 @@ func TestLayout_HotReloadSafe(t *testing.T) {
 // TestLayout_Integration_ThreeEvents simulates writerLoop calling AppendEventLog + SaveState
 // three times and checks that task-log.md has 3 lines and LastEventTS equals the third event's ts.
 func TestLayout_Integration_ThreeEvents(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
+	setWatcherTestHome(t)
 
 	// Seed meta.json for "alpha".
 	deck := agentDeckDir(t)
@@ -475,7 +481,7 @@ func TestLayout_Integration_ThreeEvents(t *testing.T) {
 
 // TestLayout_WatcherDir_RejectsMaliciousNames verifies T-21-PI: path traversal names are rejected.
 func TestLayout_WatcherDir_RejectsMaliciousNames(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
+	setWatcherTestHome(t)
 
 	cases := []struct {
 		name    string

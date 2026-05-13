@@ -234,6 +234,7 @@ func TestCreateWorktree_FromBareProjectRoot(t *testing.T) {
 // project-root resolution + setup-script discovery + worktree creation on a
 // bare layout. Mirrors how launch_cmd.go invokes this.
 func TestCreateWorktreeWithSetup_BareRepo(t *testing.T) {
+	requirePOSIXShell(t)
 	projectRoot, _, _ := createBareRepoLayout(t, "worktree1")
 
 	// Stage a config file and setup script at project root.

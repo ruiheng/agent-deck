@@ -315,7 +315,7 @@ func TestResolveTemplate(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			result := resolveTemplate(tc.template, tc.vars)
-			require.Equal(t, tc.expected, result)
+			require.Equal(t, filepath.Clean(tc.expected), result)
 		})
 	}
 }
@@ -332,7 +332,7 @@ func TestWorktreePath(t *testing.T) {
 			SessionID: "a1b2c3d4",
 			Template:  "{repo-root}/.worktrees/{branch}",
 		})
-		expected := "/Users/me/src/my-project/.worktrees/feature-branch"
+		expected := filepath.Clean("/Users/me/src/my-project/.worktrees/feature-branch")
 		require.Equal(t, expected, result)
 	})
 
@@ -368,7 +368,7 @@ func TestWorktreePath(t *testing.T) {
 			SessionID: "a1b2c3d4",
 			Template:  "{repo-root}-{branch}",
 		})
-		expected := "/Users/me/src/my-project-feature-branch"
+		expected := filepath.Clean("/Users/me/src/my-project-feature-branch")
 		require.Equal(t, expected, result)
 	})
 
@@ -381,7 +381,7 @@ func TestWorktreePath(t *testing.T) {
 			SessionID: "abcd1234",
 			Template:  "/tmp/wt/{repo-name}/{branch}-{session-id}",
 		})
-		expected := "/tmp/wt/project/feature-abcd1234"
+		expected := filepath.Clean("/tmp/wt/project/feature-abcd1234")
 		require.Equal(t, expected, result)
 	})
 

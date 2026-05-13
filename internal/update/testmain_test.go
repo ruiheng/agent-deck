@@ -1,4 +1,4 @@
-package feedback_test
+package update
 
 import (
 	"os"
@@ -8,8 +8,11 @@ import (
 )
 
 func TestMain(m *testing.M) {
-	_ = os.Setenv("AGENTDECK_TEST_USE_HOME", "1")
 	cleanupTmux := testutil.IsolateTmuxSocket()
 	defer cleanupTmux()
+
+	cleanupHome := testutil.IsolateHome("agentdeck-update-home-")
+	defer cleanupHome()
+
 	os.Exit(m.Run())
 }

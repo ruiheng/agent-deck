@@ -1482,16 +1482,19 @@ func KillSessionsWithEnvValue(envKey, envValue, excludeName string) {
 		if err != nil {
 			continue
 		}
-		// Output format: "KEY=value\n"
-		line := strings.TrimSpace(string(val))
-		if idx := strings.IndexByte(line, '='); idx >= 0 {
-			if line[idx+1:] == envValue {
+		for _, line := range strings.Split(strings.TrimSpace(string(val)), "\n") {
+			line = strings.TrimSpace(line)
+			if idx := strings.IndexByte(line, '='); idx >= 0 && line[:idx] == envKey {
+				if line[idx+1:] != envValue {
+					continue
+				}
 				statusLog.Warn("killing_duplicate_session",
 					slog.String("session", name),
 					slog.String("env_key", envKey),
 					slog.String("env_value", envValue),
 					slog.String("kept", excludeName))
 				_ = tmuxExec(socket, "kill-session", "-t", name).Run()
+				break
 			}
 		}
 	}
@@ -1563,19 +1566,20 @@ func (s *Session) GetEnvironment(key string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("variable not found or session doesn't exist: %s", key)
 	}
-	// Output format: "KEY=value\n"
-	line := strings.TrimSpace(string(output))
 	prefix := key + "="
-	if strings.HasPrefix(line, prefix) {
-		value := strings.TrimPrefix(line, prefix)
-		// Store in cache
-		s.envCacheMu.Lock()
-		if s.envCache == nil {
-			s.envCache = make(map[string]envCacheEntry)
+	for _, line := range strings.Split(strings.TrimSpace(string(output)), "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, prefix) {
+			value := strings.TrimPrefix(line, prefix)
+			// Store in cache
+			s.envCacheMu.Lock()
+			if s.envCache == nil {
+				s.envCache = make(map[string]envCacheEntry)
+			}
+			s.envCache[key] = envCacheEntry{value: value, time: time.Now()}
+			s.envCacheMu.Unlock()
+			return value, nil
 		}
-		s.envCache[key] = envCacheEntry{value: value, time: time.Now()}
-		s.envCacheMu.Unlock()
-		return value, nil
 	}
 	return "", fmt.Errorf("variable not found: %s", key)
 }

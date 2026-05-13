@@ -1,6 +1,7 @@
 package tmux
 
 import (
+	"runtime"
 	"testing"
 	"time"
 )
@@ -109,6 +110,9 @@ func TestWaitForPaneReady_Timeout(t *testing.T) {
 // TestWaitForPaneReady_RealTmux verifies that waitForPaneReady returns nil
 // once a shell prompt appears in a freshly-created tmux pane.
 func TestWaitForPaneReady_RealTmux(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("psmux default shell prompt is not the Unix prompt oracle used here")
+	}
 	skipIfNoTmuxServer(t)
 
 	sess := NewSession("pane-ready-real", t.TempDir())

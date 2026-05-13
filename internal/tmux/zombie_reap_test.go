@@ -19,6 +19,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"runtime"
 	"testing"
 	"time"
 
@@ -91,6 +92,9 @@ func countZombieChildren(t *testing.T, parentPID int) int {
 // for legacy tests, not for #677 regression coverage).
 func makeZombieTestSession(t *testing.T, suffix string) string {
 	t.Helper()
+	if runtime.GOOS == "windows" {
+		t.Skip("control-mode zombie reaping is a Unix tmux/procfs test")
+	}
 	skipIfNoTmuxBinary(t)
 	name := SessionPrefix + "zombiereap-" + suffix
 	require.NoError(t, exec.Command("tmux", "new-session", "-d", "-s", name).Run(),

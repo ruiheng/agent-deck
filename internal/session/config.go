@@ -222,9 +222,12 @@ func CreateProfile(profile string) error {
 
 	// Initialize SQLite database for the new profile.
 	// NewStorageWithProfile auto-creates tables, so just opening it is sufficient.
-	_, err = NewStorageWithProfile(profile)
+	storage, err := NewStorageWithProfile(profile)
 	if err != nil {
 		return fmt.Errorf("failed to initialize profile storage: %w", err)
+	}
+	if err := storage.Close(); err != nil {
+		return fmt.Errorf("failed to close profile storage: %w", err)
 	}
 
 	return nil

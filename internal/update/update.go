@@ -571,7 +571,7 @@ func InvalidateCache() {
 // HomebrewUpgradeHint returns the recommended Homebrew upgrade command when the
 // binary path points into a known Homebrew Cellar location.
 func HomebrewUpgradeHint(execPath string) (string, bool) {
-	clean := filepath.Clean(execPath)
+	clean := filepath.ToSlash(filepath.Clean(execPath))
 	// Homebrew-managed binaries resolve to Cellar paths. Self-overwriting these
 	// can leave installs in a bad state; prefer brew-managed upgrades.
 	knownCellars := []string{

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -59,7 +60,7 @@ func TestClientsWriter_AtomicAppend(t *testing.T) {
 	if err != nil {
 		t.Fatalf("stat: %v", err)
 	}
-	if perm := info.Mode().Perm(); perm != 0o600 {
+	if perm := info.Mode().Perm(); runtime.GOOS != "windows" && perm != 0o600 {
 		t.Errorf("expected file mode 0o600, got %04o", perm)
 	}
 
@@ -118,7 +119,7 @@ func TestClientsWriter_Create0600(t *testing.T) {
 	if err != nil {
 		t.Fatalf("stat file: %v", err)
 	}
-	if perm := info.Mode().Perm(); perm != 0o600 {
+	if perm := info.Mode().Perm(); runtime.GOOS != "windows" && perm != 0o600 {
 		t.Errorf("file mode: expected 0o600, got %04o", perm)
 	}
 
@@ -127,7 +128,7 @@ func TestClientsWriter_Create0600(t *testing.T) {
 	if err != nil {
 		t.Fatalf("stat dir: %v", err)
 	}
-	if perm := dirInfo.Mode().Perm(); perm != 0o700 {
+	if perm := dirInfo.Mode().Perm(); runtime.GOOS != "windows" && perm != 0o700 {
 		t.Errorf("dir mode: expected 0o700, got %04o", perm)
 	}
 }

@@ -571,10 +571,10 @@ func TestGetConductorEnv(t *testing.T) {
 	if result == "" {
 		t.Fatal("getConductorEnv returned empty string for conductor with env vars")
 	}
-	if !strings.Contains(result, "export DEBUG='true'") {
+	if !commandContainsEnvAssignment(result, "DEBUG", "true") {
 		t.Errorf("expected DEBUG export, got: %s", result)
 	}
-	if !strings.Contains(result, "export MY_API_KEY='conductor-value'") {
+	if !commandContainsEnvAssignment(result, "MY_API_KEY", "conductor-value") {
 		t.Errorf("expected MY_API_KEY export, got: %s", result)
 	}
 

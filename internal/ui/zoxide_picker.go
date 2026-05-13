@@ -35,11 +35,14 @@ type ZoxidePicker struct {
 	errMsg     string
 	unavail    bool // zoxide not installed; results disabled
 	queryFn    zoxideQueryFunc
+	available  func() bool
 }
 
 // NewZoxidePicker constructs a picker wired to the real zoxide binary.
 func NewZoxidePicker() *ZoxidePicker {
-	return newZoxidePickerWithQueryFn(defaultZoxideQuery)
+	z := newZoxidePickerWithQueryFn(defaultZoxideQuery)
+	z.available = session.ZoxideAvailable
+	return z
 }
 
 func newZoxidePickerWithQueryFn(fn zoxideQueryFunc) *ZoxidePicker {
@@ -50,6 +53,7 @@ func newZoxidePickerWithQueryFn(fn zoxideQueryFunc) *ZoxidePicker {
 	return &ZoxidePicker{
 		queryInput: ti,
 		queryFn:    fn,
+		available:  func() bool { return true },
 	}
 }
 
@@ -69,7 +73,7 @@ func (z *ZoxidePicker) Show() {
 	z.queryInput.CursorEnd()
 	z.queryInput.Focus()
 
-	if !session.ZoxideAvailable() {
+	if z.available != nil && !z.available() {
 		z.unavail = true
 		z.results = nil
 		return

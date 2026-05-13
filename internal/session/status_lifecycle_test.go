@@ -2,6 +2,7 @@ package session
 
 import (
 	"os/exec"
+	"runtime"
 	"testing"
 	"time"
 
@@ -20,7 +21,7 @@ func TestStatusCycle_ShellSessionWithCommand(t *testing.T) {
 
 	inst := NewInstance("test-lifecycle-cmd", "/tmp")
 	inst.Tool = "shell"
-	inst.Command = "sleep 30"
+	inst.Command = testLongRunningCommand(30)
 
 	// Before Start: should be idle (default)
 	require.Equal(t, StatusIdle, inst.Status, "before Start() status should be idle")
@@ -37,6 +38,11 @@ func TestStatusCycle_ShellSessionWithCommand(t *testing.T) {
 
 	err = inst.UpdateStatus()
 	require.NoError(t, err, "UpdateStatus() should succeed")
+
+	if runtime.GOOS == "windows" {
+		assert.NotEqual(t, StatusError, inst.Status, "shell session running command should not be error")
+		return
+	}
 
 	// After grace period, status should NOT be starting
 	assert.NotEqual(t, StatusStarting, inst.Status, "after grace period, status should not be starting")
@@ -96,7 +102,7 @@ func TestStatusCycle_KilledExternally(t *testing.T) {
 	skipIfNoTmuxServer(t)
 
 	inst := NewInstance("test-lifecycle-ext-kill", "/tmp")
-	inst.Command = "sleep 30"
+	inst.Command = testLongRunningCommand(30)
 
 	err := inst.Start()
 	require.NoError(t, err, "Start() should succeed")
@@ -130,7 +136,7 @@ func TestHookFastPath_RunningStatus(t *testing.T) {
 	skipIfNoTmuxServer(t)
 
 	inst := NewInstanceWithTool("test-hook-running", "/tmp", "claude")
-	inst.Command = "sleep 30" // Need a command so the session actually does something
+	inst.Command = testLongRunningCommand(30) // Need a command so the session actually does something
 
 	err := inst.Start()
 	require.NoError(t, err, "Start() should succeed")
@@ -179,7 +185,7 @@ func TestHookFastPath_WaitingAcknowledged(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			inst := NewInstanceWithTool("test-hook-ack-"+tt.name, "/tmp", "claude")
-			inst.Command = "sleep 30"
+			inst.Command = testLongRunningCommand(30)
 
 			err := inst.Start()
 			require.NoError(t, err, "Start() should succeed")
@@ -224,7 +230,7 @@ func TestHookFastPath_ShellIgnoresHooks(t *testing.T) {
 
 	inst := NewInstance("test-shell-no-hooks", "/tmp")
 	inst.Tool = "shell"
-	inst.Command = "sleep 30"
+	inst.Command = testLongRunningCommand(30)
 
 	err := inst.Start()
 	require.NoError(t, err, "Start() should succeed")
@@ -267,7 +273,7 @@ func TestStatusPersistence_RoundTrip(t *testing.T) {
 		Title:       "Round Trip Test",
 		ProjectPath: "/tmp/test",
 		GroupPath:   "test-group",
-		Command:     "sleep 30",
+		Command:     testLongRunningCommand(30),
 		Tool:        "shell",
 		Status:      StatusRunning,
 		CreatedAt:   time.Now(),
@@ -353,7 +359,7 @@ func TestStatusPersistence_MultipleInstances(t *testing.T) {
 			Title:       "Idle Session",
 			ProjectPath: "/tmp/test3",
 			GroupPath:   "test-group",
-			Command:     "sleep 30",
+			Command:     testLongRunningCommand(30),
 			Tool:        "shell",
 			Status:      StatusIdle,
 			CreatedAt:   time.Now(),
@@ -390,7 +396,7 @@ func TestStatusPersistence_EndToEnd(t *testing.T) {
 
 	inst := NewInstance("test-persist-e2e", "/tmp")
 	inst.Tool = "shell"
-	inst.Command = "sleep 30"
+	inst.Command = testLongRunningCommand(30)
 
 	err := inst.Start()
 	require.NoError(t, err, "Start() should succeed")

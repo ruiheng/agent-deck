@@ -35,7 +35,7 @@ func TestNewHome(t *testing.T) {
 func TestNewHome_DisablesTmuxNotificationsWhenStatusInjectionDisabled(t *testing.T) {
 	origHome := os.Getenv("HOME")
 	tmpHome := t.TempDir()
-	os.Setenv("HOME", tmpHome)
+	setUITestHome(t, tmpHome)
 	session.ClearUserConfigCache()
 	defer func() {
 		os.Setenv("HOME", origHome)
@@ -53,6 +53,7 @@ func TestNewHome_DisablesTmuxNotificationsWhenStatusInjectionDisabled(t *testing
 	}
 
 	home := NewHome()
+	cleanupHomeStorage(t, home)
 	if home.manageTmuxNotifications {
 		t.Fatal("manageTmuxNotifications should be false when inject_status_line is disabled")
 	}

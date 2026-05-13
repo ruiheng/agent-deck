@@ -286,8 +286,8 @@ func TestDetection_ToolConfig(t *testing.T) {
 func TestDetection_StatusCycle_ShellSession(t *testing.T) {
 	h := NewTmuxHarness(t)
 
-	inst := h.CreateSession("status-cycle", "/tmp")
-	inst.Command = "echo status-marker && sleep 1"
+	inst := h.CreateSession("status-cycle", testWorkDir(t))
+	inst.Command = outputThenSleepCommand("status-marker")
 	require.NoError(t, inst.Start())
 
 	// Immediately after Start(), status should be StatusStarting.
@@ -332,14 +332,15 @@ func TestDetection_StatusCycle_ShellSession(t *testing.T) {
 func TestDetection_StatusCycle_CommandRunning(t *testing.T) {
 	h := NewTmuxHarness(t)
 
-	inst := h.CreateSession("status-running", "/tmp")
-	inst.Command = "sleep 30"
+	inst := h.CreateSession("status-running", testWorkDir(t))
+	inst.Command = outputThenSleepCommand("running-marker")
 	require.NoError(t, inst.Start())
 
 	// Wait for the tmux session to exist.
 	WaitForCondition(t, 5*time.Second, 200*time.Millisecond,
 		"session to exist in tmux",
 		func() bool { return inst.Exists() })
+	WaitForPaneContent(t, inst, "running-marker", 5*time.Second)
 
 	// Wait for the grace period to pass (1.5s per Pitfall 7).
 	time.Sleep(2 * time.Second)

@@ -169,6 +169,9 @@ func TestShouldRecoverFromTmuxStartError(t *testing.T) {
 }
 
 func TestDefaultTmuxSocketCandidatesIncludesTmuxEnvPath(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("TMUX env socket path is Unix tmux-specific")
+	}
 	t.Setenv("TMUX", "/private/tmp/tmux-501/default,1234,0")
 	candidates := defaultTmuxSocketCandidates()
 	assert.Contains(t, candidates, "/private/tmp/tmux-501/default")
@@ -2371,9 +2374,8 @@ func TestSession_SendCommand(t *testing.T) {
 	}
 }
 
-func TestCaptureFullHistory_FallsBackAfterTimeout(t *testing.T) {
+func TestCaptureFullHistory_FallsBackAfterFullHistoryFailure(t *testing.T) {
 	installFakeCaptureTmux(t)
-	withShortCaptureTimeout(t)
 	withoutPipeManager(t)
 
 	s := &Session{Name: "fake-session"}
@@ -2382,9 +2384,9 @@ func TestCaptureFullHistory_FallsBackAfterTimeout(t *testing.T) {
 	require.Equal(t, "fallback capture", strings.TrimSpace(content))
 }
 
-func TestCaptureWindowFullHistory_FallsBackAfterTimeout(t *testing.T) {
+func TestCaptureWindowFullHistory_FallsBackAfterFullHistoryFailure(t *testing.T) {
 	installFakeCaptureTmux(t)
-	withShortCaptureTimeout(t)
+	withoutPipeManager(t)
 
 	s := &Session{Name: "fake-session"}
 	content, err := s.CaptureWindowFullHistory(0)
@@ -2414,26 +2416,20 @@ func installFakeCaptureTmux(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		scriptPath = filepath.Join(dir, "tmux.cmd")
 		script = "@echo off\r\n" +
-			":args\r\n" +
-			"if \"%~1\"==\"\" goto done\r\n" +
-			"if \"%~1\"==\"-S\" goto deep\r\n" +
-			"shift\r\n" +
-			"goto args\r\n" +
-			":deep\r\n" +
-			"powershell -NoProfile -Command \"Start-Sleep -Milliseconds 1000\" >NUL\r\n" +
-			"exit /b 124\r\n" +
-			":done\r\n" +
+			"set \"args=%*\"\r\n" +
+			"if not \"%args:-2000=%\"==\"%args%\" (\r\n" +
+			"  exit /b 124\r\n" +
+			")\r\n" +
 			"echo fallback capture\r\n" +
 			"exit /b 0\r\n"
 	} else {
 		scriptPath = filepath.Join(dir, "tmux")
 		script = "#!/bin/sh\n" +
-			"for arg in \"$@\"; do\n" +
-			"  if [ \"$arg\" = \"-S\" ]; then\n" +
-			"    sleep 1\n" +
-			"    exit 124\n" +
-			"  fi\n" +
-			"done\n" +
+			"case \" $* \" in\n" +
+			"*' -2000 '*)\n" +
+			"  exit 124\n" +
+			"  ;;\n" +
+			"esac\n" +
 			"printf 'fallback capture\\n'\n"
 	}
 	require.NoError(t, os.WriteFile(scriptPath, []byte(script), 0o755))
@@ -2546,6 +2542,9 @@ func TestSession_SetsUpActivityMonitoring(t *testing.T) {
 // =============================================================================
 
 func TestSetStatusLeft(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("psmux does not expose Unix tmux status-left options reliably")
+	}
 	skipIfNoTmuxServer(t)
 
 	// Create a test session
@@ -2933,6 +2932,9 @@ func TestBuildTerminalTitleArgs(t *testing.T) {
 }
 
 func TestConfigureTerminalTitle(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("psmux does not expose Unix tmux terminal-title options reliably")
+	}
 	skipIfNoTmuxBinary(t)
 
 	root := t.TempDir()

@@ -135,28 +135,78 @@ func (i *Instance) EnsureWorkerScratchConfigDir(sourceProfileDir string) (string
 }
 
 // mirrorProfileEntries ensures every top-level entry in source (except
-// settings.json) is reachable from dest via a symlink. Existing dest
-// entries are left alone — Ensure must be safe to call repeatedly.
+// settings.json) is reachable from dest. Symlinks are left alone because they
+// stay live; copied fallback entries are refreshed on every Ensure call so a
+// reused scratch dir still mirrors source profile updates.
 func mirrorProfileEntries(dest, source string) error {
 	entries, err := os.ReadDir(source)
 	if err != nil {
 		return fmt.Errorf("read source profile: %w", err)
 	}
+
+	sourceNames := make(map[string]struct{}, len(entries))
+	for _, entry := range entries {
+		sourceNames[entry.Name()] = struct{}{}
+	}
+	if err := pruneStaleProfileEntries(dest, sourceNames); err != nil {
+		return err
+	}
+
 	for _, entry := range entries {
 		name := entry.Name()
 		if name == "settings.json" {
 			continue
 		}
 		linkPath := filepath.Join(dest, name)
-		if _, statErr := os.Lstat(linkPath); statErr == nil {
-			continue // already present (from a prior Ensure call)
+		if info, statErr := os.Lstat(linkPath); statErr == nil {
+			if info.Mode()&os.ModeSymlink != 0 {
+				continue // live mirror from a prior Ensure call
+			}
+			if err := os.RemoveAll(linkPath); err != nil {
+				return fmt.Errorf("refresh copied mirror %s: %w", name, err)
+			}
 		}
 		target := filepath.Join(source, name)
-		if err := os.Symlink(target, linkPath); err != nil {
-			return fmt.Errorf("symlink %s: %w", name, err)
+		if err := mirrorProfileEntry(target, linkPath); err != nil {
+			return fmt.Errorf("mirror %s: %w", name, err)
 		}
 	}
 	return nil
+}
+
+func pruneStaleProfileEntries(dest string, sourceNames map[string]struct{}) error {
+	entries, err := os.ReadDir(dest)
+	if err != nil {
+		return fmt.Errorf("read scratch profile: %w", err)
+	}
+	for _, entry := range entries {
+		name := entry.Name()
+		if name == "settings.json" {
+			continue
+		}
+		if _, ok := sourceNames[name]; ok {
+			continue
+		}
+		if err := os.RemoveAll(filepath.Join(dest, name)); err != nil {
+			return fmt.Errorf("prune stale mirror %s: %w", name, err)
+		}
+	}
+	return nil
+}
+
+func mirrorProfileEntry(source, dest string) error {
+	if err := os.Symlink(source, dest); err == nil {
+		return nil
+	}
+
+	info, err := os.Stat(source)
+	if err != nil {
+		return err
+	}
+	if info.IsDir() {
+		return copyDirRecursive(source, dest)
+	}
+	return copyFileWithPerm(source, dest, info.Mode()&os.ModePerm)
 }
 
 // CleanupWorkerScratchConfigDir removes the scratch dir for this

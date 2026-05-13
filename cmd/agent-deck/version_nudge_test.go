@@ -38,7 +38,7 @@ func writeTestCache(t *testing.T, cache *update.UpdateCache) error {
 
 func TestVersionOutput_AppendsUpdateAnnotationWhenBehind(t *testing.T) {
 	tmpHome := t.TempDir()
-	t.Setenv("HOME", tmpHome)
+	setHomeForTest(t, tmpHome)
 
 	// Seed a cache entry claiming 1.7.20 is well behind 1.7.58.
 	cache := &update.UpdateCache{
@@ -63,7 +63,7 @@ func TestVersionOutput_AppendsUpdateAnnotationWhenBehind(t *testing.T) {
 
 func TestVersionOutput_NoAnnotationWhenUpToDate(t *testing.T) {
 	tmpHome := t.TempDir()
-	t.Setenv("HOME", tmpHome)
+	setHomeForTest(t, tmpHome)
 
 	cache := &update.UpdateCache{
 		CheckedAt:      time.Now(),
@@ -89,7 +89,7 @@ func TestVersionOutput_NoAnnotationWhenNoCache(t *testing.T) {
 	// Fresh install: no cache file yet. --version must still print
 	// cleanly — we never hit the network on --version.
 	tmpHome := t.TempDir()
-	t.Setenv("HOME", tmpHome)
+	setHomeForTest(t, tmpHome)
 
 	var buf bytes.Buffer
 	writeVersionOutput(&buf, "1.7.20")
@@ -105,7 +105,7 @@ func TestVersionOutput_NoAnnotationWhenEnvSkipped(t *testing.T) {
 	// AGENTDECK_SKIP_UPDATE_CHECK must strip the annotation too — some
 	// users export this to silence all update nagging.
 	tmpHome := t.TempDir()
-	t.Setenv("HOME", tmpHome)
+	setHomeForTest(t, tmpHome)
 	t.Setenv("AGENTDECK_SKIP_UPDATE_CHECK", "1")
 
 	cache := &update.UpdateCache{

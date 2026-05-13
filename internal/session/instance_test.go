@@ -2834,7 +2834,7 @@ func TestInstance_CanRestart_Gemini(t *testing.T) {
 
 	// Create and start a Gemini session so tmux session exists
 	inst := NewInstanceWithTool("gemini-restart-test", "/tmp", "gemini")
-	inst.Command = "sleep 60"
+	inst.Command = testLongRunningCommand(60)
 	err := inst.Start()
 	if err != nil {
 		t.Fatalf("Failed to start session: %v", err)
@@ -2901,6 +2901,7 @@ func TestInstance_Restart_SkipMCPRegenerate(t *testing.T) {
 		Tool:              "claude",
 		SkipMCPRegenerate: true,
 	}
+	t.Cleanup(func() { _ = inst.Kill() })
 
 	// Write a marker file to detect if regenerateMCPConfig was called
 	mcpFile := filepath.Join(inst.ProjectPath, ".mcp.json")

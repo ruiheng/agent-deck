@@ -2,7 +2,11 @@ package integration
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
 	"regexp"
+	"runtime"
+	"strings"
 	"testing"
 
 	"github.com/asheshgoplani/agent-deck/internal/session"
@@ -43,6 +47,104 @@ func (h *TmuxHarness) CreateSession(title, projectPath string) *session.Instance
 	return inst
 }
 
+func testWorkDir(t *testing.T) string {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		return os.TempDir()
+	}
+	return "/tmp"
+}
+
+func longRunningCommand() string {
+	if runtime.GOOS == "windows" {
+		return `powershell.exe -NoLogo -NoProfile -Command "Start-Sleep -Seconds 60"`
+	}
+	return "sleep 60"
+}
+
+func outputThenSleepCommand(marker string) string {
+	if runtime.GOOS == "windows" {
+		return `powershell.exe -NoLogo -NoProfile -Command "Write-Output '` + powerShellSingleQuote(marker) + `'; Start-Sleep -Seconds 60"`
+	}
+	return "echo " + shellSafeWord(marker) + " && sleep 60"
+}
+
+func echoServerCommand() string {
+	if runtime.GOOS == "windows" {
+		return `powershell.exe -NoLogo -NoProfile -Command "while (($line = [Console]::In.ReadLine()) -ne $null) { [Console]::Out.WriteLine($line) }"`
+	}
+	return "cat"
+}
+
+func shellEchoCommand(marker string) string {
+	if runtime.GOOS == "windows" {
+		return `echo ` + marker
+	}
+	return "echo " + shellSafeWord(marker)
+}
+
+func chunkedMarkerCommand(marker string) string {
+	if runtime.GOOS != "windows" {
+		var lines []string
+		lines = append(lines, "CHUNK-START")
+		for i := 0; i < 55; i++ {
+			lines = append(lines, fmt.Sprintf("LINE-%03d-%s", i, strings.Repeat("Z", 70)))
+		}
+		lines = append(lines, marker)
+		return strings.Join(lines, "\n")
+	}
+
+	padding := strings.Repeat("Z", 4300)
+	return `powershell.exe -NoLogo -NoProfile -Command "$x='` + padding + `'; Write-Output '` + powerShellSingleQuote(marker) + `'"`
+}
+
+func codexSimulationCommand(t *testing.T, dir string) string {
+	t.Helper()
+	if runtime.GOOS != "windows" {
+		scriptPath := filepath.Join(dir, "fake-codex.sh")
+		script := `#!/bin/sh
+sleep 3
+printf "codex> "
+while IFS= read -r line; do
+  echo "received: $line"
+  printf "codex> "
+done
+`
+		requireNoError(t, writeExecutable(scriptPath, []byte(script)))
+		return scriptPath
+	}
+
+	scriptPath := filepath.Join(dir, "fake-codex.ps1")
+	script := `Start-Sleep -Seconds 3
+[Console]::Out.Write("codex> ")
+while (($line = [Console]::In.ReadLine()) -ne $null) {
+  [Console]::Out.WriteLine("received: $line")
+  [Console]::Out.Write("codex> ")
+}
+`
+	requireNoError(t, writeExecutable(scriptPath, []byte(script)))
+	return `powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File "` + strings.ReplaceAll(scriptPath, `"`, `""`) + `"`
+}
+
+func writeExecutable(path string, data []byte) error {
+	return os.WriteFile(path, data, 0o755)
+}
+
+func requireNoError(t *testing.T, err error) {
+	t.Helper()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func powerShellSingleQuote(s string) string {
+	return strings.ReplaceAll(s, `'`, `''`)
+}
+
+func shellSafeWord(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", "'\"'\"'") + "'"
+}
+
 // CreateSessionWithTool creates a session.Instance with a specific tool and the harness prefix.
 func (h *TmuxHarness) CreateSessionWithTool(title, projectPath, tool string) *session.Instance {
 	h.t.Helper()
@@ -59,10 +161,7 @@ func (h *TmuxHarness) SessionCount() int {
 // cleanup kills all tracked sessions in reverse order. Best-effort: errors are ignored.
 func (h *TmuxHarness) cleanup() {
 	for i := len(h.sessions) - 1; i >= 0; i-- {
-		inst := h.sessions[i]
-		if inst.Exists() {
-			_ = inst.Kill()
-		}
+		_ = h.sessions[i].Kill()
 	}
 }
 

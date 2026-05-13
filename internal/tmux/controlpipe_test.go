@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os/exec"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -17,6 +18,9 @@ import (
 // Caller must defer cleanup.
 func createTestSession(t *testing.T, suffix string) string {
 	t.Helper()
+	if runtime.GOOS == "windows" {
+		t.Skip("psmux does not provide reliable tmux control-mode behavior for these tests")
+	}
 	skipIfNoTmuxServer(t)
 
 	name := SessionPrefix + "cptest-" + suffix

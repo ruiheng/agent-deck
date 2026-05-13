@@ -11,6 +11,7 @@ import (
 
 	"github.com/asheshgoplani/agent-deck/internal/session"
 	"github.com/asheshgoplani/agent-deck/internal/statedb"
+	"github.com/asheshgoplani/agent-deck/internal/testutil"
 	"github.com/asheshgoplani/agent-deck/internal/ui"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -23,23 +24,21 @@ import (
 func setupSkillTestEnv(t *testing.T) (string, func()) {
 	t.Helper()
 
-	homeDir, err := os.MkdirTemp("", "agentdeck-skills-home-*")
-	require.NoError(t, err, "failed to create temp home")
+	cleanupHome := testutil.IsolateHome("agentdeck-skills-home-")
+	homeDir, err := os.UserHomeDir()
+	require.NoError(t, err, "failed to get isolated home")
 
 	claudeDir := filepath.Join(homeDir, ".claude")
 	require.NoError(t, os.MkdirAll(claudeDir, 0o755), "failed to create claude dir")
 
-	oldHome := os.Getenv("HOME")
 	oldClaude := os.Getenv("CLAUDE_CONFIG_DIR")
-	require.NoError(t, os.Setenv("HOME", homeDir))
 	require.NoError(t, os.Setenv("CLAUDE_CONFIG_DIR", claudeDir))
 	session.ClearUserConfigCache()
 
 	cleanup := func() {
-		_ = os.Setenv("HOME", oldHome)
 		_ = os.Setenv("CLAUDE_CONFIG_DIR", oldClaude)
 		session.ClearUserConfigCache()
-		_ = os.RemoveAll(homeDir)
+		cleanupHome()
 	}
 
 	return homeDir, cleanup
@@ -106,6 +105,7 @@ func TestEdge_SkillsDiscoverAttach(t *testing.T) {
 // polls UpdateStatus on all of them with the -race detector. This proves that
 // the Instance mutex works correctly under concurrent access. (EDGE-02)
 func TestEdge_ConcurrentPolling(t *testing.T) {
+	skipWindowsPsmuxStress(t)
 	h := NewTmuxHarness(t)
 
 	const sessionCount = 12
@@ -113,8 +113,8 @@ func TestEdge_ConcurrentPolling(t *testing.T) {
 
 	// Create and start 12 real tmux sessions.
 	for i := 0; i < sessionCount; i++ {
-		inst := h.CreateSession(fmt.Sprintf("poll-%02d", i), "/tmp")
-		inst.Command = "sleep 60"
+		inst := h.CreateSession(fmt.Sprintf("poll-%02d", i), testWorkDir(t))
+		inst.Command = longRunningCommand()
 		require.NoError(t, inst.Start(), "session %d Start() should succeed", i)
 		instances = append(instances, inst)
 	}

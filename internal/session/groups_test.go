@@ -622,29 +622,33 @@ func TestMoveSessionToGroup(t *testing.T) {
 
 func TestGroupDefaultPath(t *testing.T) {
 	now := time.Now()
+	oldPath := testNativePath(t, "old", "path")
+	newPath := testNativePath(t, "new", "path")
+	otherPath := testNativePath(t, "other", "path")
 
 	instances := []*Instance{
-		{ID: "1", Title: "old-session", GroupPath: "projects", ProjectPath: "/old/path", LastAccessedAt: now.Add(-1 * time.Hour)},
-		{ID: "2", Title: "new-session", GroupPath: "projects", ProjectPath: "/new/path", LastAccessedAt: now},
-		{ID: "3", Title: "other-session", GroupPath: "other", ProjectPath: "/other/path", LastAccessedAt: now},
+		{ID: "1", Title: "old-session", GroupPath: "projects", ProjectPath: oldPath, LastAccessedAt: now.Add(-1 * time.Hour)},
+		{ID: "2", Title: "new-session", GroupPath: "projects", ProjectPath: newPath, LastAccessedAt: now},
+		{ID: "3", Title: "other-session", GroupPath: "other", ProjectPath: otherPath, LastAccessedAt: now},
 	}
 
 	tree := NewGroupTree(instances)
 
 	// Check that effective default path resolves from most recent session.
-	if got := tree.DefaultPathForGroup("projects"); got != "/new/path" {
-		t.Errorf("Expected default path '/new/path', got '%s'", got)
+	if got := tree.DefaultPathForGroup("projects"); got != newPath {
+		t.Errorf("Expected default path %q, got %q", newPath, got)
 	}
-	if got := tree.DefaultPathForGroup("other"); got != "/other/path" {
-		t.Errorf("Expected default path '/other/path', got '%s'", got)
+	if got := tree.DefaultPathForGroup("other"); got != otherPath {
+		t.Errorf("Expected default path %q, got %q", otherPath, got)
 	}
 }
 
 func TestGroupDefaultPathOnMove(t *testing.T) {
 	now := time.Now()
+	sourcePath := testNativePath(t, "source", "path")
 
 	instances := []*Instance{
-		{ID: "1", Title: "session-1", GroupPath: "source", ProjectPath: "/source/path", LastAccessedAt: now},
+		{ID: "1", Title: "session-1", GroupPath: "source", ProjectPath: sourcePath, LastAccessedAt: now},
 	}
 
 	tree := NewGroupTree(instances)
@@ -654,42 +658,45 @@ func TestGroupDefaultPathOnMove(t *testing.T) {
 	tree.MoveSessionToGroup(instances[0], "target")
 
 	// Target group should resolve to the moved session's path.
-	if got := tree.DefaultPathForGroup("target"); got != "/source/path" {
-		t.Errorf("Expected target default path '/source/path', got '%s'", got)
+	if got := tree.DefaultPathForGroup("target"); got != sourcePath {
+		t.Errorf("Expected target default path %q, got %q", sourcePath, got)
 	}
 }
 
 func TestGroupDefaultPathPersistence(t *testing.T) {
 	now := time.Now()
+	storedPath := testNativePath(t, "stored", "path")
+	newerPath := testNativePath(t, "newer", "path")
 
 	// Simulate stored groups with default path
 	storedGroups := []*GroupData{
-		{Name: "Projects", Path: "projects", Expanded: true, Order: 0, DefaultPath: "/stored/path"},
+		{Name: "Projects", Path: "projects", Expanded: true, Order: 0, DefaultPath: storedPath},
 	}
 
 	// Create instances with older path
 	instances := []*Instance{
-		{ID: "1", Title: "session-1", GroupPath: "projects", ProjectPath: "/newer/path", LastAccessedAt: now},
+		{ID: "1", Title: "session-1", GroupPath: "projects", ProjectPath: newerPath, LastAccessedAt: now},
 	}
 
 	tree := NewGroupTreeWithGroups(instances, storedGroups)
 
 	// Explicit stored default path should be preserved.
-	if got := tree.DefaultPathForGroup("projects"); got != "/stored/path" {
-		t.Errorf("Expected default path '/stored/path', got '%s'", got)
+	if got := tree.DefaultPathForGroup("projects"); got != storedPath {
+		t.Errorf("Expected default path %q, got %q", storedPath, got)
 	}
 }
 
 func TestSetDefaultPathForGroup(t *testing.T) {
 	tree := NewGroupTree([]*Instance{})
 	tree.CreateGroup("Projects")
+	projectRoot := testNativePath(t, "project-root")
 
-	if ok := tree.SetDefaultPathForGroup("Projects", "/tmp/project-root"); !ok {
+	if ok := tree.SetDefaultPathForGroup("Projects", projectRoot); !ok {
 		t.Fatal("SetDefaultPathForGroup should return true for existing group")
 	}
 
-	if got := tree.DefaultPathForGroup("Projects"); got != "/tmp/project-root" {
-		t.Fatalf("Expected explicit default path '/tmp/project-root', got %q", got)
+	if got := tree.DefaultPathForGroup("Projects"); got != projectRoot {
+		t.Fatalf("Expected explicit default path %q, got %q", projectRoot, got)
 	}
 
 	if ok := tree.SetDefaultPathForGroup("Projects", ""); !ok {
@@ -1214,15 +1221,17 @@ func TestAddSessionUpdatesDefaultPath(t *testing.T) {
 
 	// After adding a session with a ProjectPath, DefaultPath should be set
 	now := time.Now()
+	projectA := testNativePath(t, "home", "user", "project-a")
+	projectB := testNativePath(t, "home", "user", "project-b")
 	tree.AddSession(&Instance{
 		ID:             "2",
 		Title:          "second",
 		GroupPath:      "dev",
-		ProjectPath:    "/home/user/project-a",
+		ProjectPath:    projectA,
 		LastAccessedAt: now,
 	})
-	if got := tree.DefaultPathForGroup("dev"); got != "/home/user/project-a" {
-		t.Errorf("Expected default path '/home/user/project-a', got %q", got)
+	if got := tree.DefaultPathForGroup("dev"); got != projectA {
+		t.Errorf("Expected default path %q, got %q", projectA, got)
 	}
 
 	// After adding a more recently accessed session, DefaultPath should update
@@ -1230,11 +1239,11 @@ func TestAddSessionUpdatesDefaultPath(t *testing.T) {
 		ID:             "3",
 		Title:          "third",
 		GroupPath:      "dev",
-		ProjectPath:    "/home/user/project-b",
+		ProjectPath:    projectB,
 		LastAccessedAt: now.Add(time.Minute),
 	})
-	if got := tree.DefaultPathForGroup("dev"); got != "/home/user/project-b" {
-		t.Errorf("Expected default path '/home/user/project-b', got %q", got)
+	if got := tree.DefaultPathForGroup("dev"); got != projectB {
+		t.Errorf("Expected default path %q, got %q", projectB, got)
 	}
 
 	// The stored field remains empty until explicitly configured.
@@ -1364,19 +1373,21 @@ func TestSessionOrderMigration(t *testing.T) {
 
 func TestSyncWithInstancesUpdatesDefaultPath(t *testing.T) {
 	now := time.Now()
+	oldPath := testNativePath(t, "old", "path")
+	newPath := testNativePath(t, "new", "path")
 	instances := []*Instance{
 		{
 			ID:             "1",
 			Title:          "older",
 			GroupPath:      "work",
-			ProjectPath:    "/old/path",
+			ProjectPath:    oldPath,
 			LastAccessedAt: now,
 		},
 		{
 			ID:             "2",
 			Title:          "newer",
 			GroupPath:      "work",
-			ProjectPath:    "/new/path",
+			ProjectPath:    newPath,
 			LastAccessedAt: now.Add(time.Hour),
 		},
 	}
@@ -1388,8 +1399,8 @@ func TestSyncWithInstancesUpdatesDefaultPath(t *testing.T) {
 	if group == nil {
 		t.Fatal("work group not found after SyncWithInstances")
 	}
-	if got := tree.DefaultPathForGroup("work"); got != "/new/path" {
-		t.Errorf("Expected default path '/new/path' after sync, got %q", got)
+	if got := tree.DefaultPathForGroup("work"); got != newPath {
+		t.Errorf("Expected default path %q after sync, got %q", newPath, got)
 	}
 	if group.DefaultPath != "" {
 		t.Errorf("Expected stored DefaultPath to remain empty for derived defaults, got %q", group.DefaultPath)

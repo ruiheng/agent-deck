@@ -43,14 +43,14 @@ func TestWaitForPaneContent_DetectsOutput(t *testing.T) {
 	skipIfNoTmuxServer(t)
 
 	h := NewTmuxHarness(t)
-	inst := h.CreateSession("pane-content", "/tmp")
+	inst := h.CreateSession("pane-content", testWorkDir(t))
 	err := inst.Start()
 	require.NoError(t, err)
 
 	// Send "echo hello" to the tmux session.
 	tmuxSess := inst.GetTmuxSession()
 	require.NotNil(t, tmuxSess)
-	err = tmuxSess.SendKeys("echo hello")
+	err = tmuxSess.SendKeysAndEnter("echo hello")
 	require.NoError(t, err)
 
 	// WaitForPaneContent should detect "hello" in the pane output.
@@ -61,7 +61,7 @@ func TestWaitForStatus_TransitionsToRunning(t *testing.T) {
 	skipIfNoTmuxServer(t)
 
 	h := NewTmuxHarness(t)
-	inst := h.CreateSession("status-test", "/tmp")
+	inst := h.CreateSession("status-test", testWorkDir(t))
 	err := inst.Start()
 	require.NoError(t, err)
 

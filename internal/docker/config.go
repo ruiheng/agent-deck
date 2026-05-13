@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"log/slog"
 	"maps"
+	"path"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -251,7 +252,7 @@ func WithVolumeIgnores(dirs []string) ContainerConfigOption {
 			if dir == "" || strings.Contains(dir, "..") || strings.ContainsAny(dir, "/\\") {
 				continue
 			}
-			cfg.anonymousVolumes = append(cfg.anonymousVolumes, filepath.Join(containerWorkDir, dir))
+			cfg.anonymousVolumes = append(cfg.anonymousVolumes, path.Join(containerWorkDir, dir))
 		}
 	}
 }
@@ -279,7 +280,7 @@ func WithWorktree(repoRoot string, relativePath string) ContainerConfigOption {
 		cfg.volumes = newVols
 		// Adjust working directory to the worktree subdirectory.
 		if relativePath != "" {
-			cfg.workingDir = filepath.Join(containerWorkDir, relativePath)
+			cfg.workingDir = path.Join(containerWorkDir, filepath.ToSlash(relativePath))
 		}
 	}
 }
@@ -306,8 +307,8 @@ func WithExtraVolumes(volumes map[string]string) ContainerConfigOption {
 				slog.Warn("Skipping extra volume (cannot resolve symlink)", "path", cleanHost, "error", err)
 				continue
 			}
-			cleanContainer := filepath.Clean(container)
-			if !filepath.IsAbs(cleanContainer) {
+			cleanContainer := path.Clean(filepath.ToSlash(container))
+			if !path.IsAbs(cleanContainer) {
 				continue
 			}
 			// Check both the original clean path and the resolved path against
@@ -362,7 +363,7 @@ func WithMultiRepoPaths(paths []string) ContainerConfigOption {
 			seen[filepath.Base(p)]++
 			newVols = append(newVols, VolumeMount{
 				hostPath:      p,
-				containerPath: filepath.Join(containerWorkDir, dirname),
+				containerPath: path.Join(containerWorkDir, dirname),
 			})
 		}
 		cfg.volumes = newVols

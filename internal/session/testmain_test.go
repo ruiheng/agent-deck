@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -223,7 +224,12 @@ func bootstrapTmuxServer() func() {
 	if err := tmuxBinaryError(); err != nil {
 		return func() {}
 	}
-	cmd := exec.Command("tmux", "new-session", "-d", "-s", bootstrapSessionName, "sh", "-c", "sleep 3600")
+	_ = exec.Command("tmux", "kill-session", "-t", bootstrapSessionName).Run()
+	args := []string{"new-session", "-d", "-s", bootstrapSessionName, "sh", "-c", "sleep 3600"}
+	if runtime.GOOS == "windows" {
+		args = []string{"new-session", "-d", "-s", bootstrapSessionName}
+	}
+	cmd := exec.Command("tmux", args...)
 	if out, err := cmd.CombinedOutput(); err != nil {
 		fmt.Fprintf(os.Stderr, "bootstrapTmuxServer: new-session failed: %v (%s)\n", err, strings.TrimSpace(string(out)))
 		return func() {}
@@ -237,6 +243,9 @@ func bootstrapTmuxServer() func() {
 // in the isolated socket so downstream tests no longer silent-skip on fresh
 // TMUX_TMPDIR runs. Required regression guard for F3 of the sprint report.
 func TestTmuxBootstrap_ServerIsRunning(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("psmux does not keep a Unix-style detached bootstrap session for this guard")
+	}
 	skipIfNoTmuxBinary(t)
 	if err := exec.Command("tmux", "list-sessions").Run(); err != nil {
 		t.Fatalf("tmux list-sessions failed after bootstrap: %v", err)

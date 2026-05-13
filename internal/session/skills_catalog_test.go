@@ -500,9 +500,7 @@ func TestAttachSkillToProject_RematerializesBrokenSymlink(t *testing.T) {
 	if err := os.RemoveAll(targetPath); err != nil {
 		t.Fatalf("failed to remove target: %v", err)
 	}
-	if err := os.Symlink("missing-target", targetPath); err != nil {
-		t.Fatalf("failed to create broken symlink: %v", err)
-	}
+	requireTestSymlink(t, "missing-target", targetPath)
 	if _, err := os.Stat(targetPath); !os.IsNotExist(err) {
 		t.Fatalf("expected broken symlink, stat err=%v", err)
 	}

@@ -1,8 +1,6 @@
 package integration
 
 import (
-	"os"
-	"path/filepath"
 	"testing"
 	"time"
 
@@ -17,8 +15,7 @@ import (
 func TestSend_EnterRetryOnRealTmux(t *testing.T) {
 	h := NewTmuxHarness(t)
 
-	inst := h.CreateSession("send-enter-retry", "/tmp")
-	inst.Command = "cat"
+	inst := h.CreateSession("send-enter-retry", testWorkDir(t))
 	require.NoError(t, inst.Start())
 
 	WaitForCondition(t, 5*time.Second, 200*time.Millisecond,
@@ -29,7 +26,7 @@ func TestSend_EnterRetryOnRealTmux(t *testing.T) {
 	require.NotNil(t, tmuxSess, "tmux session should not be nil")
 
 	marker := "enter-retry-marker-" + t.Name()
-	require.NoError(t, tmuxSess.SendKeysAndEnter(marker))
+	require.NoError(t, tmuxSess.SendKeysAndEnter(shellEchoCommand(marker)))
 
 	// cat echoes input back to pane; verify the marker appears.
 	WaitForPaneContent(t, inst, marker, 5*time.Second)
@@ -46,8 +43,7 @@ func TestSend_EnterRetryOnRealTmux(t *testing.T) {
 func TestSend_RapidSuccessiveSends(t *testing.T) {
 	h := NewTmuxHarness(t)
 
-	inst := h.CreateSession("send-rapid", "/tmp")
-	inst.Command = "cat"
+	inst := h.CreateSession("send-rapid", testWorkDir(t))
 	require.NoError(t, inst.Start())
 
 	WaitForCondition(t, 5*time.Second, 200*time.Millisecond,
@@ -60,8 +56,8 @@ func TestSend_RapidSuccessiveSends(t *testing.T) {
 	// Send two messages with no sleep between them.
 	msg1 := "msg-1-RAPID-" + t.Name()
 	msg2 := "msg-2-RAPID-" + t.Name()
-	require.NoError(t, tmuxSess.SendKeysAndEnter(msg1))
-	require.NoError(t, tmuxSess.SendKeysAndEnter(msg2))
+	require.NoError(t, tmuxSess.SendKeysAndEnter(shellEchoCommand(msg1)))
+	require.NoError(t, tmuxSess.SendKeysAndEnter(shellEchoCommand(msg2)))
 
 	// Both messages should appear in pane content (cat echoes each).
 	WaitForPaneContent(t, inst, msg1, 5*time.Second)
@@ -82,21 +78,9 @@ func TestSend_RapidSuccessiveSends(t *testing.T) {
 func TestSend_CodexReadinessSimulation(t *testing.T) {
 	h := NewTmuxHarness(t)
 
-	// Create a temp shell script simulating Codex startup behavior.
-	tmpDir := t.TempDir()
-	scriptPath := filepath.Join(tmpDir, "fake-codex.sh")
-	script := `#!/bin/sh
-sleep 3
-printf "codex> "
-while IFS= read -r line; do
-  echo "received: $line"
-  printf "codex> "
-done
-`
-	require.NoError(t, os.WriteFile(scriptPath, []byte(script), 0755))
-
+	tmpDir := testWorkDir(t)
 	inst := h.CreateSession("send-codex-ready", tmpDir)
-	inst.Command = scriptPath
+	inst.Command = codexSimulationCommand(t, tmpDir)
 	require.NoError(t, inst.Start())
 
 	WaitForCondition(t, 5*time.Second, 200*time.Millisecond,

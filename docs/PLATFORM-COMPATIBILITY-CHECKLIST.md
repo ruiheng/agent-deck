@@ -26,6 +26,33 @@ assume every tmux behavior matches Unix tmux exactly.
 - If a change touches Windows tmux subprocesses, verify inherited psmux leader
   state is stripped. Do not let `PSMUX_SESSION` leak into agent-deck-managed tmux
   commands.
+- If a change reads tmux environment values, parse the requested `KEY=value`
+  line explicitly. psmux may append additional environment lines to
+  `show-environment` output, so treating the whole output as one value can
+  corrupt stored session metadata or cleanup filters.
+- If a change adds tmux/psmux integration tests, do not reuse Unix tmux test
+  isolation blindly on native Windows. psmux is tied to the user's Windows
+  console/profile environment; tests should strip `TMUX*` and `PSMUX_SESSION`
+  from tmux subprocesses, but should not rewrite `USERPROFILE` just to mimic a
+  Unix `$HOME`-isolated socket server.
+- If a live-pane integration test needs a command fixture, express the fixture's
+  intent rather than hard-coding Unix tools. `/tmp`, `sleep`, `cat`, `.sh`
+  scripts, and raw stdin echo loops are Unix fixtures, not cross-platform
+  behavior. Native Windows tests should use PowerShell/cmd equivalents or send
+  executable shell commands to an interactive pane and assert captured output.
+- If a test launches a generated Windows executable through tmux/psmux, the
+  binary path must end in `.exe`. A suffix-less file that is executable on Unix
+  can trigger Windows file-association UI instead of process execution.
+- If a test writes config/TOML containing native Windows paths, quote those
+  paths with a TOML-safe encoder such as `%q`. Raw double-quoted strings like
+  `"C:\Users\..."` are invalid TOML escapes, not product behavior.
+- If a smoke test intentionally runs the Agent Deck TUI inside tmux/psmux, set
+  the explicit nested-TUI test override (`AGENT_DECK_ALLOW_OUTER_TMUX=1`).
+  Otherwise the product guard correctly exits with the "run outside tmux"
+  message, and the test will misdiagnose that as a render/capture failure.
+- Do not treat passive update/status text as a modal prompt in TUI tests. Sending
+  `n` for a non-modal `Update available` label is just normal keyboard input and
+  can open the New Session dialog.
 - If a change touches attach, verify Windows attach uses real console handles.
   Do not capture stdout/stderr for interactive `tmux attach-session` on Windows;
   psmux can fail with `incorrect function` when Go pipes replace the console.
@@ -38,6 +65,9 @@ assume every tmux behavior matches Unix tmux exactly.
 - If a change touches preview fetching, never leave the UI in an indefinite
   loading state. Cache a diagnostic for failed fetches and make subprocess
   capture calls bounded by timeout.
+- If a change touches background watchers or renewal loops, distinguish real
+  health failures from normal shutdown. A context-canceled renewal during
+  teardown must not poison later health state.
 - If a change touches Codex session detection, verify new Windows sessions do
   not inherit stale rollout IDs from older sessions in the same project. Disk
   scans must be scoped by project and start time, and live-process probes must
@@ -141,6 +171,23 @@ Important differences observed on Windows:
   session is alive and ordinary capture/control-pipe capture works.
 - A psmux-hosted leader pane can set `PSMUX_SESSION`; inherited leader context
   can confuse nested tmux commands. Strip it from agent-deck subprocesses.
+- psmux `show-environment` output can contain more than the requested variable,
+  including psmux-internal keys. Environment lookup and cleanup code must select
+  the exact requested key and ignore unrelated lines.
+- psmux integration tests should use Windows console semantics as the oracle.
+  Unix raw-stdin byte reads are not equivalent: ordinary Windows console input
+  is cooked/event-based, while Agent Deck observes keys through Bubble Tea's
+  `tea.KeyMsg` layer. For native Windows input tests, drive `tmux send-keys`
+  into a psmux pane and assert the resulting Bubble Tea key event rather than
+  expecting immediate `os.Stdin.ReadByte` escape bytes.
+- psmux is much easier to destabilize with high-concurrency live-session stress
+  tests than Unix tmux. Keep native Windows integration tests focused on
+  functional equivalence; do not run Unix tmux load/cleanup stress suites in the
+  same package order if they leave later send/capture tests flaky.
+- psmux does not reliably support every Unix tmux control/status feature used by
+  historical tests, including control mode, `status-left`, terminal-title hooks,
+  and some full-history capture forms. Prefer pure parser/builder tests or
+  functional psmux equivalents over asserting Unix option plumbing directly.
 - Direct `tmux` commands outside `s.tmuxCmd*` often lose socket isolation and
   can query the wrong server.
 - Native Windows built-in Codex should be launched and resumed with
@@ -173,6 +220,20 @@ Checklist:
 - Attach paths are session-scoped operations and must preserve `-L <socket>`.
 - Web bridge, UI, CLI, restart, preview, environment, status, and kill paths
   must all agree on the same socket.
+
+## Filesystem Portability
+
+Do not assume Unix symlink privileges are available.
+
+Checklist:
+
+- If a runtime feature only needs equivalent file visibility, prefer a
+  symlink-first, copy-fallback mirror. This preserves the common Unix fast path
+  without making Windows developer-mode or admin privileges a product
+  requirement.
+- If a test specifically validates symlink identity, skip on platforms or
+  configurations that cannot create symlinks. If the behavior under test is
+  file visibility, test the fallback result instead of testing the mechanism.
 
 ## Attach And Detach Rules
 

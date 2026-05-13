@@ -1,7 +1,6 @@
 package integration
 
 import (
-	"os/exec"
 	"testing"
 	"time"
 
@@ -15,8 +14,8 @@ import (
 func TestLifecycleStart_CreatesRealSession(t *testing.T) {
 	h := NewTmuxHarness(t)
 
-	inst := h.CreateSession("start-real", "/tmp")
-	inst.Command = "echo hello && sleep 60"
+	inst := h.CreateSession("start-real", testWorkDir(t))
+	inst.Command = outputThenSleepCommand("hello")
 	require.NoError(t, inst.Start())
 
 	assert.True(t, inst.Exists(), "session should exist after Start()")
@@ -29,8 +28,8 @@ func TestLifecycleStart_CreatesRealSession(t *testing.T) {
 func TestLifecycleStart_StatusTransition(t *testing.T) {
 	h := NewTmuxHarness(t)
 
-	inst := h.CreateSession("start-status", "/tmp")
-	inst.Command = "sleep 60"
+	inst := h.CreateSession("start-status", testWorkDir(t))
+	inst.Command = longRunningCommand()
 	require.NoError(t, inst.Start())
 
 	assert.Equal(t, session.StatusStarting, inst.Status, "status should be starting immediately after Start()")
@@ -45,8 +44,8 @@ func TestLifecycleStart_StatusTransition(t *testing.T) {
 func TestLifecycleStop_TerminatesSession(t *testing.T) {
 	h := NewTmuxHarness(t)
 
-	inst := h.CreateSession("stop-term", "/tmp")
-	inst.Command = "sleep 60"
+	inst := h.CreateSession("stop-term", testWorkDir(t))
+	inst.Command = longRunningCommand()
 	require.NoError(t, inst.Start())
 
 	WaitForCondition(t, 5*time.Second, 200*time.Millisecond,
@@ -64,7 +63,7 @@ func TestLifecycleStop_TerminatesSession(t *testing.T) {
 		func() bool { return !inst.Exists() })
 
 	// Verify at the tmux level that the session is gone.
-	err := exec.Command("tmux", "has-session", "-t", tmuxName).Run()
+	err := tmuxCommand("has-session", "-t", tmuxName).Run()
 	assert.Error(t, err, "tmux has-session should fail for killed session")
 }
 
@@ -73,8 +72,8 @@ func TestLifecycleStop_TerminatesSession(t *testing.T) {
 func TestLifecycleStop_PaneContentGoneAfterKill(t *testing.T) {
 	h := NewTmuxHarness(t)
 
-	inst := h.CreateSession("stop-pane", "/tmp")
-	inst.Command = "echo marker_abc && sleep 60"
+	inst := h.CreateSession("stop-pane", testWorkDir(t))
+	inst.Command = outputThenSleepCommand("marker_abc")
 	require.NoError(t, inst.Start())
 
 	WaitForPaneContent(t, inst, "marker_abc", 5*time.Second)
@@ -88,7 +87,7 @@ func TestLifecycleStop_PaneContentGoneAfterKill(t *testing.T) {
 	WaitForCondition(t, 3*time.Second, 200*time.Millisecond,
 		"tmux session to be gone",
 		func() bool {
-			return exec.Command("tmux", "has-session", "-t", tmuxName).Run() != nil
+			return tmuxCommand("has-session", "-t", tmuxName).Run() != nil
 		})
 }
 
@@ -102,8 +101,8 @@ func TestLifecycleStop_PaneContentGoneAfterKill(t *testing.T) {
 func TestLifecycleFork_CreatesIndependentCopy(t *testing.T) {
 	h := NewTmuxHarness(t)
 
-	parent := h.CreateSession("fork-parent", "/tmp")
-	parent.Command = "sleep 60"
+	parent := h.CreateSession("fork-parent", testWorkDir(t))
+	parent.Command = longRunningCommand()
 	require.NoError(t, parent.Start())
 
 	WaitForCondition(t, 5*time.Second, 200*time.Millisecond,
@@ -113,7 +112,7 @@ func TestLifecycleFork_CreatesIndependentCopy(t *testing.T) {
 	// Create child as a separate session with parent linkage.
 	child := h.CreateSession("fork-child", parent.ProjectPath)
 	child.ParentSessionID = parent.ID
-	child.Command = "sleep 60"
+	child.Command = longRunningCommand()
 	require.NoError(t, child.Start())
 
 	WaitForCondition(t, 5*time.Second, 200*time.Millisecond,
@@ -136,7 +135,7 @@ func TestLifecycleFork_CreatesIndependentCopy(t *testing.T) {
 func TestLifecycleFork_ParentChildLinkage(t *testing.T) {
 	h := NewTmuxHarness(t)
 
-	parent := h.CreateSession("link-parent", "/tmp")
+	parent := h.CreateSession("link-parent", testWorkDir(t))
 	child := h.CreateSession("link-child", parent.ProjectPath)
 	child.ParentSessionID = parent.ID
 
@@ -150,8 +149,8 @@ func TestLifecycleFork_ParentChildLinkage(t *testing.T) {
 func TestLifecycleRestart_RecreatesToDeadSession(t *testing.T) {
 	h := NewTmuxHarness(t)
 
-	inst := h.CreateSession("restart-dead", "/tmp")
-	inst.Command = "echo first_marker && sleep 60"
+	inst := h.CreateSession("restart-dead", testWorkDir(t))
+	inst.Command = outputThenSleepCommand("first_marker")
 	require.NoError(t, inst.Start())
 
 	WaitForPaneContent(t, inst, "first_marker", 5*time.Second)
@@ -162,7 +161,7 @@ func TestLifecycleRestart_RecreatesToDeadSession(t *testing.T) {
 		func() bool { return !inst.Exists() })
 
 	// Restart with a new command.
-	inst.Command = "echo second_marker && sleep 60"
+	inst.Command = outputThenSleepCommand("second_marker")
 	require.NoError(t, inst.Restart())
 
 	WaitForCondition(t, 5*time.Second, 200*time.Millisecond,

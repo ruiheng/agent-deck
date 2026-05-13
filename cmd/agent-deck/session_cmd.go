@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 
@@ -1825,7 +1826,7 @@ func handleSessionSend(profile string, args []string) {
 	}
 
 	// Wait for agent to be ready (unless --no-wait is specified)
-	if !*noWait {
+	if !*noWait && shouldWaitForAgentReady(inst.Tool) {
 		if err := waitForAgentReady(tmuxSess, inst.Tool); err != nil {
 			out.Error(fmt.Sprintf("timeout waiting for agent: %v", err), ErrCodeInvalidOperation)
 			os.Exit(1)
@@ -1848,7 +1849,7 @@ func handleSessionSend(profile string, args []string) {
 			os.Exit(1)
 		}
 	} else {
-		if err := sendWithRetry(tmuxSess, message, false); err != nil {
+		if err := sendWithRetry(tmuxSess, message, shouldSkipPostSendVerify(inst.Tool)); err != nil {
 			out.Error(fmt.Sprintf("failed to send message: %v", err), ErrCodeInvalidOperation)
 			os.Exit(1)
 		}
@@ -1930,6 +1931,18 @@ func sendWithRetry(tmuxSess *tmux.Session, message string, skipVerify bool) erro
 		maxRetries: 50,
 		checkDelay: 300 * time.Millisecond,
 	})
+}
+
+func shouldWaitForAgentReady(tool string) bool {
+	return strings.TrimSpace(tool) != "shell"
+}
+
+func shouldSkipPostSendVerify(tool string) bool {
+	tool = strings.TrimSpace(tool)
+	if tool == "shell" {
+		return true
+	}
+	return runtime.GOOS == "windows" && tool == "codex"
 }
 
 // noWaitSendOptions returns the verification-loop options used by the

@@ -326,7 +326,7 @@ func TestGenerateWorktreePath(t *testing.T) {
 
 		path := GenerateWorktreePath(repoDir, branchName, "subdirectory")
 
-		expected := "/path/to/my-project/.worktrees/feature-branch"
+		expected := filepath.Join("/path/to/my-project", ".worktrees", "feature-branch")
 		if path != expected {
 			t.Errorf("expected %s, got %s", expected, path)
 		}
@@ -338,7 +338,7 @@ func TestGenerateWorktreePath(t *testing.T) {
 
 		path := GenerateWorktreePath(repoDir, branchName, "subdirectory")
 
-		expected := "/path/to/my-project/.worktrees/feature-new-thing"
+		expected := filepath.Join("/path/to/my-project", ".worktrees", "feature-new-thing")
 		if path != expected {
 			t.Errorf("expected %s, got %s", expected, path)
 		}
@@ -374,7 +374,7 @@ func TestGenerateWorktreePath(t *testing.T) {
 
 		path := GenerateWorktreePath(repoDir, branchName, "/tmp/worktrees")
 
-		expected := "/tmp/worktrees/my-project/feature-branch"
+		expected := filepath.Join("/tmp/worktrees", "my-project", "feature-branch")
 		if path != expected {
 			t.Errorf("expected %s, got %s", expected, path)
 		}
@@ -402,7 +402,7 @@ func TestGenerateWorktreePath(t *testing.T) {
 
 		path := GenerateWorktreePath(repoDir, branchName, "/tmp/wt")
 
-		expected := "/tmp/wt/my-project/feature-my-branch"
+		expected := filepath.Join("/tmp/wt", "my-project", "feature-my-branch")
 		if path != expected {
 			t.Errorf("expected %s, got %s", expected, path)
 		}
@@ -415,7 +415,7 @@ func TestGenerateWorktreePath(t *testing.T) {
 		path := GenerateWorktreePath(repoDir, branchName, "/tmp/worktrees/")
 
 		// filepath.Join normalizes trailing slashes
-		expected := "/tmp/worktrees/my-project/main"
+		expected := filepath.Join("/tmp/worktrees", "my-project", "main")
 		if path != expected {
 			t.Errorf("expected %s, got %s", expected, path)
 		}
@@ -441,7 +441,7 @@ func TestGenerateWorktreePath(t *testing.T) {
 		path := GenerateWorktreePath(repoDir, branchName, "/sibling")
 
 		// Contains "/" so should be treated as custom path
-		expected := "/sibling/my-project/feature-branch"
+		expected := filepath.Join("/sibling", "my-project", "feature-branch")
 		if path != expected {
 			t.Errorf("expected custom path %s, got %s", expected, path)
 		}

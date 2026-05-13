@@ -10,6 +10,7 @@ package tmux
 
 import (
 	"os/exec"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -105,6 +106,9 @@ func TestStart_Service_WhenServiceFails_FallbackToScope(t *testing.T) {
 // TestStart_Service_WhenAllSystemdFail_FallbackToDirect: service AND
 // scope both fail; direct tmux succeeds; session ready.
 func TestStart_Service_WhenAllSystemdFail_FallbackToDirect(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("systemd service/scope fallback is Unix-specific")
+	}
 	if _, err := exec.LookPath("tmux"); err != nil {
 		t.Skipf("no tmux binary available: %v", err)
 	}

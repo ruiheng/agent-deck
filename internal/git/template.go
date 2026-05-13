@@ -84,11 +84,15 @@ func resolveTemplate(template string, vars templateVars) string {
 	resolved := replacer.Replace(template)
 
 	// Handle relative paths - resolve relative to repo root.
-	if !filepath.IsAbs(resolved) {
+	if !isAbsPathLike(resolved) {
 		resolved = filepath.Join(vars.repoRoot, resolved)
 	}
 
 	return filepath.Clean(resolved)
+}
+
+func isAbsPathLike(path string) bool {
+	return filepath.IsAbs(path) || strings.HasPrefix(path, "/") || strings.HasPrefix(path, `\`)
 }
 
 // WorktreePath generates a worktree path. If opts.Template is set, it expands
@@ -103,8 +107,9 @@ func resolveTemplate(template string, vars templateVars) string {
 func WorktreePath(opts WorktreePathOptions) string {
 	// Fall back to default path generation when template is empty or repo path is invalid.
 	// filepath.Base returns "." for empty/current dir, "/" for root, ".." for parent.
-	repoName := filepath.Base(opts.RepoDir)
-	if opts.Template == "" || opts.RepoDir == "" || repoName == "." || repoName == "/" || repoName == ".." {
+	cleanRepoDir := filepath.Clean(opts.RepoDir)
+	repoName := filepath.Base(cleanRepoDir)
+	if opts.Template == "" || opts.RepoDir == "" || repoName == "." || repoName == "/" || repoName == `\` || repoName == ".." || filepath.Dir(cleanRepoDir) == cleanRepoDir {
 		return GenerateWorktreePath(opts.RepoDir, opts.Branch, opts.Location)
 	}
 

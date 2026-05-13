@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -31,6 +32,9 @@ import (
 // on a developer host will kill all live agent-deck sessions. Do not
 // ignore.
 func TestIsolateTmuxSocket_DefaultSocketUntouched_RealTmux(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Unix tmux socket path isolation test; psmux does not create /tmp/tmux-uid sockets")
+	}
 	if _, err := exec.LookPath("tmux"); err != nil {
 		t.Skip("tmux binary not available — cannot run real-tmux end-to-end test")
 	}

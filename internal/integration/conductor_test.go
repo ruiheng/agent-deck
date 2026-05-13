@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/asheshgoplani/agent-deck/internal/session"
+	"github.com/asheshgoplani/agent-deck/internal/testutil"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -16,10 +17,10 @@ import (
 // TestConductor_SendToChild verifies that a child session running `cat` receives
 // text sent via SendKeysAndEnter and the text appears in the child's pane content. (COND-01)
 func TestConductor_SendToChild(t *testing.T) {
+	skipWindowsPsmuxStress(t)
 	h := NewTmuxHarness(t)
 
-	inst := h.CreateSession("cond-child", "/tmp")
-	inst.Command = "cat"
+	inst := h.CreateSession("cond-child", testWorkDir(t))
 	require.NoError(t, inst.Start())
 
 	WaitForCondition(t, 5*time.Second, 200*time.Millisecond,
@@ -30,7 +31,7 @@ func TestConductor_SendToChild(t *testing.T) {
 	require.NotNil(t, tmuxSess, "tmux session should not be nil")
 
 	msg := "hello-from-conductor-" + t.Name()
-	require.NoError(t, tmuxSess.SendKeysAndEnter(msg))
+	require.NoError(t, tmuxSess.SendKeysAndEnter(shellEchoCommand(msg)))
 
 	WaitForPaneContent(t, inst, "hello-from-conductor-", 5*time.Second)
 }
@@ -39,10 +40,10 @@ func TestConductor_SendToChild(t *testing.T) {
 // via SendKeysAndEnter both appear in the child's pane content, proving reliable
 // sequential delivery. (COND-01)
 func TestConductor_SendMultipleMessages(t *testing.T) {
+	skipWindowsPsmuxStress(t)
 	h := NewTmuxHarness(t)
 
-	inst := h.CreateSession("cond-multi", "/tmp")
-	inst.Command = "cat"
+	inst := h.CreateSession("cond-multi", testWorkDir(t))
 	require.NoError(t, inst.Start())
 
 	WaitForCondition(t, 5*time.Second, 200*time.Millisecond,
@@ -52,16 +53,19 @@ func TestConductor_SendMultipleMessages(t *testing.T) {
 	tmuxSess := inst.GetTmuxSession()
 	require.NotNil(t, tmuxSess, "tmux session should not be nil")
 
-	require.NoError(t, tmuxSess.SendKeysAndEnter("msg-one"))
+	require.NoError(t, tmuxSess.SendKeysAndEnter(shellEchoCommand("msg-one")))
 	WaitForPaneContent(t, inst, "msg-one", 5*time.Second)
 
-	require.NoError(t, tmuxSess.SendKeysAndEnter("msg-two"))
+	require.NoError(t, tmuxSess.SendKeysAndEnter(shellEchoCommand("msg-two")))
 	WaitForPaneContent(t, inst, "msg-two", 5*time.Second)
 }
 
 // TestConductor_EventWriteWatch verifies that a StatusEvent written via WriteStatusEvent
 // is detected by StatusEventWatcher.WaitForStatus and delivered with matching fields. (COND-02)
 func TestConductor_EventWriteWatch(t *testing.T) {
+	cleanup := testutil.IsolateHome("agent-deck-integration-event-")
+	defer cleanup()
+
 	instanceID := fmt.Sprintf("inttest-event-%d", time.Now().UnixNano())
 
 	// Clean up event file after test.
@@ -99,6 +103,9 @@ func TestConductor_EventWriteWatch(t *testing.T) {
 // TestConductor_EventWatcherFilters verifies that a watcher filtering for instance "A"
 // does NOT receive events for instance "B", but DOES receive events for instance "A". (COND-02)
 func TestConductor_EventWatcherFilters(t *testing.T) {
+	cleanup := testutil.IsolateHome("agent-deck-integration-event-")
+	defer cleanup()
+
 	idA := fmt.Sprintf("inttest-filter-a-%d", time.Now().UnixNano())
 	idB := fmt.Sprintf("inttest-filter-b-%d", time.Now().UnixNano())
 
@@ -149,10 +156,10 @@ func TestConductor_EventWatcherFilters(t *testing.T) {
 // child existence, sends a heartbeat-prefixed message, and confirms receipt in the
 // child's pane content. Mirrors the production heartbeat script logic. (COND-03)
 func TestConductor_HeartbeatRoundTrip(t *testing.T) {
+	skipWindowsPsmuxStress(t)
 	h := NewTmuxHarness(t)
 
-	inst := h.CreateSession("cond-heartbeat", "/tmp")
-	inst.Command = "cat"
+	inst := h.CreateSession("cond-heartbeat", testWorkDir(t))
 	require.NoError(t, inst.Start())
 
 	// Wait for child session to exist (heartbeat first checks session status).
@@ -168,7 +175,7 @@ func TestConductor_HeartbeatRoundTrip(t *testing.T) {
 
 	// Send heartbeat message (cat echoes it back to pane).
 	heartbeatMsg := "HEARTBEAT: check-all-sessions-" + t.Name()
-	require.NoError(t, tmuxSess.SendKeysAndEnter(heartbeatMsg))
+	require.NoError(t, tmuxSess.SendKeysAndEnter(shellEchoCommand(heartbeatMsg)))
 
 	// Verify receipt via polling.
 	WaitForPaneContent(t, inst, "HEARTBEAT:", 5*time.Second)
@@ -187,10 +194,10 @@ func TestConductor_HeartbeatRoundTrip(t *testing.T) {
 // terminal line discipline independently (canonical mode buffers up to ~4096 bytes
 // per line). A final sentinel line verifies end-to-end sequential delivery.
 func TestConductor_ChunkedSendDelivery(t *testing.T) {
+	skipWindowsPsmuxStress(t)
 	h := NewTmuxHarness(t)
 
-	inst := h.CreateSession("cond-chunked", "/tmp")
-	inst.Command = "cat"
+	inst := h.CreateSession("cond-chunked", testWorkDir(t))
 	require.NoError(t, inst.Start())
 
 	WaitForCondition(t, 5*time.Second, 200*time.Millisecond,
@@ -200,17 +207,7 @@ func TestConductor_ChunkedSendDelivery(t *testing.T) {
 	tmuxSess := inst.GetTmuxSession()
 	require.NotNil(t, tmuxSess, "tmux session should not be nil")
 
-	// Build a multi-line message >4096 bytes that triggers chunked sending.
-	// Each line is short enough for the terminal line buffer, but the total
-	// payload exceeds the 4096-byte chunk threshold.
-	var lines []string
-	lines = append(lines, "CHUNK-START")
-	// Each line is ~82 bytes with newline. 55 lines = ~4510 bytes total.
-	for i := 0; i < 55; i++ {
-		lines = append(lines, fmt.Sprintf("LINE-%03d-%s", i, strings.Repeat("Z", 70)))
-	}
-	lines = append(lines, "CHUNK-END")
-	bigMsg := strings.Join(lines, "\n")
+	bigMsg := chunkedMarkerCommand("CHUNK-END")
 	require.Greater(t, len(bigMsg), 4096, "message must exceed chunk threshold")
 
 	// Use SendKeysChunked directly to test the chunking path in isolation.
@@ -220,7 +217,7 @@ func TestConductor_ChunkedSendDelivery(t *testing.T) {
 
 	// Use longer timeout since chunked sending incurs 50ms inter-chunk delays.
 	// Verify the last line (CHUNK-END) was delivered, proving no truncation.
-	WaitForPaneContent(t, inst, "CHUNK-END", 10*time.Second)
+	WaitForPaneContent(t, inst, "CHUNK-END", 30*time.Second)
 
 	content, err := tmuxSess.CapturePaneFresh()
 	require.NoError(t, err)
@@ -230,10 +227,10 @@ func TestConductor_ChunkedSendDelivery(t *testing.T) {
 // TestConductor_SmallSendDelivery verifies that a message below the 4096-byte
 // threshold is delivered via the non-chunked (single SendKeys) path. (COND-04)
 func TestConductor_SmallSendDelivery(t *testing.T) {
+	skipWindowsPsmuxStress(t)
 	h := NewTmuxHarness(t)
 
-	inst := h.CreateSession("cond-small", "/tmp")
-	inst.Command = "cat"
+	inst := h.CreateSession("cond-small", testWorkDir(t))
 	require.NoError(t, inst.Start())
 
 	WaitForCondition(t, 5*time.Second, 200*time.Millisecond,
@@ -244,7 +241,7 @@ func TestConductor_SmallSendDelivery(t *testing.T) {
 	require.NotNil(t, tmuxSess, "tmux session should not be nil")
 
 	// Build a small message that stays under the 4096-byte threshold.
-	smallMsg := "SMALL-MSG-" + strings.Repeat("A", 100) + "-END"
+	smallMsg := shellEchoCommand("SMALL-MSG-" + strings.Repeat("A", 100) + "-END")
 	require.Less(t, len(smallMsg), 4096, "message must be under chunk threshold")
 
 	// SendKeysChunked with small content delegates to SendKeys (no chunking).

@@ -51,6 +51,7 @@ func IsolateTmuxSocket() func() {
 	// Snapshot originals for cleanup-time restore.
 	origTmux, hadTmux := os.LookupEnv("TMUX")
 	origTmuxPane, hadTmuxPane := os.LookupEnv("TMUX_PANE")
+	origPsmuxSession, hadPsmuxSession := os.LookupEnv("PSMUX_SESSION")
 	origTmuxTmpdir, hadTmuxTmpdir := os.LookupEnv("TMUX_TMPDIR")
 	origMarker, hadMarker := os.LookupEnv(TestIsolationMarkerEnv)
 
@@ -59,6 +60,7 @@ func IsolateTmuxSocket() func() {
 	// ignored. This single line is the 2026-04-17 fix.
 	_ = os.Unsetenv("TMUX")
 	_ = os.Unsetenv("TMUX_PANE")
+	_ = os.Unsetenv("PSMUX_SESSION")
 
 	dir, err := os.MkdirTemp("", "agent-deck-test-tmux-")
 	if err != nil {
@@ -75,6 +77,7 @@ func IsolateTmuxSocket() func() {
 	return func() {
 		restoreEnv("TMUX", origTmux, hadTmux)
 		restoreEnv("TMUX_PANE", origTmuxPane, hadTmuxPane)
+		restoreEnv("PSMUX_SESSION", origPsmuxSession, hadPsmuxSession)
 		restoreEnv("TMUX_TMPDIR", origTmuxTmpdir, hadTmuxTmpdir)
 		restoreEnv(TestIsolationMarkerEnv, origMarker, hadMarker)
 		// Best-effort dir cleanup. Stale tmux sockets are harmless —

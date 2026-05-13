@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -144,7 +145,7 @@ func TestSystemdBridgeServicePath(t *testing.T) {
 	if !strings.HasSuffix(path, "agent-deck-conductor-bridge.service") {
 		t.Errorf("path should end with service file name, got %q", path)
 	}
-	if !strings.Contains(path, ".config/systemd/user") {
+	if !strings.Contains(filepath.ToSlash(path), ".config/systemd/user") {
 		t.Errorf("path should be in systemd user dir, got %q", path)
 	}
 }
@@ -702,6 +703,7 @@ func TestInstallSharedClaudeMD_CustomSymlink(t *testing.T) {
 
 	// Test installing with custom path (creates symlink)
 	err := InstallSharedClaudeMD(customPath)
+	skipIfWindowsSymlinkPrivilegeError(t, err)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -734,6 +736,7 @@ func TestInstallSharedClaudeMD_CustomSymlinkCreatesConductorDir(t *testing.T) {
 	}
 
 	if err := InstallSharedClaudeMD(customPath); err != nil {
+		skipIfWindowsSymlinkPrivilegeError(t, err)
 		t.Fatalf("InstallSharedClaudeMD returned error: %v", err)
 	}
 
@@ -911,6 +914,7 @@ func TestSetupConductor_CustomSymlink(t *testing.T) {
 
 	// Setup with custom path (creates symlink)
 	err := SetupConductor(name, profile, true, true, "test description", customPath, "", nil, "")
+	skipIfWindowsSymlinkPrivilegeError(t, err)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1049,11 +1053,12 @@ func TestCreateSymlinkWithExpansion_TildeExpansion(t *testing.T) {
 	}
 
 	// Use tilde path — expands to $HOME/.agent-deck-test-tilde/test-tilde.md
-	tildePath := filepath.Join("~", ".agent-deck-test-tilde", sourceName)
+	tildePath := "~/" + filepath.ToSlash(filepath.Join(".agent-deck-test-tilde", sourceName))
 	targetPath := filepath.Join(t.TempDir(), "link.md")
 
 	// Test symlink creation with tilde expansion
 	err = createSymlinkWithExpansion(targetPath, tildePath)
+	skipIfWindowsSymlinkPrivilegeError(t, err)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1164,7 +1169,11 @@ func TestGenerateLaunchdPlist_IncludesAgentDeckDir(t *testing.T) {
 
 func TestFindPython3_PrefersPathLookup(t *testing.T) {
 	tmpBin := t.TempDir()
-	pythonPath := filepath.Join(tmpBin, "python3")
+	name := "python3"
+	if runtime.GOOS == "windows" {
+		name += ".exe"
+	}
+	pythonPath := filepath.Join(tmpBin, name)
 
 	if err := os.WriteFile(pythonPath, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
 		t.Fatalf("failed to create fake python3: %v", err)
@@ -1179,6 +1188,10 @@ func TestFindPython3_PrefersPathLookup(t *testing.T) {
 }
 
 func TestBuildDaemonPath(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("systemd/launchd daemon PATH generation uses POSIX path semantics")
+	}
+
 	tests := []struct {
 		name          string
 		agentDeckPath string
@@ -1327,6 +1340,7 @@ func TestInstallPolicyMD_CustomSymlink(t *testing.T) {
 
 	// Test installing with custom path (creates symlink)
 	err := InstallPolicyMD(customPath)
+	skipIfWindowsSymlinkPrivilegeError(t, err)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1367,6 +1381,7 @@ func TestSetupConductor_PolicyOverride(t *testing.T) {
 
 	// Setup with custom policy path (creates per-conductor symlink)
 	err := SetupConductor(name, profile, true, true, "test description", "", customPolicyPath, nil, "")
+	skipIfWindowsSymlinkPrivilegeError(t, err)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1837,9 +1852,7 @@ func TestMigrateConductorPolicySplit_PreservesSymlinkedClaudeMD(t *testing.T) {
 
 	dir, _ := ConductorNameDir(name)
 	claudePath := filepath.Join(dir, "CLAUDE.md")
-	if err := os.Symlink(customPath, claudePath); err != nil {
-		t.Fatalf("failed to create CLAUDE.md symlink: %v", err)
-	}
+	requireTestSymlink(t, customPath, claudePath)
 
 	migrated, err := MigrateConductorPolicySplit()
 	if err != nil {
@@ -2258,7 +2271,7 @@ func TestSetupConductor_WithEnvVars(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to stat meta.json: %v", err)
 	}
-	if info.Mode().Perm() != 0o600 {
+	if runtime.GOOS != "windows" && info.Mode().Perm() != 0o600 {
 		t.Errorf("expected 0600 permissions for meta.json with env vars, got %o", info.Mode().Perm())
 	}
 }

@@ -86,8 +86,9 @@ func runAgentDeck(
 		env = append(env, kv)
 	}
 	env = append(env,
-		"HOME="+home,
-		"USERPROFILE="+home,
+		homeEnvVars(home)...,
+	)
+	env = append(env,
 		"AGENTDECK_PROFILE=ch_support_test",
 		"TERM=dumb",
 	)
@@ -105,6 +106,33 @@ func runAgentDeck(
 		}
 	}
 	return outBuf.String(), errBuf.String(), exitCode
+}
+
+func homeEnvVars(home string) []string {
+	vars := []string{
+		"HOME=" + home,
+		"USERPROFILE=" + home,
+	}
+	if vol := filepath.VolumeName(home); vol != "" {
+		vars = append(vars, "HOMEDRIVE="+vol)
+		if rest := strings.TrimPrefix(home, vol); rest != "" {
+			vars = append(vars, "HOMEPATH="+rest)
+		}
+	}
+	return vars
+}
+
+func setHomeForTest(t *testing.T, home string) {
+	t.Helper()
+
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	if vol := filepath.VolumeName(home); vol != "" {
+		t.Setenv("HOMEDRIVE", vol)
+		if rest := strings.TrimPrefix(home, vol); rest != "" {
+			t.Setenv("HOMEPATH", rest)
+		}
+	}
 }
 
 // readSessionsJSON reads the persisted sessions for the test profile.

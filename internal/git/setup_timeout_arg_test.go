@@ -14,6 +14,7 @@ import (
 // timeout on a `sleep 300` script must fail in well under the legacy 60s
 // default.
 func TestRunWorktreeSetupScript_HonoursCallerTimeout(t *testing.T) {
+	requirePOSIXShell(t)
 	worktreeDir := t.TempDir()
 
 	script := `#!/bin/sh

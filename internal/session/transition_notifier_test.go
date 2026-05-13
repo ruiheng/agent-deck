@@ -257,6 +257,7 @@ func TestDispatchDropsEventWhenChildNoTransitionNotify(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewStorageWithProfile: %v", err)
 	}
+	defer storage.Close()
 
 	now := time.Now()
 	child := &Instance{

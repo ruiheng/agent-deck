@@ -14,6 +14,7 @@ import (
 // resolves the default for them). A 2s sleep must complete under a zero
 // (unlimited) timeout.
 func TestRunWorktreeSetupScript_UnlimitedTimeoutAllowsLongScript(t *testing.T) {
+	requirePOSIXShell(t)
 	worktreeDir := t.TempDir()
 
 	script := `#!/bin/sh

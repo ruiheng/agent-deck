@@ -39,6 +39,7 @@ func TestFindWorktreeSetupScript_Present(t *testing.T) {
 }
 
 func TestRunWorktreeSetupScript_Success(t *testing.T) {
+	requirePOSIXShell(t)
 	repoDir := t.TempDir()
 	worktreeDir := t.TempDir()
 
@@ -80,6 +81,7 @@ echo "copying done"
 }
 
 func TestRunWorktreeSetupScript_Failure(t *testing.T) {
+	requirePOSIXShell(t)
 	worktreeDir := t.TempDir()
 
 	script := `#!/bin/sh
@@ -102,6 +104,7 @@ exit 1
 }
 
 func TestRunWorktreeSetupScript_Timeout(t *testing.T) {
+	requirePOSIXShell(t)
 	worktreeDir := t.TempDir()
 
 	script := `#!/bin/sh
@@ -177,6 +180,7 @@ func TestCreateWorktreeWithSetup_NoScript(t *testing.T) {
 }
 
 func TestCreateWorktreeWithSetup_WithScript(t *testing.T) {
+	requirePOSIXShell(t)
 	dir := t.TempDir()
 	createTestRepoForSetup(t, dir)
 
@@ -222,6 +226,7 @@ echo "setup done"
 }
 
 func TestCreateWorktreeWithSetup_SetupFails(t *testing.T) {
+	requirePOSIXShell(t)
 	dir := t.TempDir()
 	createTestRepoForSetup(t, dir)
 
@@ -258,5 +263,12 @@ exit 1
 	// Worktree should still be valid
 	if _, err := os.Stat(filepath.Join(worktreePath, "README.md")); err != nil {
 		t.Error("worktree should still exist after setup failure")
+	}
+}
+
+func requirePOSIXShell(t *testing.T) {
+	t.Helper()
+	if _, err := exec.LookPath("sh"); err != nil {
+		t.Skipf("worktree setup script tests require sh on PATH: %v", err)
 	}
 }

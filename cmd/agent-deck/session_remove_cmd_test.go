@@ -50,13 +50,14 @@ func addTestSession(t *testing.T, home, workPath, title string) string {
 // without racing the status worker.
 func forceSetStatus(t *testing.T, home, id string, status session.Status) {
 	t.Helper()
-	t.Setenv("HOME", home)
+	setHomeForTest(t, home)
 	t.Setenv("AGENTDECK_PROFILE", "ch_support_test")
 
 	storage, err := session.NewStorageWithProfile("")
 	if err != nil {
 		t.Fatalf("open storage: %v", err)
 	}
+	defer storage.Close()
 	instances, groups, err := storage.LoadWithGroups()
 	if err != nil {
 		t.Fatalf("load: %v", err)

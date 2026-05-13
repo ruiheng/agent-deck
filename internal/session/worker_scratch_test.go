@@ -22,10 +22,8 @@ package session
 
 import (
 	"encoding/json"
-	"fmt"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 )
 
@@ -186,6 +184,67 @@ func TestEnsureWorkerScratchConfigDir_TelegramAbsentStillPinsDisabled(t *testing
 	}
 }
 
+func TestMirrorProfileEntries_RefreshesCopiedEntriesOnReuse(t *testing.T) {
+	source := t.TempDir()
+	dest := t.TempDir()
+
+	srcCommands := filepath.Join(source, "commands")
+	if err := os.MkdirAll(srcCommands, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(srcCommands, "hi.md"), []byte("fresh command"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(source, "profile.txt"), []byte("fresh file"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Simulate a previous copy fallback on a platform/configuration where
+	// symlinks were unavailable. Reusing the scratch dir must refresh these
+	// materialized copies instead of preserving stale contents.
+	dstCommands := filepath.Join(dest, "commands")
+	if err := os.MkdirAll(dstCommands, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dstCommands, "hi.md"), []byte("stale command"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dest, "profile.txt"), []byte("stale file"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	staleDir := filepath.Join(dest, "removed")
+	if err := os.MkdirAll(staleDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(staleDir, "old.md"), []byte("removed config"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dest, "removed.txt"), []byte("removed file"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := mirrorProfileEntries(dest, source); err != nil {
+		t.Fatalf("mirrorProfileEntries: %v", err)
+	}
+
+	if got, err := os.ReadFile(filepath.Join(dest, "commands", "hi.md")); err != nil {
+		t.Fatalf("read refreshed command: %v", err)
+	} else if string(got) != "fresh command" {
+		t.Fatalf("command mirror = %q, want fresh command", string(got))
+	}
+	if got, err := os.ReadFile(filepath.Join(dest, "profile.txt")); err != nil {
+		t.Fatalf("read refreshed file: %v", err)
+	} else if string(got) != "fresh file" {
+		t.Fatalf("file mirror = %q, want fresh file", string(got))
+	}
+	if _, err := os.Lstat(staleDir); !os.IsNotExist(err) {
+		t.Fatalf("stale copied dir still exists; err=%v", err)
+	}
+	if _, err := os.Lstat(filepath.Join(dest, "removed.txt")); !os.IsNotExist(err) {
+		t.Fatalf("stale copied file still exists; err=%v", err)
+	}
+}
+
 // buildClaudeCommand must route CLAUDE_CONFIG_DIR through the scratch
 // dir once Instance.WorkerScratchConfigDir is set. This is the
 // load-bearing wire: without it, the plugin still loads the ambient
@@ -222,18 +281,10 @@ func TestBuildClaudeCommand_UsesWorkerScratchConfigDir(t *testing.T) {
 
 	cmd := inst.buildClaudeCommand("claude")
 
-	// Accept either the inline form (`CLAUDE_CONFIG_DIR=<dir> claude`) or
-	// the bash-export form (`export CLAUDE_CONFIG_DIR=<dir>;`). The
-	// command builder picks between them per session mode — both must
-	// point at the scratch dir.
-	scratchInline := fmt.Sprintf("CLAUDE_CONFIG_DIR=%s ", scratch)
-	scratchExport := fmt.Sprintf("CLAUDE_CONFIG_DIR=%s;", scratch)
-	if !strings.Contains(cmd, scratchInline) && !strings.Contains(cmd, scratchExport) {
-		t.Errorf("built command must point CLAUDE_CONFIG_DIR at scratch dir\n  want contains one of: %q | %q\n  got: %s", scratchInline, scratchExport, cmd)
+	if !commandContainsEnvAssignment(cmd, "CLAUDE_CONFIG_DIR", scratch) {
+		t.Errorf("built command must point CLAUDE_CONFIG_DIR at scratch dir\n  got: %s", cmd)
 	}
-	profileInline := fmt.Sprintf("CLAUDE_CONFIG_DIR=%s ", profile)
-	profileExport := fmt.Sprintf("CLAUDE_CONFIG_DIR=%s;", profile)
-	if strings.Contains(cmd, profileInline) || strings.Contains(cmd, profileExport) {
+	if commandContainsEnvAssignment(cmd, "CLAUDE_CONFIG_DIR", profile) {
 		t.Errorf("built command must NOT use ambient profile when scratch is set\n  got: %s", cmd)
 	}
 }

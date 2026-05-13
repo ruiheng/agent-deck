@@ -17,7 +17,7 @@ func TestSessionStart_CreatesTmuxSession(t *testing.T) {
 	skipIfNoTmuxServer(t)
 
 	inst := NewInstance("test-start-creates", "/tmp")
-	inst.Command = "sleep 60"
+	inst.Command = testLongRunningCommand(60)
 
 	err := inst.Start()
 	require.NoError(t, err, "Start() should succeed")
@@ -42,7 +42,7 @@ func TestSessionStart_SetsStartingStatus(t *testing.T) {
 	skipIfNoTmuxServer(t)
 
 	inst := NewInstance("test-start-status", "/tmp")
-	inst.Command = "sleep 60"
+	inst.Command = testLongRunningCommand(60)
 
 	err := inst.Start()
 	require.NoError(t, err, "Start() should succeed")
@@ -59,7 +59,7 @@ func TestSessionStop_KillsAndSetsStopped(t *testing.T) {
 	skipIfNoTmuxServer(t)
 
 	inst := NewInstance("test-stop-kills", "/tmp")
-	inst.Command = "sleep 60"
+	inst.Command = testLongRunningCommand(60)
 
 	err := inst.Start()
 	require.NoError(t, err, "Start() should succeed")
@@ -89,7 +89,7 @@ func TestSessionStop_DoubleKill(t *testing.T) {
 	skipIfNoTmuxServer(t)
 
 	inst := NewInstance("test-stop-double", "/tmp")
-	inst.Command = "sleep 60"
+	inst.Command = testLongRunningCommand(60)
 
 	err := inst.Start()
 	require.NoError(t, err, "Start() should succeed")
@@ -110,7 +110,7 @@ func TestSessionStop_UpdateStatusAfterKill(t *testing.T) {
 	skipIfNoTmuxServer(t)
 
 	inst := NewInstance("test-stop-update", "/tmp")
-	inst.Command = "sleep 60"
+	inst.Command = testLongRunningCommand(60)
 
 	err := inst.Start()
 	require.NoError(t, err, "Start() should succeed")
@@ -172,7 +172,7 @@ func TestSessionFork_IndependentTmuxSession(t *testing.T) {
 
 	// Create parent session (shell tool, not claude, to avoid fork command complexity)
 	parent := NewInstance("test-fork-parent-tmux", "/tmp")
-	parent.Command = "sleep 60"
+	parent.Command = testLongRunningCommand(60)
 
 	err := parent.Start()
 	require.NoError(t, err, "parent Start() should succeed")
@@ -180,7 +180,7 @@ func TestSessionFork_IndependentTmuxSession(t *testing.T) {
 
 	// Create child session independently
 	child := NewInstance("test-fork-child-tmux", "/tmp")
-	child.Command = "sleep 60"
+	child.Command = testLongRunningCommand(60)
 
 	err = child.Start()
 	require.NoError(t, err, "child Start() should succeed")
@@ -285,7 +285,7 @@ func TestSessionAttach_RunningSessionHasTmuxSession(t *testing.T) {
 	skipIfNoTmuxServer(t)
 
 	inst := NewInstance("test-attach-running", "/tmp")
-	inst.Command = "sleep 60"
+	inst.Command = testLongRunningCommand(60)
 
 	err := inst.Start()
 	require.NoError(t, err, "Start() should succeed")

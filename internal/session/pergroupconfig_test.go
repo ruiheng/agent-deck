@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -39,7 +40,7 @@ func TestPerGroupConfig_CustomCommandGetsGroupConfigDir(t *testing.T) {
 		ClearUserConfigCache()
 	})
 
-	_ = os.Setenv("HOME", tmpHome)
+	setTestHomeEnvForTest(t, tmpHome)
 	_ = os.Unsetenv("CLAUDE_CONFIG_DIR")
 	_ = os.Unsetenv("AGENTDECK_PROFILE")
 
@@ -94,7 +95,7 @@ func TestPerGroupConfig_GroupOverrideBeatsProfile(t *testing.T) {
 		ClearUserConfigCache()
 	})
 
-	_ = os.Setenv("HOME", tmpHome)
+	setTestHomeEnvForTest(t, tmpHome)
 	_ = os.Unsetenv("CLAUDE_CONFIG_DIR")
 	_ = os.Setenv("AGENTDECK_PROFILE", "work")
 
@@ -152,7 +153,7 @@ func TestPerGroupConfig_UnknownGroupFallsThroughToProfile(t *testing.T) {
 		ClearUserConfigCache()
 	})
 
-	_ = os.Setenv("HOME", tmpHome)
+	setTestHomeEnvForTest(t, tmpHome)
 	_ = os.Unsetenv("CLAUDE_CONFIG_DIR")
 	_ = os.Setenv("AGENTDECK_PROFILE", "work")
 
@@ -204,7 +205,7 @@ func TestPerGroupConfig_CacheInvalidation(t *testing.T) {
 		ClearUserConfigCache()
 	})
 
-	_ = os.Setenv("HOME", tmpHome)
+	setTestHomeEnvForTest(t, tmpHome)
 	_ = os.Unsetenv("CLAUDE_CONFIG_DIR")
 	_ = os.Unsetenv("AGENTDECK_PROFILE")
 
@@ -271,7 +272,7 @@ func TestPerGroupConfig_EnvFileSourcedInSpawn(t *testing.T) {
 		ClearUserConfigCache()
 	})
 
-	_ = os.Setenv("HOME", tmpHome)
+	setTestHomeEnvForTest(t, tmpHome)
 	_ = os.Unsetenv("CLAUDE_CONFIG_DIR")
 	_ = os.Unsetenv("AGENTDECK_PROFILE")
 
@@ -288,7 +289,7 @@ func TestPerGroupConfig_EnvFileSourcedInSpawn(t *testing.T) {
 	}
 	cfg := fmt.Sprintf(`
 [groups."envfile-grp".claude]
-env_file = "%s"
+env_file = %q
 `, envrcPath)
 	if err := os.WriteFile(filepath.Join(agentDeckDir, "config.toml"), []byte(cfg), 0o600); err != nil {
 		t.Fatalf("write config: %v", err)
@@ -296,13 +297,14 @@ env_file = "%s"
 	ClearUserConfigCache()
 
 	wantSource := `source "` + envrcPath + `"`
+	wantEnv := shellSetEnvCommandForPowerShell("TEST_ENVFILE_VAR", "hello", true)
 
 	// Assertion A (normal-claude branch at instance.go:478):
 	// Build via the normal-claude path. Expected GREEN on first run.
 	instNormal := NewInstanceWithGroupAndTool("envfile-normal", tmpHome, "envfile-grp", "claude")
 	cmdNormal := instNormal.buildClaudeCommand("claude")
-	if !strings.Contains(cmdNormal, wantSource) {
-		t.Errorf("normal-claude spawn command missing env_file source line\nwant substring: %s\ngot: %s", wantSource, cmdNormal)
+	if !strings.Contains(cmdNormal, wantSource) && !strings.Contains(cmdNormal, wantEnv) {
+		t.Errorf("normal-claude spawn command missing env_file application\nwant substring: %s or %s\ngot: %s", wantSource, wantEnv, cmdNormal)
 	}
 
 	// Assertion B (custom-command branch at instance.go:598):
@@ -314,14 +316,14 @@ env_file = "%s"
 	instCustom := NewInstanceWithGroupAndTool("envfile-custom", tmpHome, "envfile-grp", "claude")
 	instCustom.Command = "bash -c 'exec claude'"
 	cmdCustom := instCustom.buildClaudeCommand(instCustom.Command)
-	if !strings.Contains(cmdCustom, wantSource) {
-		t.Errorf("custom-command spawn command missing env_file source line (CFG-03 gap at instance.go:598)\nwant substring: %s\ngot: %s", wantSource, cmdCustom)
+	if !strings.Contains(cmdCustom, wantSource) && !strings.Contains(cmdCustom, wantEnv) {
+		t.Errorf("custom-command spawn command missing env_file application (CFG-03 gap at instance.go:598)\nwant substring: %s or %s\ngot: %s", wantSource, wantEnv, cmdCustom)
 	}
 
 	// Assertion C (runtime proof on the custom-command path):
 	// Execute the full built command under bash with the payload swapped
 	// for an echo of the sentinel var. Only runs if assertion B passed.
-	if strings.Contains(cmdCustom, wantSource) {
+	if runtime.GOOS != "windows" && strings.Contains(cmdCustom, wantSource) {
 		// Replace the trailing payload (bash -c 'exec claude') with a sentinel echo.
 		// The source line will have run, so `echo "$TEST_ENVFILE_VAR"` should print "hello".
 		idx := strings.LastIndex(cmdCustom, "bash -c 'exec claude'")
@@ -362,7 +364,7 @@ env_file = "%s"
 	missingPath := filepath.Join(tmpHome, "does-not-exist.envrc")
 	cfgMissing := fmt.Sprintf(`
 [groups."envfile-grp".claude]
-env_file = "%s"
+env_file = %q
 `, missingPath)
 	if err := os.WriteFile(filepath.Join(agentDeckDir, "config.toml"), []byte(cfgMissing), 0o600); err != nil {
 		t.Fatalf("rewrite missing-file config: %v", err)
@@ -370,7 +372,7 @@ env_file = "%s"
 	ClearUserConfigCache()
 	instNormal3 := NewInstanceWithGroupAndTool("envfile-normal3", tmpHome, "envfile-grp", "claude")
 	cmdNormal3 := instNormal3.buildClaudeCommand("claude")
-	if !strings.Contains(cmdNormal3, missingPath) {
+	if runtime.GOOS != "windows" && !strings.Contains(cmdNormal3, missingPath) {
 		t.Errorf("missing-file (normal): cmd should still reference path %q; got: %s", missingPath, cmdNormal3)
 	}
 }
@@ -402,7 +404,7 @@ func TestPerGroupConfig_ConductorRestartPreservesConfigDir(t *testing.T) {
 		ClearUserConfigCache()
 	})
 
-	_ = os.Setenv("HOME", tmpHome)
+	setTestHomeEnvForTest(t, tmpHome)
 	_ = os.Unsetenv("CLAUDE_CONFIG_DIR")
 	_ = os.Unsetenv("AGENTDECK_PROFILE")
 
@@ -487,7 +489,7 @@ func TestPerGroupConfig_ClaudeConfigDirSourceLabel(t *testing.T) {
 			t.Fatalf("write config: %v", err)
 		}
 	}
-	_ = os.Setenv("HOME", tmpHome)
+	setTestHomeEnvForTest(t, tmpHome)
 
 	t.Run("env_var_wins", func(t *testing.T) {
 		_ = os.Setenv("CLAUDE_CONFIG_DIR", "/tmp/env-dir")
@@ -614,7 +616,7 @@ func TestPerGroupConfig_ClaudeConfigResolutionLogFormat(t *testing.T) {
 		ClearUserConfigCache()
 	})
 
-	_ = os.Setenv("HOME", tmpHome)
+	setTestHomeEnvForTest(t, tmpHome)
 	_ = os.Unsetenv("CLAUDE_CONFIG_DIR")
 	_ = os.Unsetenv("AGENTDECK_PROFILE")
 

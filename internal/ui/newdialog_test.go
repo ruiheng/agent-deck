@@ -195,12 +195,12 @@ func TestNewDialog_MalformedPathFix(t *testing.T) {
 		{
 			name:     "normal tilde path",
 			input:    "~/projects/myapp",
-			expected: home + "/projects/myapp",
+			expected: filepath.Join(home, "projects", "myapp"),
 		},
 		{
 			name:     "malformed path with cwd prefix",
 			input:    "/Users/someone/claude-deck~/projects/myapp",
-			expected: home + "/projects/myapp",
+			expected: filepath.Join(home, "projects", "myapp"),
 		},
 		{
 			name:     "already expanded path",
@@ -215,7 +215,7 @@ func TestNewDialog_MalformedPathFix(t *testing.T) {
 		{
 			name:     "malformed path with different prefix",
 			input:    "/some/random/path~/other/path",
-			expected: home + "/other/path",
+			expected: filepath.Join(home, "other", "path"),
 		},
 	}
 

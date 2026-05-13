@@ -379,12 +379,10 @@ func TestGroupNav_EvalHarness_RendersAndLandsOnRightSession(t *testing.T) {
 func TestNavHint_ShownOnFirstLaunch_DismissedAfterKeypress(t *testing.T) {
 	// Isolate HOME and disable the test-profile bypass so the hint code runs.
 	tmpHome := t.TempDir()
-	origHome := os.Getenv("HOME")
 	origProfile := os.Getenv("AGENTDECK_PROFILE")
-	os.Setenv("HOME", tmpHome)
+	setUITestHome(t, tmpHome)
 	os.Unsetenv("AGENTDECK_PROFILE")
 	t.Cleanup(func() {
-		os.Setenv("HOME", origHome)
 		os.Setenv("AGENTDECK_PROFILE", origProfile)
 	})
 
@@ -393,6 +391,7 @@ func TestNavHint_ShownOnFirstLaunch_DismissedAfterKeypress(t *testing.T) {
 	}
 
 	home := NewHome()
+	cleanupHomeStorage(t, home)
 	home.width = 120
 	home.height = 40
 	home.initialLoading = false
@@ -426,12 +425,10 @@ func TestNavHint_ShownOnFirstLaunch_DismissedAfterKeypress(t *testing.T) {
 // on subsequent launches (sentinel already present).
 func TestNavHint_SkippedWhenSentinelExists(t *testing.T) {
 	tmpHome := t.TempDir()
-	origHome := os.Getenv("HOME")
 	origProfile := os.Getenv("AGENTDECK_PROFILE")
-	os.Setenv("HOME", tmpHome)
+	setUITestHome(t, tmpHome)
 	os.Unsetenv("AGENTDECK_PROFILE")
 	t.Cleanup(func() {
-		os.Setenv("HOME", origHome)
 		os.Setenv("AGENTDECK_PROFILE", origProfile)
 	})
 
@@ -444,6 +441,7 @@ func TestNavHint_SkippedWhenSentinelExists(t *testing.T) {
 	}
 
 	home := NewHome()
+	cleanupHomeStorage(t, home)
 	if home.navHintActive {
 		t.Error("navHintActive should be false when sentinel exists")
 	}

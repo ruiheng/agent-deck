@@ -92,12 +92,22 @@ func TestSessionMove_UpdatesPath(t *testing.T) {
 	}
 
 	listJSON := readSessionsJSON(t, home)
-	if !strings.Contains(listJSON, newPath) {
-		t.Errorf("session path did not update to %q; list:\n%s", newPath, listJSON)
+	var sessions []struct {
+		ID   string `json:"id"`
+		Path string `json:"path"`
 	}
-	if strings.Contains(listJSON, oldPath) {
-		t.Errorf("session path still contains old path %q; list:\n%s", oldPath, listJSON)
+	if err := json.Unmarshal([]byte(listJSON), &sessions); err != nil {
+		t.Fatalf("parse list response: %v\n%s", err, listJSON)
 	}
+	for _, sess := range sessions {
+		if sess.ID == id {
+			if sess.Path != newPath {
+				t.Errorf("session path = %q, want %q; list:\n%s", sess.Path, newPath, listJSON)
+			}
+			return
+		}
+	}
+	t.Fatalf("session %s not found after move; list:\n%s", id, listJSON)
 }
 
 // TestSessionMove_MigratesClaudeProjectDir asserts the value-add over plain

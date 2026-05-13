@@ -3,6 +3,7 @@ package session
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -36,6 +37,10 @@ func TestGetGeminiConfigDir_Override(t *testing.T) {
 }
 
 func TestHashProjectPath(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("verified fixture hashes a POSIX absolute path")
+	}
+
 	tests := []struct {
 		path     string
 		expected string

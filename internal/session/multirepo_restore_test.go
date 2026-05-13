@@ -65,9 +65,7 @@ func multiRepoFixtureDirs(t *testing.T, home string) (string, string) {
 		parent = resolved
 	}
 	symlink := filepath.Join(parent, "repo1")
-	if err := os.Symlink(srcRepo, symlink); err != nil {
-		t.Fatalf("symlink project: %v", err)
-	}
+	requireTestSymlink(t, srcRepo, symlink)
 	return parent, symlink
 }
 

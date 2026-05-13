@@ -345,6 +345,9 @@ func (a *GmailAdapter) renewalLoop(ctx context.Context) {
 		}
 
 		if err := a.registerWatch(ctx); err != nil {
+			if ctx.Err() != nil {
+				return
+			}
 			slog.Error("gmail: renewal failed", slog.String("err", err.Error()))
 			a.mu.Lock()
 			a.lastHealthErr = err

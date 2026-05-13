@@ -24,6 +24,7 @@ import (
 // tmux sessions. Creates 5 sessions, kills them all, then scans tmux for any
 // sessions matching the test prefix.
 func TestCleanup_NoOrphanedTmuxAfterKill(t *testing.T) {
+	skipWindowsPsmuxStress(t)
 	h := NewTmuxHarness(t)
 
 	const count = 5
@@ -31,8 +32,8 @@ func TestCleanup_NoOrphanedTmuxAfterKill(t *testing.T) {
 	instances := make([]*session.Instance, 0, count)
 
 	for i := range count {
-		inst := h.CreateSession(fmt.Sprintf("cleanup-%02d", i), "/tmp")
-		inst.Command = "sleep 60"
+		inst := h.CreateSession(fmt.Sprintf("cleanup-%02d", i), testWorkDir(t))
+		inst.Command = longRunningCommand()
 		require.NoError(t, inst.Start(), "session %d Start() should succeed", i)
 		instances = append(instances, inst)
 	}
@@ -73,11 +74,12 @@ func TestCleanup_NoOrphanedTmuxAfterKill(t *testing.T) {
 // TestCleanup_GoroutineStability verifies that starting and stopping sessions
 // does not leak goroutines. Measures goroutine count before and after.
 func TestCleanup_GoroutineStability(t *testing.T) {
+	skipWindowsPsmuxStress(t)
 	h := NewTmuxHarness(t)
 
 	// Warm up: let any lazy initialization settle
-	warmup := h.CreateSession("goroutine-warmup", "/tmp")
-	warmup.Command = "sleep 5"
+	warmup := h.CreateSession("goroutine-warmup", testWorkDir(t))
+	warmup.Command = longRunningCommand()
 	require.NoError(t, warmup.Start())
 	WaitForCondition(t, 5*time.Second, 200*time.Millisecond,
 		"warmup session to exist",
@@ -91,8 +93,8 @@ func TestCleanup_GoroutineStability(t *testing.T) {
 
 	// Create, use, and destroy 3 sessions
 	for i := range 3 {
-		inst := h.CreateSession(fmt.Sprintf("goroutine-%d", i), "/tmp")
-		inst.Command = "sleep 30"
+		inst := h.CreateSession(fmt.Sprintf("goroutine-%d", i), testWorkDir(t))
+		inst.Command = longRunningCommand()
 		require.NoError(t, inst.Start())
 		WaitForCondition(t, 5*time.Second, 200*time.Millisecond,
 			fmt.Sprintf("session %d to exist", i),
@@ -121,10 +123,11 @@ func TestCleanup_GoroutineStability(t *testing.T) {
 // the session correctly reports StatusStopped and Exists() returns false,
 // with no stale cached state.
 func TestCleanup_KilledSessionReportsCorrectStatus(t *testing.T) {
+	skipWindowsPsmuxStress(t)
 	h := NewTmuxHarness(t)
 
-	inst := h.CreateSession("cleanup-status", "/tmp")
-	inst.Command = "sleep 60"
+	inst := h.CreateSession("cleanup-status", testWorkDir(t))
+	inst.Command = longRunningCommand()
 	require.NoError(t, inst.Start())
 
 	WaitForCondition(t, 5*time.Second, 200*time.Millisecond,
@@ -158,6 +161,7 @@ func TestCleanup_KilledSessionReportsCorrectStatus(t *testing.T) {
 // TestStress_ConcurrentStartStop starts 5 sessions concurrently, then stops
 // them all concurrently. Verifies no deadlocks or races under -race detector.
 func TestStress_ConcurrentStartStop(t *testing.T) {
+	skipWindowsPsmuxStress(t)
 	h := NewTmuxHarness(t)
 
 	const sessionCount = 5
@@ -165,8 +169,8 @@ func TestStress_ConcurrentStartStop(t *testing.T) {
 
 	// Create all instances first (serial, fast)
 	for i := range sessionCount {
-		instances[i] = h.CreateSession(fmt.Sprintf("stress-startstop-%02d", i), "/tmp")
-		instances[i].Command = "sleep 60"
+		instances[i] = h.CreateSession(fmt.Sprintf("stress-startstop-%02d", i), testWorkDir(t))
+		instances[i].Command = longRunningCommand()
 	}
 
 	// Start all concurrently
@@ -210,14 +214,15 @@ func TestStress_ConcurrentStartStop(t *testing.T) {
 // This is a stronger version of TestEdge_ConcurrentPolling with more aggressive
 // concurrent pressure.
 func TestStress_ConcurrentUpdateStatus(t *testing.T) {
+	skipWindowsPsmuxStress(t)
 	h := NewTmuxHarness(t)
 
 	const sessionCount = 6
 	instances := make([]*session.Instance, 0, sessionCount)
 
 	for i := range sessionCount {
-		inst := h.CreateSession(fmt.Sprintf("stress-update-%02d", i), "/tmp")
-		inst.Command = "sleep 60"
+		inst := h.CreateSession(fmt.Sprintf("stress-update-%02d", i), testWorkDir(t))
+		inst.Command = longRunningCommand()
 		require.NoError(t, inst.Start())
 		instances = append(instances, inst)
 	}
@@ -262,14 +267,15 @@ func TestStress_ConcurrentUpdateStatus(t *testing.T) {
 // TestStress_ConcurrentSendAndStatus starts 5 sessions, then concurrently
 // sends messages and polls status on all of them.
 func TestStress_ConcurrentSendAndStatus(t *testing.T) {
+	skipWindowsPsmuxStress(t)
 	h := NewTmuxHarness(t)
 
 	const sessionCount = 5
 	instances := make([]*session.Instance, 0, sessionCount)
 
 	for i := range sessionCount {
-		inst := h.CreateSession(fmt.Sprintf("stress-send-%02d", i), "/tmp")
-		inst.Command = "cat" // cat echoes input, good for send verification
+		inst := h.CreateSession(fmt.Sprintf("stress-send-%02d", i), testWorkDir(t))
+		inst.Command = echoServerCommand()
 		require.NoError(t, inst.Start())
 		instances = append(instances, inst)
 	}
@@ -337,11 +343,12 @@ func TestStress_ConcurrentSendAndStatus(t *testing.T) {
 // TestStress_RapidStartStopCycle rapidly creates, starts, and kills a session
 // in a tight loop to test for state machine consistency.
 func TestStress_RapidStartStopCycle(t *testing.T) {
+	skipWindowsPsmuxStress(t)
 	h := NewTmuxHarness(t)
 
 	for cycle := range 3 {
-		inst := h.CreateSession(fmt.Sprintf("rapid-cycle-%d", cycle), "/tmp")
-		inst.Command = "sleep 30"
+		inst := h.CreateSession(fmt.Sprintf("rapid-cycle-%d", cycle), testWorkDir(t))
+		inst.Command = longRunningCommand()
 
 		require.NoError(t, inst.Start(), "cycle %d Start failed", cycle)
 
@@ -354,5 +361,12 @@ func TestStress_RapidStartStopCycle(t *testing.T) {
 			"cycle %d should be stopped after Kill", cycle)
 		assert.False(t, inst.Exists(),
 			"cycle %d tmux should not exist after Kill", cycle)
+	}
+}
+
+func skipWindowsPsmuxStress(t *testing.T) {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		t.Skip("psmux stress/load tests destabilize later live-pane integration tests on native Windows")
 	}
 }

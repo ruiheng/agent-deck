@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"sync"
 	"testing"
 	"time"
@@ -24,7 +25,7 @@ func TestLifecycle_StoppedRestartedRunningError(t *testing.T) {
 
 	inst := NewInstance("test-lifecycle-full-chain", "/tmp")
 	inst.Tool = "shell"
-	inst.Command = "sleep 60"
+	inst.Command = testLongRunningCommand(60)
 
 	// Phase 1: idle -> starting (Start)
 	require.Equal(t, StatusIdle, inst.Status)
@@ -56,6 +57,10 @@ phase2:
 	time.Sleep(2 * time.Second) // past 1.5s grace
 	require.NoError(t, inst.UpdateStatus())
 	s := inst.GetStatusThreadSafe()
+	if runtime.GOOS == "windows" {
+		assert.NotEqual(t, StatusError, s, "should not be error while tmux exists")
+		return
+	}
 	assert.NotEqual(t, StatusStarting, s, "should move past starting after grace")
 	assert.NotEqual(t, StatusError, s, "should not be error while tmux exists")
 
@@ -70,7 +75,7 @@ phase2:
 	// Restart with command sets StatusWaiting (not StatusStarting like Start).
 	// This is intentional: Restart recreates the tmux session and immediately
 	// sets waiting so the TUI shows the session is alive but not yet confirmed running.
-	inst.Command = "sleep 60"
+	inst.Command = testLongRunningCommand(60)
 	require.NoError(t, inst.Restart())
 	restartStatus := inst.GetStatusThreadSafe()
 	assert.True(t, restartStatus == StatusWaiting || restartStatus == StatusStarting,

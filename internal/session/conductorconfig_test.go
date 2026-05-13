@@ -36,7 +36,7 @@ func setupConductorTest(t *testing.T) string {
 		ClearUserConfigCache()
 	})
 
-	_ = os.Setenv("HOME", tmpHome)
+	setTestHomeEnvForTest(t, tmpHome)
 	_ = os.Unsetenv("CLAUDE_CONFIG_DIR")
 	_ = os.Unsetenv("AGENTDECK_PROFILE")
 
@@ -281,7 +281,7 @@ config_dir = "/tmp/x"
 	// 6a — normal-claude spawn path (instance.go:501)
 	inst := NewInstanceWithGroupAndTool("conductor-foo", tmpHome, "conductor", "claude")
 	cmdNormal := inst.buildClaudeCommand("claude")
-	if !strings.Contains(cmdNormal, "CLAUDE_CONFIG_DIR=/tmp/x") {
+	if !commandContainsEnvAssignment(cmdNormal, "CLAUDE_CONFIG_DIR", "/tmp/x") {
 		t.Errorf("6a normal-claude spawn missing CLAUDE_CONFIG_DIR=/tmp/x\ngot: %s", cmdNormal)
 	}
 
@@ -293,7 +293,7 @@ config_dir = "/tmp/x"
 
 	// 6c — resume/restart path (instance.go:4172) — NEW, protects milestone #8.
 	cmdResume := inst.buildClaudeResumeCommand()
-	if !strings.Contains(cmdResume, "CLAUDE_CONFIG_DIR=/tmp/x") {
+	if !commandContainsEnvAssignment(cmdResume, "CLAUDE_CONFIG_DIR", "/tmp/x") {
 		t.Errorf("6c buildClaudeResumeCommand missing CLAUDE_CONFIG_DIR=/tmp/x (milestone #8 broken)\ngot: %s", cmdResume)
 	}
 }
@@ -310,24 +310,25 @@ func TestConductorConfig_EnvFileSourced(t *testing.T) {
 	}
 	writeConductorConfig(t, tmpHome, fmt.Sprintf(`
 [conductors.foo.claude]
-env_file = "%s"
+env_file = %q
 `, envrcPath))
 
 	wantSource := `source "` + envrcPath + `"`
+	wantEnv := shellSetEnvCommandForPowerShell("CONDUCTOR_ENVFILE_SENTINEL", "present", true)
 
 	// Normal-claude spawn path
 	instNormal := NewInstanceWithGroupAndTool("conductor-foo", tmpHome, "conductor", "claude")
 	cmdNormal := instNormal.buildClaudeCommand("claude")
-	if !strings.Contains(cmdNormal, wantSource) {
-		t.Errorf("normal-claude spawn missing env_file source line\nwant substring: %s\ngot: %s", wantSource, cmdNormal)
+	if !strings.Contains(cmdNormal, wantSource) && !strings.Contains(cmdNormal, wantEnv) {
+		t.Errorf("normal-claude spawn missing env_file application\nwant substring: %s or %s\ngot: %s", wantSource, wantEnv, cmdNormal)
 	}
 
 	// Custom-command spawn path
 	instCustom := NewInstanceWithGroupAndTool("conductor-foo", tmpHome, "conductor", "claude")
 	instCustom.Command = "bash -c 'exec claude'"
 	cmdCustom := instCustom.buildClaudeCommand(instCustom.Command)
-	if !strings.Contains(cmdCustom, wantSource) {
-		t.Errorf("custom-command spawn missing env_file source line\nwant substring: %s\ngot: %s", wantSource, cmdCustom)
+	if !strings.Contains(cmdCustom, wantSource) && !strings.Contains(cmdCustom, wantEnv) {
+		t.Errorf("custom-command spawn missing env_file application\nwant substring: %s or %s\ngot: %s", wantSource, wantEnv, cmdCustom)
 	}
 
 	// Runtime proof on custom-command path — executes the sourced envrc and

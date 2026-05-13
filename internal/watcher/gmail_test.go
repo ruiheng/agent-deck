@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -161,9 +162,8 @@ func newFakePubSub(t *testing.T) (*pstest.Server, *pubsub.Client, *pubsub.Topic,
 // watcher's on-disk directory (with meta.json later written there).
 func seedFakeOAuth(t *testing.T, watcherName string) string {
 	t.Helper()
-	tmpDir := t.TempDir()
-	t.Setenv("HOME", tmpDir)
-	dir := filepath.Join(tmpDir, ".agent-deck", "watchers", watcherName)
+	home := setWatcherTestHome(t)
+	dir := filepath.Join(home, ".agent-deck", "watchers", watcherName)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatalf("mkdir watcher dir: %v", err)
 	}
@@ -713,7 +713,7 @@ func TestGmailAdapter_OAuth_PersistsRefreshedToken(t *testing.T) {
 	if err != nil {
 		t.Fatalf("stat token.json: %v", err)
 	}
-	if mode := info.Mode().Perm(); mode != 0o600 {
+	if mode := info.Mode().Perm(); runtime.GOOS != "windows" && mode != 0o600 {
 		t.Errorf("token.json mode = %o, want 0600", mode)
 	}
 

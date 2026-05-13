@@ -10,6 +10,11 @@ import (
 )
 
 func TestMain(m *testing.M) {
+	if os.Getenv("AGENTDECK_TUI_INPUT_HELPER") == "1" {
+		runTUIInputProbe()
+		os.Exit(0)
+	}
+
 	// Git hooks export GIT_DIR/GIT_WORK_TREE; clear them so test subprocess git
 	// commands operate on their temp repos instead of the real repository.
 	testutil.UnsetGitRepoEnv()
@@ -36,7 +41,7 @@ func TestMain(m *testing.M) {
 // IMPORTANT: Only targets "agentdeck_inttest-" prefix, not broader patterns.
 // Uses dashes because tmux sanitizeName converts underscores to dashes.
 func cleanupIntegrationSessions() {
-	out, err := exec.Command("tmux", "list-sessions", "-F", "#{session_name}").Output()
+	out, err := tmuxCommand("list-sessions", "-F", "#{session_name}").Output()
 	if err != nil {
 		return
 	}
@@ -44,7 +49,7 @@ func cleanupIntegrationSessions() {
 	sessions := strings.Split(strings.TrimSpace(string(out)), "\n")
 	for _, sess := range sessions {
 		if strings.HasPrefix(sess, "agentdeck_inttest-") {
-			_ = exec.Command("tmux", "kill-session", "-t", sess).Run()
+			_ = tmuxCommand("kill-session", "-t", sess).Run()
 		}
 	}
 }
@@ -56,7 +61,7 @@ func skipIfNoTmuxServer(t *testing.T) {
 	if _, err := exec.LookPath("tmux"); err != nil {
 		t.Skip("tmux not available")
 	}
-	if err := exec.Command("tmux", "list-sessions").Run(); err != nil {
+	if err := tmuxCommand("list-sessions").Run(); err != nil {
 		t.Skip("tmux server not running")
 	}
 }

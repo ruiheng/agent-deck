@@ -231,8 +231,8 @@ func GenerateWorktreePath(repoDir, branchName, location string) string {
 	sanitized = strings.ReplaceAll(sanitized, "/", "-")
 	sanitized = strings.ReplaceAll(sanitized, " ", "-")
 
-	// Custom path: contains "/" or starts with "~"
-	if strings.Contains(location, "/") || strings.HasPrefix(location, "~") {
+	// Custom path: contains a path separator, is absolute, or starts with "~".
+	if isCustomWorktreeLocation(location) {
 		expanded := location
 		if strings.HasPrefix(expanded, "~/") {
 			if home, err := os.UserHomeDir(); err == nil {
@@ -253,6 +253,12 @@ func GenerateWorktreePath(repoDir, branchName, location string) string {
 	default: // "sibling" or empty
 		return repoDir + "-" + sanitized
 	}
+}
+
+func isCustomWorktreeLocation(location string) bool {
+	return strings.HasPrefix(location, "~") ||
+		strings.ContainsAny(location, `/\`) ||
+		filepath.IsAbs(location)
 }
 
 // CreateWorktree creates a new git worktree at worktreePath for the given branch
@@ -452,8 +458,9 @@ func GetMainWorktreePath(dir string) (string, error) {
 	}
 
 	// Normal worktree: common-dir ends in .git; strip it to get the main worktree root.
-	if strings.HasSuffix(commonDir, ".git") {
-		return strings.TrimSuffix(commonDir, string(filepath.Separator)+".git"), nil
+	commonDir = filepath.Clean(filepath.FromSlash(commonDir))
+	if filepath.Base(commonDir) == ".git" {
+		return filepath.Dir(commonDir), nil
 	}
 
 	// Already in the main repo.
