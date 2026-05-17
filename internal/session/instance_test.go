@@ -3390,7 +3390,7 @@ func TestCollectDockerEnvVars_ColorFGBGFallback(t *testing.T) {
 	require.NotEmpty(t, result["COLORFGBG"])
 }
 
-func TestPrepareCommand_WindowsWrapperUsesPowerShell(t *testing.T) {
+func TestPrepareCommand_WindowsGenericWrapperPreservesBash(t *testing.T) {
 	if runtime.GOOS != "windows" {
 		t.Skip("windows-specific wrapper behavior")
 	}
@@ -3405,7 +3405,7 @@ func TestPrepareCommand_WindowsWrapperUsesPowerShell(t *testing.T) {
 		t.Fatalf("prepareCommand() unexpected error: %v", err)
 	}
 	if !strings.Contains(wrapped, "bash -c") {
-		t.Fatalf("prepareCommand() should preserve POSIX bash wrapper on Windows, got %q", wrapped)
+		t.Fatalf("generic wrapper should preserve POSIX bash on Windows, got %q", wrapped)
 	}
 }
 
@@ -3459,9 +3459,24 @@ func TestShouldUsePowerShellCommandShell_WindowsExecutionShells(t *testing.T) {
 			want: false,
 		},
 		{
+			name: "codex local native with args uses cmd",
+			inst: &Instance{Tool: "codex", Command: "codex --model gpt-5.5 -c model_reasoning_effort=medium"},
+			want: false,
+		},
+		{
+			name: "codex local native extra-args wrapper uses cmd",
+			inst: &Instance{Tool: "codex", Wrapper: "{command} --model gpt-5.5"},
+			want: false,
+		},
+		{
 			name: "claude local native",
 			inst: &Instance{Tool: "claude"},
 			want: true,
+		},
+		{
+			name: "claude wrapper remains posix",
+			inst: &Instance{Tool: "claude", Wrapper: "{command} --extra"},
+			want: false,
 		},
 		{
 			name: "gemini local native",
@@ -3469,9 +3484,19 @@ func TestShouldUsePowerShellCommandShell_WindowsExecutionShells(t *testing.T) {
 			want: true,
 		},
 		{
+			name: "gemini wrapper remains posix",
+			inst: &Instance{Tool: "gemini", Wrapper: "{command} --extra"},
+			want: false,
+		},
+		{
 			name: "opencode local native",
 			inst: &Instance{Tool: "opencode"},
 			want: true,
+		},
+		{
+			name: "opencode wrapper remains posix",
+			inst: &Instance{Tool: "opencode", Wrapper: "{command} --extra"},
+			want: false,
 		},
 		{
 			name: "shell remains posix",
@@ -3495,7 +3520,7 @@ func TestShouldUsePowerShellCommandShell_WindowsExecutionShells(t *testing.T) {
 		},
 		{
 			name: "wrapper remains posix",
-			inst: &Instance{Tool: "codex", Wrapper: "{command}"},
+			inst: &Instance{Tool: "my-tool", Wrapper: "{command}"},
 			want: false,
 		},
 	}
@@ -3524,6 +3549,70 @@ func TestBuildCodexCommand_WindowsNativeCodexUsesCmd(t *testing.T) {
 	require.Contains(t, cmd, `&& codex --no-alt-screen`)
 	require.NotContains(t, cmd, "$env:")
 	require.NotContains(t, cmd, "pwsh -NoLogo -EncodedCommand")
+}
+
+func TestBuildCodexCommand_WindowsNativeCodexWithArgsUsesCmd(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("windows-specific behavior")
+	}
+
+	inst := &Instance{ID: "abc123", Title: "fix-clash", Tool: "codex", Command: "codex --model gpt-5.5 -c model_reasoning_effort=medium"}
+	cmd := inst.buildCodexCommand(inst.Command)
+
+	require.Contains(t, cmd, `cmd.exe /d /s /c "`)
+	require.Contains(t, cmd, `&& codex --model gpt-5.5 -c model_reasoning_effort=medium --no-alt-screen`)
+	require.NotContains(t, cmd, "bash -c")
+	require.NotContains(t, cmd, "export AGENTDECK_TOOL")
+	require.NotContains(t, cmd, "$env:")
+}
+
+func TestBuildCodexCommand_WindowsCompoundCodexCommandUsesPowerShell(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("windows-specific behavior")
+	}
+
+	inst := &Instance{ID: "abc123", Title: "compound-codex", Tool: "codex", Command: "codex; Write-Host done"}
+	cmd := inst.buildCodexCommand(inst.Command)
+
+	require.Contains(t, cmd, "$env:")
+	require.Contains(t, cmd, "codex; Write-Host done")
+	require.NotContains(t, cmd, `cmd.exe /d /s /c "`)
+	require.NotContains(t, cmd, "--no-alt-screen")
+}
+
+func TestBuildCodexCommand_WindowsCodexSubcommandsPreserveCustomCommand(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("windows-specific behavior")
+	}
+
+	for _, command := range []string{"codex exec -- echo hi", "codex login", "codex --profile work exec -- echo hi", "codex -c key=value login"} {
+		t.Run(command, func(t *testing.T) {
+			inst := &Instance{ID: "abc123", Title: "codex-subcommand", Tool: "codex", Command: command}
+			inst.CodexSessionID = "019ddde5-d48a-7f13-ae4f-880fe2c5d342"
+
+			cmd := inst.buildCodexCommand(inst.Command)
+
+			require.Contains(t, cmd, "$env:")
+			require.Contains(t, cmd, command)
+			require.NotContains(t, cmd, `cmd.exe /d /s /c "`)
+			require.NotContains(t, cmd, "--no-alt-screen")
+			require.NotContains(t, cmd, " resume "+inst.CodexSessionID)
+		})
+	}
+}
+
+func TestBuildCodexCommand_WindowsNativeCodexLeadingGlobalFlagsUsesCmd(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("windows-specific behavior")
+	}
+
+	inst := &Instance{ID: "abc123", Title: "fix-clash", Tool: "codex", Command: "codex --profile work --model gpt-5.5 -c model_reasoning_effort=medium"}
+	cmd := inst.buildCodexCommand(inst.Command)
+
+	require.Contains(t, cmd, `cmd.exe /d /s /c "`)
+	require.Contains(t, cmd, `&& codex --profile work --model gpt-5.5 -c model_reasoning_effort=medium --no-alt-screen`)
+	require.NotContains(t, cmd, "bash -c")
+	require.NotContains(t, cmd, "$env:")
 }
 
 func TestBuildCodexCommand_WindowsNativeCodexCmdPreservesEnvSources(t *testing.T) {
@@ -3779,9 +3868,112 @@ func TestBuildCodexCommand_WindowsAutoWrapperUsesNoAltScreen(t *testing.T) {
 	inst.CodexSessionID = id
 
 	cmd := inst.buildCodexCommand(inst.Command)
-	if !strings.Contains(cmd, "codex --no-alt-screen resume "+id) {
+	if !strings.Contains(cmd, "codex --no-alt-screen --model gpt-5.5 resume "+id) {
 		t.Fatalf("Windows Codex extra-args wrapper should disable alt screen for psmux, got %q", cmd)
 	}
+	if strings.Contains(cmd, "bash -c") {
+		t.Fatalf("Windows Codex extra-args wrapper should not force POSIX bash, got %q", cmd)
+	}
+}
+
+func TestPrepareCommand_WindowsCodexExtraArgsWrapperStaysCmd(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("windows-specific Codex TUI behavior")
+	}
+
+	inst := &Instance{ID: "abc123", Title: "windows-codex-extra-args", Tool: "codex", Command: "codex"}
+	inst.Wrapper = "{command} --model gpt-5.5 -c model_reasoning_effort=medium --ask-for-approval on-request"
+
+	cmd := inst.buildCodexCommand(inst.Command)
+	wrapped, _, err := inst.prepareCommand(cmd)
+	if err != nil {
+		t.Fatalf("prepareCommand() unexpected error: %v", err)
+	}
+
+	require.Contains(t, wrapped, `cmd.exe /d /s /c "`)
+	require.Contains(t, wrapped, `codex --no-alt-screen --model gpt-5.5 -c model_reasoning_effort=medium --ask-for-approval on-request`)
+	require.NotContains(t, wrapped, "bash -c")
+	require.NotContains(t, wrapped, "export AGENTDECK_TOOL")
+}
+
+func TestPrepareCommand_WindowsCodexToolDefExtraArgsWrapperStaysCmd(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("windows-specific Codex TUI behavior")
+	}
+
+	tmpDir := t.TempDir()
+	originalHome := os.Getenv("HOME")
+	os.Setenv("HOME", tmpDir)
+	defer os.Setenv("HOME", originalHome)
+	ClearUserConfigCache()
+	defer ClearUserConfigCache()
+
+	require.NoError(t, os.MkdirAll(filepath.Join(tmpDir, ".agent-deck"), 0o700))
+	require.NoError(t, SaveUserConfig(&UserConfig{
+		Tools: map[string]ToolDef{
+			"codex": {
+				Wrapper: "{command} --model gpt-5.5 -c model_reasoning_effort=medium",
+			},
+		},
+	}))
+	ClearUserConfigCache()
+
+	inst := NewInstanceWithTool("windows-codex-tooldef-extra-args", filepath.Join(tmpDir, "project"), "codex")
+
+	cmd := inst.buildCodexCommand(inst.Command)
+	wrapped, _, err := inst.prepareCommand(cmd)
+	if err != nil {
+		t.Fatalf("prepareCommand() unexpected error: %v", err)
+	}
+
+	require.Contains(t, wrapped, `cmd.exe /d /s /c "`)
+	require.Contains(t, wrapped, `codex --no-alt-screen --model gpt-5.5 -c model_reasoning_effort=medium`)
+	require.NotContains(t, wrapped, "bash -c")
+	require.NotContains(t, wrapped, "export AGENTDECK_TOOL")
+}
+
+func TestPrepareCommand_WindowsCompoundCodexExtraArgsWrapperUsesNormalWrapper(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("windows-specific Codex TUI behavior")
+	}
+
+	inst := &Instance{ID: "abc123", Title: "compound-codex-extra-args", Tool: "codex", Command: "codex; Write-Host done"}
+	inst.Wrapper = "{command} --model gpt-5.5"
+
+	cmd := inst.buildCodexCommand(inst.Command)
+	wrapped, _, err := inst.prepareCommand(cmd)
+	if err != nil {
+		t.Fatalf("prepareCommand() unexpected error: %v", err)
+	}
+
+	require.Contains(t, wrapped, "bash -c")
+	require.Contains(t, wrapped, "codex; Write-Host done")
+	require.Contains(t, wrapped, "--model gpt-5.5")
+	require.NotContains(t, wrapped, `cmd.exe /d /s /c "`)
+	require.NotContains(t, wrapped, "--no-alt-screen")
+}
+
+func TestPrepareCommand_WindowsCodexSubcommandExtraArgsWrapperUsesNormalWrapper(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("windows-specific Codex TUI behavior")
+	}
+
+	inst := &Instance{ID: "abc123", Title: "codex-exec-extra-args", Tool: "codex", Command: "codex --profile work exec -- echo hi"}
+	inst.Wrapper = "{command} --model gpt-5.5"
+	inst.CodexSessionID = "019ddde5-d48a-7f13-ae4f-880fe2c5d342"
+
+	cmd := inst.buildCodexCommand(inst.Command)
+	wrapped, _, err := inst.prepareCommand(cmd)
+	if err != nil {
+		t.Fatalf("prepareCommand() unexpected error: %v", err)
+	}
+
+	require.Contains(t, wrapped, "bash -c")
+	require.Contains(t, wrapped, "codex --profile work exec -- echo hi")
+	require.Contains(t, wrapped, "--model gpt-5.5")
+	require.NotContains(t, wrapped, `cmd.exe /d /s /c "`)
+	require.NotContains(t, wrapped, "--no-alt-screen")
+	require.NotContains(t, wrapped, " resume "+inst.CodexSessionID)
 }
 
 func TestBuildClaudeCommand_WindowsWrapperEmitsPOSIXEnv(t *testing.T) {

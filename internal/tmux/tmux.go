@@ -1848,6 +1848,9 @@ func (s *Session) Start(command string) error {
 	if err != nil {
 		return fmt.Errorf("failed to create tmux session: %w (output: %s)", err, string(output))
 	}
+	if !s.ExistsWithConfirmation() {
+		return fmt.Errorf("failed to create tmux session: tmux reported success but session %q is not reachable", s.Name)
+	}
 
 	// Register session in cache immediately to prevent race condition
 	// where Exists() returns false because cache was refreshed before session creation

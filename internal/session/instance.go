@@ -1033,6 +1033,11 @@ func (i *Instance) buildCodexCommand(baseCommand string) string {
 		command = "codex"
 	}
 	launchFlags := yoloFlag + i.resolveCodexNoAltScreenFlag(command)
+	if i.shouldFoldCodexExtraArgsWrapperIntoLaunchForCommand(command) {
+		if extraArgs := i.codexExtraArgsWrapperSuffix(); extraArgs != "" {
+			launchFlags += " " + extraArgs
+		}
+	}
 
 	// Gate local `codex resume <sid>` on rollout-file existence. If Codex died
 	// before flushing its rollout JSONL, the stored session ID is not
@@ -1052,7 +1057,7 @@ func (i *Instance) buildCodexCommand(baseCommand string) string {
 		ClearHookSessionAnchor(i.ID)
 	}
 
-	if i.CodexSessionID != "" {
+	if i.CodexSessionID != "" && shouldAppendCodexResume(command) {
 		launchCommand := fmt.Sprintf("%s%s resume %s", command, launchFlags, i.CodexSessionID)
 		if i.shouldUseWindowsCmdCommandShell(command) {
 			return shellCmdExeWrap(i.buildWindowsCmdCodexEnv(), launchCommand)
@@ -2411,12 +2416,7 @@ func (i *Instance) CanRestartGeneric() bool {
 }
 
 func (i *Instance) applyWrapper(command string) (string, error) {
-	wrapper := i.Wrapper
-	if wrapper == "" {
-		if toolDef := GetToolDef(i.Tool); toolDef != nil {
-			wrapper = toolDef.Wrapper
-		}
-	}
+	wrapper := i.effectiveWrapper()
 	if wrapper == "" {
 		return command, nil
 	}
@@ -2429,13 +2429,17 @@ func (i *Instance) applyWrapper(command string) (string, error) {
 // hasEffectiveWrapper returns true if the instance has a wrapper configured,
 // either directly on the instance or via the tool definition in config.toml.
 func (i *Instance) hasEffectiveWrapper() bool {
+	return i.effectiveWrapper() != ""
+}
+
+func (i *Instance) effectiveWrapper() string {
 	if i.Wrapper != "" {
-		return true
+		return i.Wrapper
 	}
 	if toolDef := GetToolDef(i.Tool); toolDef != nil && toolDef.Wrapper != "" {
-		return true
+		return toolDef.Wrapper
 	}
-	return false
+	return ""
 }
 
 // loadCustomPatternsFromConfig loads detection patterns from built-in defaults + config.toml
@@ -6284,9 +6288,13 @@ func (i *Instance) prepareCommand(cmd string) (string, string, error) {
 	// "bash -c '<cmd>' --flag1 --flag2" — bash treated --flag1/--flag2 as
 	// positional parameters ($0, $1, …) and the child process never saw them.
 	// See issue #601.
-	wrapped, err := i.applyWrapper(cmd)
-	if err != nil {
-		return "", "", err
+	wrapped := cmd
+	if !i.shouldFoldCodexExtraArgsWrapperIntoLaunchForCommand(i.Command) {
+		var err error
+		wrapped, err = i.applyWrapper(cmd)
+		if err != nil {
+			return "", "", err
+		}
 	}
 
 	// Wrap the fully-substituted command under bash -c when a wrapper is
@@ -6294,7 +6302,7 @@ func (i *Instance) prepareCommand(cmd string) (string, string, error) {
 	// base command from leaking into the outer shell parse, and — critically —
 	// keeps trailing wrapper-suffix flags INSIDE a single quoted argv so they
 	// reach the child process intact.
-	if i.hasEffectiveWrapper() {
+	if i.hasEffectiveWrapper() && !i.shouldFoldCodexExtraArgsWrapperIntoLaunchForCommand(i.Command) {
 		escaped := strings.ReplaceAll(wrapped, "'", "'\"'\"'")
 		wrapped = fmt.Sprintf("bash -c '%s'", escaped)
 	}
@@ -6346,10 +6354,104 @@ func (i *Instance) shouldUseWindowsCmdCommandShell(command string) bool {
 	trimmed := strings.TrimSpace(command)
 	return runtime.GOOS == "windows" &&
 		i.Tool == "codex" &&
-		(trimmed == "" || trimmed == "codex") &&
+		isCodexTUICommandInvocation(trimmed) &&
 		!i.IsSSH() &&
 		!i.IsSandboxed() &&
-		!i.hasEffectiveWrapper()
+		(!i.hasEffectiveWrapper() || i.shouldFoldCodexExtraArgsWrapperIntoLaunchForCommand(command))
+}
+
+func startsWithCommand(command, wantBase string) bool {
+	fields := strings.Fields(strings.TrimSpace(command))
+	if len(fields) == 0 {
+		return false
+	}
+	cmdToken := strings.Trim(fields[0], `"'`)
+	base := filepath.Base(cmdToken)
+	for _, suffix := range []string{".exe", ".EXE", ".cmd", ".CMD", ".bat", ".BAT"} {
+		base = strings.TrimSuffix(base, suffix)
+	}
+	return strings.EqualFold(base, wantBase)
+}
+
+func isSimpleCommandInvocation(command, wantBase string) bool {
+	fields := strings.Fields(strings.TrimSpace(command))
+	if len(fields) == 0 {
+		return false
+	}
+	for _, field := range fields {
+		switch field {
+		case ";", "|", "&&", "||", "<", ">", "2>", ">>", "2>>":
+			return false
+		}
+		if strings.ContainsAny(field, "|;&<>") {
+			return false
+		}
+	}
+	return startsWithCommand(command, wantBase)
+}
+
+func isCodexTUICommandInvocation(command string) bool {
+	trimmed := strings.TrimSpace(command)
+	if trimmed == "" {
+		return true
+	}
+	if !isSimpleCommandInvocation(trimmed, "codex") {
+		return false
+	}
+	fields := strings.Fields(trimmed)
+	firstArg := firstCodexNonFlagArg(fields[1:])
+	if firstArg == "" {
+		return true
+	}
+	return false
+}
+
+func firstCodexNonFlagArg(args []string) string {
+	for idx := 0; idx < len(args); idx++ {
+		arg := strings.Trim(args[idx], `"'`)
+		if arg == "" {
+			continue
+		}
+		if arg == "--" {
+			if idx+1 < len(args) {
+				return strings.Trim(args[idx+1], `"'`)
+			}
+			return ""
+		}
+		if strings.HasPrefix(arg, "--") {
+			if strings.Contains(arg, "=") {
+				continue
+			}
+			if codexFlagTakesValue(arg) && idx+1 < len(args) {
+				idx++
+			}
+			continue
+		}
+		if strings.HasPrefix(arg, "-") {
+			if codexFlagTakesValue(arg) && idx+1 < len(args) {
+				idx++
+			}
+			continue
+		}
+		return arg
+	}
+	return ""
+}
+
+func codexFlagTakesValue(flag string) bool {
+	switch flag {
+	case "-c", "--config", "-m", "--model", "--profile", "--sandbox", "--ask-for-approval", "--approval-policy", "--cwd":
+		return true
+	default:
+		return false
+	}
+}
+
+func shouldAppendCodexResume(command string) bool {
+	if !startsWithCommand(command, "codex") {
+		return true
+	}
+	return isCodexTUICommandInvocation(command)
 }
 
 func (i *Instance) shouldUsePowerShellCommandShellForStart(commandRequiresPOSIXShell bool) bool {
@@ -6379,7 +6481,7 @@ func (i *Instance) shouldValidateCodexResumeOnHost(command string) bool {
 func (i *Instance) resolveCodexNoAltScreenFlag(command string) string {
 	if runtime.GOOS != "windows" ||
 		i.Tool != "codex" ||
-		strings.TrimSpace(command) != "codex" ||
+		!isCodexTUICommandInvocation(command) ||
 		i.IsSSH() ||
 		i.IsSandboxed() ||
 		(i.hasEffectiveWrapper() && !i.hasCodexExtraArgsWrapper()) {
@@ -6389,8 +6491,25 @@ func (i *Instance) resolveCodexNoAltScreenFlag(command string) string {
 }
 
 func (i *Instance) hasCodexExtraArgsWrapper() bool {
-	wrapper := strings.TrimSpace(i.Wrapper)
+	wrapper := strings.TrimSpace(i.effectiveWrapper())
 	return strings.HasPrefix(wrapper, wrapperPlaceholder+" ")
+}
+
+func (i *Instance) shouldFoldCodexExtraArgsWrapperIntoLaunchForCommand(command string) bool {
+	trimmed := strings.TrimSpace(command)
+	return runtime.GOOS == "windows" &&
+		i.Tool == "codex" &&
+		isCodexTUICommandInvocation(trimmed) &&
+		!i.IsSSH() &&
+		!i.IsSandboxed() &&
+		i.hasCodexExtraArgsWrapper()
+}
+
+func (i *Instance) codexExtraArgsWrapperSuffix() string {
+	if !i.hasCodexExtraArgsWrapper() {
+		return ""
+	}
+	return strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(i.effectiveWrapper()), wrapperPlaceholder))
 }
 
 // terminalEnvVars are always passed through to containers for proper UI/theming.

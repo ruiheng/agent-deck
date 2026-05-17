@@ -21,6 +21,49 @@ import (
 // With cooldown=0, cooldown is always "expired" so tests still pass.
 const activityCooldown = 0 * time.Millisecond
 
+func TestStartReturnsErrorWhenCreatedSessionUnreachable(t *testing.T) {
+	dir := t.TempDir()
+	if runtime.GOOS == "windows" {
+		writeTestExecutable(t, filepath.Join(dir, "tmux.cmd"), `@echo off
+if "%1"=="new-session" exit /b 0
+if "%1"=="has-session" exit /b 1
+echo unexpected command: %* 1>&2
+exit /b 1
+`)
+	} else {
+		writeTestExecutable(t, filepath.Join(dir, "tmux"), `#!/bin/sh
+case "$1" in
+  new-session) exit 0 ;;
+  has-session) exit 1 ;;
+esac
+printf 'unexpected command: %s\n' "$*" >&2
+exit 1
+`)
+	}
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	s := NewSession("unreachable", t.TempDir())
+	err := s.Start("")
+	if err == nil {
+		t.Fatal("Start() returned nil for unreachable tmux session")
+	}
+	if !strings.Contains(err.Error(), "reported success") {
+		t.Fatalf("Start() error = %q, want reported-success diagnostic", err.Error())
+	}
+}
+
+func writeTestExecutable(t *testing.T, path, content string) {
+	t.Helper()
+	if err := os.WriteFile(path, []byte(content), 0o755); err != nil {
+		t.Fatalf("write fake executable: %v", err)
+	}
+	if runtime.GOOS != "windows" {
+		if err := os.Chmod(path, 0o755); err != nil {
+			t.Fatalf("chmod fake executable: %v", err)
+		}
+	}
+}
+
 func TestSanitizeName(t *testing.T) {
 	tests := []struct {
 		input    string
