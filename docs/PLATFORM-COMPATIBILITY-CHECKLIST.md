@@ -266,6 +266,19 @@ Important differences observed on Windows:
   For Codex on psmux, verify by pane content or attach behavior: seeing
   `PS <path>>` means restart produced a shell, regardless of stored
   `CodexSessionID`.
+- Long-idle native Windows `psmux` attach clients can become unresponsive even
+  outside Agent Deck. Reproduced with a plain
+  `tmux attach-session -t agentdeck_test-roundtable_812b2b9d` window left idle
+  from 2026-05-21 to 2026-05-23: the standalone attach window stopped accepting
+  input while Agent Deck itself, when detached, stayed responsive. Process
+  inspection showed the plain attach client still alive (`tmux attach-session`,
+  no `-C`), the psmux server still controllable, and the target pane in
+  `copy-mode-vi`; an external `tmux send-keys ... C-c` moved the pane back to
+  `root`. Treat this as an unresolved psmux/Windows Terminal/ConPTY attach-path
+  compatibility issue, not as proof of an Agent Deck Bubble Tea deadlock. If a
+  user reports "TUI hung after being attached overnight", first distinguish
+  whether Agent Deck is detached or blocked inside an attach subprocess, then
+  inspect the psmux client/pane state before changing Agent Deck code.
 
 Do not chase these by adding arbitrary sleeps. Prefer a stronger readiness
 signal, bounded retry around the operation that actually matters, or a Windows
@@ -352,6 +365,12 @@ Checklist:
   console handles on psmux.
 - If failure detection needs output, prefer separate non-interactive probes or
   bounded diagnostics; do not compromise the interactive attach handle path.
+- Do not assume every long-idle attach hang is caused by Agent Deck's TUI loop.
+  A standalone psmux `tmux attach-session` window has been observed to become
+  unresponsive after being left attached for days. Killing only the attach client
+  process, or externally forcing the pane out of copy mode with `send-keys C-c`,
+  can recover without killing the tmux session. This is a diagnostic/recovery
+  fact, not a finished product fix.
 
 ## Preview And Status Capture
 
