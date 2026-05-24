@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 
 	"github.com/asheshgoplani/agent-deck/internal/session"
@@ -123,14 +124,34 @@ func splitFirstWord(raw string) (string, string) {
 	return s, ""
 }
 
-// resolveGroupSelection applies parent-group inheritance rules.
-// If the user explicitly provided -g/--group, keep that value.
-// Otherwise inherit the parent's group.
-func resolveGroupSelection(currentGroup, parentGroup string, explicitGroupProvided bool) string {
+// resolveGroupSelection picks the group for a new session using a fixed
+// priority order. Priority (issue #972):
+//  1. Explicit -g/--group always wins.
+//  2. Otherwise the cwd-derived project group wins.
+//  3. Parent-session group is the fallback only when no cwd-derived group is
+//     available (e.g. an empty project path mapping).
+//
+// Prior to #972 step 2 did not exist, so every conductor-spawned child
+// silently inherited the conductor's `conductor` group.
+func resolveGroupSelection(currentGroup, cwdDerivedGroup, parentGroup string, explicitGroupProvided bool) string {
 	if explicitGroupProvided {
 		return currentGroup
 	}
+	if cwdDerivedGroup != "" {
+		return cwdDerivedGroup
+	}
 	return parentGroup
+}
+
+// resolveAddPath resolves the user-provided positional path arg for `agent-deck add`.
+// Handles ".", "~", "~/foo", "$VAR/foo", and relative/absolute paths uniformly.
+// session.ExpandPath runs first so a literal tilde from a non-expanding shell
+// (e.g. SSH-driven invocation) reaches a real home directory before Abs.
+func resolveAddPath(rawPathArg string) (string, error) {
+	if rawPathArg == "." {
+		return os.Getwd()
+	}
+	return filepath.Abs(session.ExpandPath(rawPathArg))
 }
 
 // CLIOutput handles consistent output formatting across all CLI commands
@@ -358,6 +379,8 @@ func StatusString(status session.Status) string {
 		return "error"
 	case session.StatusStopped:
 		return "stopped"
+	case session.StatusQueued:
+		return "queued"
 	default:
 		return "unknown"
 	}

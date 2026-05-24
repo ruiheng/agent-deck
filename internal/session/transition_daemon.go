@@ -15,6 +15,13 @@ const (
 	notifyPollMedium = 2 * time.Second
 	notifyPollSlow   = 3 * time.Second
 	hookFreshWindow  = 45 * time.Second
+
+	// inboxTTLSweepInterval rate-limits the per-process TTL sweep over
+	// every inbox file. Issue #962 variant: without a periodic sweep,
+	// the cleanup-on-success path alone can't reach entries whose
+	// children never transition again. One pass per hour keeps the
+	// disk churn negligible while bounding inbox size to TTL+1h.
+	inboxTTLSweepInterval = time.Hour
 )
 
 type hookTransitionCandidate struct {
@@ -31,6 +38,11 @@ type TransitionDaemon struct {
 
 	lastStatus  map[string]map[string]string
 	initialized map[string]bool
+
+	// lastInboxTTLSweep tracks the most recent SweepInboxByTTL call so
+	// the daemon runs it at most once per inboxTTLSweepInterval. Zero
+	// means "never run" — the first SyncOnce pass will perform it.
+	lastInboxTTLSweep time.Time
 }
 
 func NewTransitionDaemon() *TransitionDaemon {
@@ -80,7 +92,24 @@ func (d *TransitionDaemon) SyncOnce(_ context.Context) time.Duration {
 			nextInterval = interval
 		}
 	}
+
+	d.maybeSweepInboxTTL()
+
 	return nextInterval
+}
+
+// maybeSweepInboxTTL invokes SweepInboxByTTL when more than
+// inboxTTLSweepInterval has elapsed since the last call. Issue #962
+// variant: prevents inbox-file growth from children that never see a
+// later transition (the cleanup-on-success path alone can't reach
+// them).
+func (d *TransitionDaemon) maybeSweepInboxTTL() {
+	now := time.Now()
+	if !d.lastInboxTTLSweep.IsZero() && now.Sub(d.lastInboxTTLSweep) < inboxTTLSweepInterval {
+		return
+	}
+	d.lastInboxTTLSweep = now
+	_, _ = SweepInboxByTTL(InboxTTL())
 }
 
 func profilesForTransitionDaemon() []string {
@@ -175,10 +204,7 @@ func (d *TransitionDaemon) syncProfile(profile string) time.Duration {
 			continue
 		}
 		inst := byID[id]
-		if inst == nil {
-			continue
-		}
-		if !notifyEnabled || inst.NoTransitionNotify {
+		if !notifyEnabled || !instanceAcceptsTransitionEvents(inst) {
 			continue
 		}
 		event := TransitionNotificationEvent{
@@ -188,6 +214,7 @@ func (d *TransitionDaemon) syncProfile(profile string) time.Duration {
 			FromStatus:     from,
 			ToStatus:       to,
 			Timestamp:      time.Now(),
+			LastOutputHash: transitionEventOutputHash(inst),
 		}
 		_ = d.notifier.NotifyTransition(event)
 	}
@@ -340,10 +367,7 @@ func (d *TransitionDaemon) emitHookTransitionCandidates(
 	notifyEnabled := GetNotificationsSettings().GetTransitionEventsEnabled()
 	for id, candidate := range candidates {
 		inst := byID[id]
-		if inst == nil {
-			continue
-		}
-		if !notifyEnabled || inst.NoTransitionNotify {
+		if !notifyEnabled || !instanceAcceptsTransitionEvents(inst) {
 			continue
 		}
 
@@ -371,6 +395,7 @@ func (d *TransitionDaemon) emitHookTransitionCandidates(
 			FromStatus:     string(StatusRunning),
 			ToStatus:       to,
 			Timestamp:      candidate.Timestamp,
+			LastOutputHash: transitionEventOutputHash(inst),
 		}
 		_ = d.notifier.NotifyTransition(event)
 	}

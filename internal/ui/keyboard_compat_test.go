@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/asheshgoplani/agent-deck/internal/termreply"
+	tea "github.com/charmbracelet/bubbletea"
 )
 
 type chunkedReader struct {
@@ -127,6 +128,16 @@ func TestParseCSIuCtrlA(t *testing.T) {
 	}
 }
 
+func TestParseCSIu_ShiftTab(t *testing.T) {
+	result := ParseCSIu([]byte("\x1b[9;2u"))
+	if result == nil {
+		t.Fatal("expected non-nil result for Shift+Tab")
+	}
+	if result.Type != tea.KeyShiftTab {
+		t.Fatalf("Shift+Tab type = %v, want %v", result.Type, tea.KeyShiftTab)
+	}
+}
+
 // TestDisableKittyKeyboard tests that DisableKittyKeyboard writes the correct escape sequence.
 func TestDisableKittyKeyboard(t *testing.T) {
 	var buf bytes.Buffer
@@ -183,6 +194,18 @@ func TestCSIuReaderPassesCSIuShiftM(t *testing.T) {
 	}
 	if string(out) != "M" {
 		t.Errorf("CSIuReader translated %q to %q, want %q", input, string(out), "M")
+	}
+}
+
+func TestCSIuReader_ShiftTab(t *testing.T) {
+	input := "\x1b[9;2u"
+	r := NewCSIuReader(bytes.NewReader([]byte(input)))
+	out, err := io.ReadAll(r)
+	if err != nil {
+		t.Fatalf("ReadAll error: %v", err)
+	}
+	if string(out) != "\x1b[Z" {
+		t.Errorf("CSIuReader translated %q to %q, want %q", input, string(out), "\x1b[Z")
 	}
 }
 
@@ -345,6 +368,16 @@ func TestParseModifyOtherKeys(t *testing.T) {
 	}
 }
 
+func TestParseModifyOtherKeys_ShiftTab(t *testing.T) {
+	result := ParseModifyOtherKeys([]byte("\x1b[27;2;9~"))
+	if result == nil {
+		t.Fatal("expected non-nil result for Shift+Tab")
+	}
+	if result.Type != tea.KeyShiftTab {
+		t.Fatalf("Shift+Tab type = %v, want %v", result.Type, tea.KeyShiftTab)
+	}
+}
+
 // TestCSIuReaderModifyOtherKeys verifies the reader translates modifyOtherKeys sequences.
 func TestCSIuReaderModifyOtherKeys(t *testing.T) {
 	// Shift+S via modifyOtherKeys: ESC[27;2;83~
@@ -356,6 +389,18 @@ func TestCSIuReaderModifyOtherKeys(t *testing.T) {
 	}
 	if string(out) != "S" {
 		t.Errorf("CSIuReader modifyOtherKeys: got %q, want %q", string(out), "S")
+	}
+}
+
+func TestCSIuReaderModifyOtherKeys_ShiftTab(t *testing.T) {
+	input := "\x1b[27;2;9~"
+	r := NewCSIuReader(bytes.NewReader([]byte(input)))
+	out, err := io.ReadAll(r)
+	if err != nil {
+		t.Fatalf("ReadAll error: %v", err)
+	}
+	if string(out) != "\x1b[Z" {
+		t.Errorf("CSIuReader translated %q to %q, want %q", input, string(out), "\x1b[Z")
 	}
 }
 
@@ -679,5 +724,175 @@ func TestRestoreLegacyKeyboardCmd(t *testing.T) {
 	want := "\x1b[<u"
 	if got != want {
 		t.Errorf("cmd() wrote %q to writer, want %q (Kitty pop sequence)", got, want)
+	}
+}
+
+// TestCSIuReader_SS3HomeEnd covers the SS3 application-mode Home/End rewrite.
+// iTerm2's default macOS profile emits Home/End as ESC OH / ESC OF (SS3),
+// which Bubble Tea v1.3.10's escSeq table does not decode. The csiuReader
+// rewrites only these two sequences to their CSI equivalents ESC [H / ESC [F.
+// All other SS3 sequences (arrows ESC OA-D, F1-F4 ESC OP-S) must pass through
+// unchanged because Bubble Tea handles them natively.
+func TestCSIuReader_SS3HomeEnd(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{"SS3 Home rewrites to CSI H", "\x1bOH", "\x1b[H"},
+		{"SS3 End rewrites to CSI F", "\x1bOF", "\x1b[F"},
+		{"SS3 up arrow passes through", "\x1bOA", "\x1bOA"},
+		{"SS3 down arrow passes through", "\x1bOB", "\x1bOB"},
+		{"SS3 right arrow passes through", "\x1bOC", "\x1bOC"},
+		{"SS3 left arrow passes through", "\x1bOD", "\x1bOD"},
+		{"SS3 F1 passes through", "\x1bOP", "\x1bOP"},
+		{"SS3 F2 passes through", "\x1bOQ", "\x1bOQ"},
+		{"SS3 F3 passes through", "\x1bOR", "\x1bOR"},
+		{"SS3 F4 passes through", "\x1bOS", "\x1bOS"},
+		{"mixed: legacy byte, SS3 Home, SS3 End, legacy byte",
+			"j\x1bOH\x1bOFq", "j\x1b[H\x1b[Fq"},
+		{"SS3 Home followed by CSI PgUp (known-working)",
+			"\x1bOH\x1b[5~", "\x1b[H\x1b[5~"},
+		{"SS3 Home next to non-SS3 ESC (bare ESC preserved)",
+			"\x1bOH\x1bq", "\x1b[H\x1bq"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			r := NewCSIuReader(bytes.NewReader([]byte(tt.input)))
+			out, err := io.ReadAll(r)
+			if err != nil {
+				t.Fatalf("ReadAll error: %v", err)
+			}
+			if string(out) != tt.want {
+				t.Errorf("CSIuReader(%q) = %q, want %q", tt.input, string(out), tt.want)
+			}
+		})
+	}
+}
+
+// TestCSIuReader_SS3HomeEnd_ChunkedRead verifies that an SS3 Home/End sequence
+// split across two Read() calls (e.g. ESC O arrives in chunk 1, H in chunk 2)
+// is still rewritten correctly. The translator must buffer the partial ESC O
+// until the third byte is available.
+func TestCSIuReader_SS3HomeEnd_ChunkedRead(t *testing.T) {
+	tests := []struct {
+		name   string
+		chunks [][]byte
+		want   string
+	}{
+		{
+			"SS3 Home split between ESC O and H",
+			[][]byte{[]byte("\x1bO"), []byte("H")},
+			"\x1b[H",
+		},
+		{
+			"SS3 End split between ESC O and F",
+			[][]byte{[]byte("\x1bO"), []byte("F")},
+			"\x1b[F",
+		},
+		{
+			"SS3 Home split between ESC and OH",
+			[][]byte{[]byte("\x1b"), []byte("OH")},
+			"\x1b[H",
+		},
+		{
+			"SS3 passthrough (F1) split between ESC O and P",
+			[][]byte{[]byte("\x1bO"), []byte("P")},
+			"\x1bOP",
+		},
+		{
+			"mixed stream with SS3 Home at chunk boundary",
+			[][]byte{[]byte("j\x1bO"), []byte("Hq")},
+			"j\x1b[Hq",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			r := NewCSIuReader(&chunkedReader{chunks: tt.chunks})
+			out, err := io.ReadAll(r)
+			if err != nil {
+				t.Fatalf("ReadAll error: %v", err)
+			}
+			if string(out) != tt.want {
+				t.Errorf("chunked CSIuReader = %q, want %q", string(out), tt.want)
+			}
+		})
+	}
+}
+
+// TestCSIuReader_StandaloneEsc_PollTimeout_FlushedBeforeNextKey verifies that a
+// lone ESC is flushed to the caller without waiting for the next keypress when
+// the poll function reports no data within the timeout. This is the fix for the
+// "UI stuck / Esc ignored" bug: previously the ESC was held in inBuf until
+// another byte arrived, making it appear the first Esc did nothing.
+func TestCSIuReader_StandaloneEsc_PollTimeout_FlushedBeforeNextKey(t *testing.T) {
+	r := &csiuReader{
+		src:    &chunkedReader{chunks: [][]byte{[]byte("\x1b"), []byte("a")}},
+		inBuf:  make([]byte, 0, 256),
+		pollFn: func(time.Duration) bool { return false }, // simulate timeout: no sequence follows
+	}
+
+	buf := make([]byte, 10)
+
+	// First Read: ESC must be returned immediately without waiting for 'a'.
+	n, err := r.Read(buf)
+	if err != nil {
+		t.Fatalf("Read 1 error: %v", err)
+	}
+	if n != 1 || buf[0] != 0x1b {
+		t.Fatalf("Read 1: expected lone ESC (0x1b), got %q (n=%d)", buf[:n], n)
+	}
+
+	// Second Read: 'a' follows as a separate event.
+	n, err = r.Read(buf)
+	if err != nil {
+		t.Fatalf("Read 2 error: %v", err)
+	}
+	if n != 1 || buf[0] != 'a' {
+		t.Fatalf("Read 2: expected 'a', got %q (n=%d)", buf[:n], n)
+	}
+}
+
+// TestCSIuReader_EscThenCSI_PollReady_BundledAsSequence verifies that when the
+// poll function reports data ready (bytes follow immediately), the lone ESC is
+// NOT flushed — instead it is bundled with the incoming bytes so that
+// sequences like ESC [ A (up-arrow) are correctly emitted as one unit.
+func TestCSIuReader_EscThenCSI_PollReady_BundledAsSequence(t *testing.T) {
+	r := &csiuReader{
+		src:    &chunkedReader{chunks: [][]byte{[]byte("\x1b"), []byte("[A")}},
+		inBuf:  make([]byte, 0, 256),
+		pollFn: func(time.Duration) bool { return true }, // sequence bytes follow immediately
+	}
+
+	out, err := io.ReadAll(r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(out) != "\x1b[A" {
+		t.Errorf("got %q, want %q (ESC + CSI should be bundled when poll is ready)", string(out), "\x1b[A")
+	}
+}
+
+// TestCSIuReader_DoubleEsc_PollTimeout_BothFlushed verifies that pressing Esc
+// twice delivers two separate ESC bytes, each flushed on its own Read().
+func TestCSIuReader_DoubleEsc_PollTimeout_BothFlushed(t *testing.T) {
+	r := &csiuReader{
+		src:    &chunkedReader{chunks: [][]byte{[]byte("\x1b"), []byte("\x1b")}},
+		inBuf:  make([]byte, 0, 256),
+		pollFn: func(time.Duration) bool { return false },
+	}
+
+	buf := make([]byte, 10)
+
+	n, _ := r.Read(buf)
+	if n != 1 || buf[0] != 0x1b {
+		t.Fatalf("first ESC: got %q (n=%d)", buf[:n], n)
+	}
+
+	n, _ = r.Read(buf)
+	if n != 1 || buf[0] != 0x1b {
+		t.Fatalf("second ESC: got %q (n=%d)", buf[:n], n)
 	}
 }

@@ -617,6 +617,7 @@ func TestDetectToolFromCommand(t *testing.T) {
 		{name: "opencode", command: "open-code --continue", want: "opencode"},
 		{name: "codex", command: "codex --dangerously-bypass-approvals-and-sandbox", want: "codex"},
 		{name: "pi", command: "pi --model fast", want: "pi"},
+		{name: "cursor", command: "cursor agent", want: "cursor"},
 		{name: "shell command", command: "npm run dev", want: ""},
 		{name: "empty", command: "", want: ""},
 	}
@@ -2309,35 +2310,7 @@ func TestSessionLogFile(t *testing.T) {
 	assert.True(t, strings.HasSuffix(logFile, ".log"))
 }
 
-func TestSession_SetAndGetEnvironment(t *testing.T) {
-	skipIfNoTmuxServer(t)
-
-	// Create a test session
-	sess := NewSession("env-test", "/tmp")
-
-	// Start the session (required for environment to work)
-	err := sess.Start("")
-	if err != nil {
-		t.Fatalf("Failed to start session: %v", err)
-	}
-	defer func() { _ = sess.Kill() }()
-
-	// Test setting environment
-	err = sess.SetEnvironment("TEST_VAR", "test_value_123")
-	if err != nil {
-		t.Fatalf("SetEnvironment failed: %v", err)
-	}
-
-	// Test getting environment
-	value, err := sess.GetEnvironment("TEST_VAR")
-	if err != nil {
-		t.Fatalf("GetEnvironment failed: %v", err)
-	}
-
-	if value != "test_value_123" {
-		t.Errorf("GetEnvironment = %q, want %q", value, "test_value_123")
-	}
-}
+// TestSession_SetAndGetEnvironment moved to tmux_hostsensitive_test.go (#969).
 
 func TestSession_GetEnvironment_NotFound(t *testing.T) {
 	skipIfNoTmuxServer(t)
@@ -2554,6 +2527,34 @@ func TestSession_MouseMode_EnableMouseMode_Disabled_Integration(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "off", strings.TrimSpace(string(out)),
 		"EnableMouseMode must respect SetMouse(false) and not re-enable mouse")
+}
+
+// TestSession_MultiClientSizePolicy_Integration verifies that on session
+// creation agent-deck pins window-size=largest (session option) and
+// aggressive-resize=on (window option). This is the fix for the dots-in-
+// window symptom that arose when web's xterm.js control client and a native
+// `tmux attach` client had different geometries — see tmux issue #2594.
+func TestSession_MultiClientSizePolicy_Integration(t *testing.T) {
+	if os.Getenv("AGENTDECK_TEST_PROFILE") == "" {
+		t.Skip("Skipping tmux integration test - no test profile")
+	}
+
+	s := NewSession("test-size-policy", t.TempDir())
+	s.InstanceID = "test-instance-size-policy"
+
+	err := s.Start("sleep 3600")
+	require.NoError(t, err)
+	defer func() { _ = s.Kill() }()
+
+	winSize, err := exec.Command("tmux", "show-options", "-t", s.Name, "-A", "-v", "window-size").Output()
+	require.NoError(t, err)
+	assert.Equal(t, "largest", strings.TrimSpace(string(winSize)),
+		"new sessions must pin window-size=largest so a smaller client cannot drag the window down (tmux #2594)")
+
+	aggResize, err := exec.Command("tmux", "show-options", "-w", "-t", s.Name+":0", "-A", "-v", "aggressive-resize").Output()
+	require.NoError(t, err)
+	assert.Equal(t, "on", strings.TrimSpace(string(aggResize)),
+		"new sessions must enable aggressive-resize so windows only resize when actively viewed")
 }
 
 // =============================================================================

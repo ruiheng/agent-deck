@@ -198,6 +198,21 @@ var (
 	sessionCacheTime time.Time
 )
 
+// sessionCacheTTL is the single TTL governing both sessionExistsFromCache
+// and sessionActivityFromCache. 2 seconds = 4 ticks at 500ms. Both readers
+// MUST consult this constant — splitting the TTL between them produces the
+// "session is alive but has no activity" parity bug (#886 family).
+const sessionCacheTTL = 2 * time.Second
+
+// sessionCacheStale reports whether the shared session cache is past TTL
+// or empty. Caller must hold sessionCacheMu (read or write). Centralizing
+// the check ensures both existence and activity readers expire the cache
+// together — see arch-review S2 for why two divergent in-line checks
+// caused #886-class drift.
+func sessionCacheStale() bool {
+	return sessionCacheData == nil || time.Since(sessionCacheTime) > sessionCacheTTL
+}
+
 // RefreshSessionCache updates the cache of existing tmux sessions and their activity
 // Call this ONCE per tick, then use Session.Exists() and Session.GetWindowActivity()
 // which read from cache. This reduces 30+ subprocess spawns to just 1 per tick cycle.
@@ -327,9 +342,8 @@ func sessionExistsFromCache(name string) (bool, bool) {
 	sessionCacheMu.RLock()
 	defer sessionCacheMu.RUnlock()
 
-	// Cache is valid for 2 seconds (4 ticks at 500ms)
-	if sessionCacheData == nil || time.Since(sessionCacheTime) > 2*time.Second {
-		return false, false // Cache invalid
+	if sessionCacheStale() {
+		return false, false
 	}
 
 	_, exists := sessionCacheData[name]
@@ -358,9 +372,8 @@ func sessionActivityFromCache(name string) (int64, bool) {
 	sessionCacheMu.RLock()
 	defer sessionCacheMu.RUnlock()
 
-	// Cache is valid for 2 seconds (4 ticks at 500ms)
-	if sessionCacheData == nil || time.Since(sessionCacheTime) > 2*time.Second {
-		return 0, false // Cache invalid
+	if sessionCacheStale() {
+		return 0, false
 	}
 
 	activity, exists := sessionCacheData[name]
@@ -537,7 +550,7 @@ func SupportsHyperlinks() bool {
 }
 
 // Tool detection patterns (used by DetectTool for initial tool identification)
-var toolDetectionOrder = []string{"claude", "gemini", "opencode", "codex", "copilot", "pi"}
+var toolDetectionOrder = []string{"claude", "gemini", "opencode", "codex", "copilot", "crush", "cursor", "hermes", "pi"}
 
 var toolDetectionPatterns = map[string][]*regexp.Regexp{
 	"claude": {
@@ -565,10 +578,26 @@ var toolDetectionPatterns = map[string][]*regexp.Regexp{
 		regexp.MustCompile(`(?i)\bcopilot\s+cli\b`),
 		regexp.MustCompile(`(?i)^copilot>\s*`),
 	},
+	"crush": {
+		// charmbracelet/crush — Charm's terminal-first AI assistant. Issue #940.
+		// Distinct phrases to avoid colliding with the English word "crush".
+		regexp.MustCompile(`(?i)\bcharm\s+crush\b`),
+		regexp.MustCompile(`(?i)\bcrush>\s*`),
+	},
+	"hermes": {
+		// Hermes Agent CLI (github.com/NousResearch/hermes-agent).
+		regexp.MustCompile(`(?i)\bhermes\s+agent\b`),
+		regexp.MustCompile(`(?i)\bnous\s*research\b`),
+	},
 	"pi": {
 		regexp.MustCompile(`(?mi)^\s*pi>\s*`),
 		regexp.MustCompile(`(?i)\bpi\s+cli\b`),
 		regexp.MustCompile(`(?i)\bpi\s+code\b`),
+	},
+	"cursor": {
+		// Cursor CLI agent TUI
+		regexp.MustCompile(`(?i)\bcursor\s+agent\b`),
+		regexp.MustCompile(`(?i)cursor\s+cli\b`),
 	},
 }
 
@@ -592,6 +621,12 @@ func detectToolFromCommand(command string) string {
 			return "codex"
 		case "copilot":
 			return "copilot"
+		case "crush":
+			return "crush"
+		case "cursor":
+			return "cursor"
+		case "hermes":
+			return "hermes"
 		case "pi":
 			return "pi"
 		}
@@ -608,6 +643,12 @@ func detectToolFromCommand(command string) string {
 		return "codex"
 	case strings.Contains(cmdLower, "copilot") || strings.Contains(cmdLower, "@github/copilot"):
 		return "copilot"
+	case strings.Contains(cmdLower, "crush"):
+		return "crush"
+	case strings.Contains(cmdLower, "cursor"):
+		return "cursor"
+	case strings.Contains(cmdLower, "hermes"):
+		return "hermes"
 	case strings.Contains(cmdLower, " pi ") || strings.HasPrefix(cmdLower, "pi "):
 		return "pi"
 	default:
@@ -780,6 +821,10 @@ type Session struct {
 	// Last status returned (for debugging)
 	lastStableStatus string
 
+	// hashFallbackOnce gates the one-time hash_fallback_used WARN landmark.
+	// See logging_additions.go and logging-review G8.
+	hashFallbackOnce sync.Once
+
 	// OptionOverrides are user-specified tmux set-option overrides from config.
 	// Applied AFTER all defaults in Start(), so they take precedence.
 	// Keys are tmux option names, values are their settings.
@@ -849,6 +894,13 @@ type Session struct {
 	// When false (default), previous session output is preserved.
 	// Set via SetClearOnRestart from user config.
 	clearOnRestart bool
+
+	// terminalChromeEnabled controls whether Attach emits outer-terminal
+	// chrome sequences (currently the iTerm2 badge) on attach/detach.
+	// Default: false (opt-in via [terminal].iterm_badge in user config; set
+	// here through SetTerminalChromeEnabled). AGENTDECK_ITERM_BADGE=0|1
+	// overrides this at runtime in either direction; see chrome.go.
+	terminalChromeEnabled bool
 }
 
 type envCacheEntry struct {
@@ -1243,6 +1295,26 @@ func (s *Session) SetInjectStatusLine(inject bool) {
 	s.injectStatusLine = inject
 }
 
+// SetTerminalChromeEnabled controls whether Attach emits outer-terminal
+// chrome (currently the iTerm2 badge) on attach/detach. Mirrors the
+// SetInjectStatusLine plumbing pattern: callers in internal/session read
+// `[terminal].iterm_badge` from user config and forward it here.
+// AGENTDECK_ITERM_BADGE overrides this at runtime; see chrome.go.
+func (s *Session) SetTerminalChromeEnabled(enabled bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.terminalChromeEnabled = enabled
+}
+
+// terminalChromeIsEnabled is the read-side accessor used by Attach. Locked
+// read so a concurrent Set call cannot publish a torn bool — same shape as
+// the other Session getters.
+func (s *Session) terminalChromeIsEnabled() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.terminalChromeEnabled
+}
+
 // SetMouse controls whether tmux mouse mode is enabled for this session.
 // When false, the inline `mouse on` set-option during Start is skipped AND
 // EnableMouseMode becomes a no-op — required for VS Code Linux integrated
@@ -1296,15 +1368,16 @@ func NewSession(name, workDir string) *Session {
 	// Add unique suffix to prevent name collisions
 	uniqueSuffix := generateShortID()
 	return &Session{
-		Name:             SessionPrefix + sanitized + "_" + uniqueSuffix,
-		DisplayName:      name,
-		WorkDir:          workDir,
-		Created:          time.Now(),
-		startupAt:        time.Now(),
-		lastStableStatus: "waiting",
-		toolDetectExpiry: 30 * time.Second, // Re-detect tool every 30 seconds
-		injectStatusLine: true,             // Default: inject status bar
-		mouse:            true,             // Default: mouse on (#730 opt-out)
+		Name:                  SessionPrefix + sanitized + "_" + uniqueSuffix,
+		DisplayName:           name,
+		WorkDir:               workDir,
+		Created:               time.Now(),
+		startupAt:             time.Now(),
+		lastStableStatus:      "waiting",
+		toolDetectExpiry:      30 * time.Second, // Re-detect tool every 30 seconds
+		injectStatusLine:      true,             // Default: inject status bar
+		mouse:                 true,             // Default: mouse on (#730 opt-out)
+		terminalChromeEnabled: false,            // Default: opt-in (set true via [terminal].iterm_badge)
 		// stateTracker and promptDetector will be created lazily on first status check
 	}
 }
@@ -1317,17 +1390,18 @@ func NewSession(name, workDir string) *Session {
 // For lazy loading during TUI startup, use ReconnectSessionLazy instead.
 func ReconnectSession(tmuxName, displayName, workDir, command string) *Session {
 	sess := &Session{
-		Name:             tmuxName,
-		DisplayName:      displayName,
-		WorkDir:          workDir,
-		Command:          command,
-		Created:          time.Now(), // Approximate - we don't persist this
-		startupAt:        time.Time{},
-		lastStableStatus: "waiting",
-		toolDetectExpiry: 30 * time.Second,
-		injectStatusLine: true,  // Default: inject status bar
-		mouse:            true,  // Default: mouse on (#730 opt-out)
-		configured:       false, // Will be set to true after configuration
+		Name:                  tmuxName,
+		DisplayName:           displayName,
+		WorkDir:               workDir,
+		Command:               command,
+		Created:               time.Now(), // Approximate - we don't persist this
+		startupAt:             time.Time{},
+		lastStableStatus:      "waiting",
+		toolDetectExpiry:      30 * time.Second,
+		injectStatusLine:      true,  // Default: inject status bar
+		mouse:                 true,  // Default: mouse on (#730 opt-out)
+		terminalChromeEnabled: false, // Default: opt-in (set true via [terminal].iterm_badge)
+		configured:            false, // Will be set to true after configuration
 		// stateTracker and promptDetector will be created lazily on first status check
 	}
 
@@ -1386,17 +1460,18 @@ func ReconnectSessionWithStatus(tmuxName, displayName, workDir, command string, 
 // For sessions that need immediate configuration, use ReconnectSession or ReconnectSessionWithStatus.
 func ReconnectSessionLazy(tmuxName, displayName, workDir, command string, previousStatus string) *Session {
 	sess := &Session{
-		Name:             tmuxName,
-		DisplayName:      displayName,
-		WorkDir:          workDir,
-		Command:          command,
-		Created:          time.Now(), // Approximate - we don't persist this
-		startupAt:        time.Time{},
-		lastStableStatus: "waiting",
-		toolDetectExpiry: 30 * time.Second,
-		injectStatusLine: true,  // Default: inject status bar
-		mouse:            true,  // Default: mouse on (#730 opt-out)
-		configured:       false, // Explicitly mark as not configured
+		Name:                  tmuxName,
+		DisplayName:           displayName,
+		WorkDir:               workDir,
+		Command:               command,
+		Created:               time.Now(), // Approximate - we don't persist this
+		startupAt:             time.Time{},
+		lastStableStatus:      "waiting",
+		toolDetectExpiry:      30 * time.Second,
+		injectStatusLine:      true,  // Default: inject status bar
+		mouse:                 true,  // Default: mouse on (#730 opt-out)
+		terminalChromeEnabled: false, // Default: opt-in (set true via [terminal].iterm_badge)
+		configured:            false, // Explicitly mark as not configured
 	}
 
 	// Restore state tracker based on previous status (without running tmux commands)
@@ -1454,6 +1529,42 @@ func (s *Session) IsConfigured() bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.configured
+}
+
+// AnyAgentDeckSessionWithEnvValue reports whether any agentdeck-prefixed
+// tmux session carries envKey=envValue. Returns the matching session name
+// (or "") and a bool. Issue #1040: the spawn-guard's in-lock "already
+// alive" gate uses this to detect that a sibling Restart has already
+// produced a live session before this caller does so again. The probe is
+// read-only — no kill. envValue == "" short-circuits to false because
+// matching every session with an unset variable is never the intent.
+func AnyAgentDeckSessionWithEnvValue(envKey, envValue string) (string, bool) {
+	if envValue == "" {
+		return "", false
+	}
+
+	socket := DefaultSocketName()
+	out, err := tmuxExec(socket, "list-sessions", "-F", "#{session_name}").Output()
+	if err != nil {
+		return "", false
+	}
+
+	for _, name := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+		if name == "" || !strings.HasPrefix(name, SessionPrefix) {
+			continue
+		}
+		val, err := tmuxExec(socket, "show-environment", "-t", name, envKey).Output()
+		if err != nil {
+			continue
+		}
+		line := strings.TrimSpace(string(val))
+		if idx := strings.IndexByte(line, '='); idx >= 0 {
+			if line[idx+1:] == envValue {
+				return name, true
+			}
+		}
+	}
+	return "", false
 }
 
 // KillSessionsWithEnvValue kills agentdeck tmux sessions that have the given
@@ -1895,6 +2006,21 @@ func (s *Session) Start(command string) error {
 		"set-option", "-t", s.Name, "escape-time", "10", ";",
 		"set", "-sq", "extended-keys", "on", ";",
 		"set", "-asq", "terminal-features", ",*:hyperlinks:extkeys")
+	// Multi-client size negotiation. Web's xterm.js connects via a tmux -C
+	// control client (controlpipe.go) at the same time as native `tmux attach`
+	// clients (Ghostty, iTerm). Default `window-size latest` makes the window
+	// flip to whichever client most recently sent input, so larger clients see
+	// dot-filled void cells and smaller clients clip. `largest` keeps the
+	// window sized to the biggest client; `aggressive-resize` only resizes
+	// windows that are actively viewed (avoids cross-window resize storms).
+	// See tmux(1) "window-size" / "aggressive-resize" and tmux issue #2594.
+	// Both are gated through OptionOverrides so users can opt out.
+	if _, ok := s.OptionOverrides["window-size"]; !ok {
+		startArgs = append(startArgs, ";", "set-option", "-t", s.Name, "window-size", "largest")
+	}
+	if _, ok := s.OptionOverrides["aggressive-resize"]; !ok {
+		startArgs = append(startArgs, ";", "set-window-option", "-t", s.Name, "aggressive-resize", "on")
+	}
 	_ = s.tmuxCmd(startArgs...).Run()
 
 	// Bind Ctrl+Q to detach at the tmux level as fallback for terminals where
@@ -1980,9 +2106,14 @@ func (s *Session) Start(command string) error {
 // Uses cached session list when available (refreshed by RefreshExistingSessions)
 // Falls back to direct tmux call if cache is stale
 func (s *Session) Exists() bool {
-	// Try cache first (O(1) map lookup, no subprocess)
-	if exists, cacheValid := sessionExistsFromCache(s.Name); cacheValid {
-		return exists
+	// The session cache is populated by RefreshSessionCache against
+	// DefaultSocketName() only — entries describe the default tmux server
+	// alone. Sessions on isolated sockets must skip the cache, otherwise
+	// UpdateStatus would stamp StatusError on every poll for them (#755).
+	if strings.TrimSpace(s.SocketName) == DefaultSocketName() {
+		if exists, cacheValid := sessionExistsFromCache(s.Name); cacheValid {
+			return exists
+		}
 	}
 
 	// If PipeManager has a live control connection, the session definitely exists.
@@ -1992,7 +2123,8 @@ func (s *Session) Exists() bool {
 		}
 	}
 
-	// Cache is stale and no live pipe: fall back to direct tmux check.
+	// Cache is stale (or skipped for an isolated socket): fall back to a
+	// direct tmux check on the session's own socket.
 	cmd := s.tmuxCmd("has-session", "-t", s.Name)
 	return cmd.Run() == nil
 }
@@ -2547,8 +2679,10 @@ func (s *Session) CapturePane() (string, error) {
 					slog.Duration("elapsed", time.Since(pipeStart)))
 				return content, nil
 			}
-			// Pipe failed: log it so we can verify zero subprocess usage
-			statusLog.Debug("capture_pane_subprocess_fallback", slog.String("session", s.Name))
+			// Pipe failed: aggregate so today's 5,068/30min DEBUG storm
+			// becomes one event_summary INFO per flush window with a
+			// running count. See logging-review G14.
+			s.recordPipeDegraded()
 		}
 
 		// Subprocess fallback: bounded timeout
@@ -2578,7 +2712,14 @@ func (s *Session) CapturePane() (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return v.(string), nil
+	// Defensive: the singleflight closure above unconditionally returns
+	// (string, nil), so this assertion cannot panic today. The comma-ok form
+	// guards against future closure refactors that might return a different
+	// type and silently introduce a nil-deref panic. (V1.9 §T6 / arch-review §5)
+	if s, ok := v.(string); ok {
+		return s, nil
+	}
+	return "", nil
 }
 
 // CapturePaneFresh captures pane content via a direct tmux subprocess call.
@@ -3238,6 +3379,9 @@ func (s *Session) GetStatus() (string, error) {
 // getStatusFallback uses content-hash based detection as fallback
 // when activity timestamp detection fails
 func (s *Session) getStatusFallback() (string, error) {
+	// Once-per-session WARN landmark; closes logging-review G8.
+	s.recordHashFallbackUsed()
+
 	shortName := s.DisplayName
 	if len(shortName) > 12 {
 		shortName = shortName[:12]
@@ -3942,6 +4086,26 @@ func (s *Session) SendKeys(keys string) error {
 func (s *Session) SendEnter() error {
 	s.invalidateCache()
 	cmd := s.tmuxCmd("send-keys", "-t", s.Name, "Enter")
+	return cmd.Run()
+}
+
+// OpenKeySender opens a persistent tmux control-mode client bound to this
+// session's pane. Used by TUI insert mode (#1102) to amortize the fork+exec
+// cost of `tmux send-keys` across a typing burst. Returns nil and an error
+// when the user's tmux can't be reached or the session no longer exists;
+// callers should fall back to per-call SendKeys / SendEnter / SendNamedKey.
+func (s *Session) OpenKeySender() (KeySender, error) {
+	return OpenKeySender(s.SocketName, s.Name)
+}
+
+// SendNamedKey sends a single tmux named key (e.g. "BSpace", "Up", "Down",
+// "Left", "Right", "Tab", "BTab", "C-c", "C-d") to the session. Unlike
+// SendKeys it does NOT use the -l flag, so tmux interprets the argument as a
+// key name rather than literal text. Used by insert mode (#1094) to forward
+// Backspace, arrow keys, Tab, and Ctrl-{C,D} from the TUI to the focused pane.
+func (s *Session) SendNamedKey(key string) error {
+	s.invalidateCache()
+	cmd := s.tmuxCmd("send-keys", "-t", s.Name, key)
 	return cmd.Run()
 }
 

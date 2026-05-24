@@ -557,7 +557,7 @@ func TestGetConductorEnv(t *testing.T) {
 		"MY_API_KEY": "conductor-value",
 		"DEBUG":      "true",
 	}
-	if err := SetupConductor(name, "default", true, true, "", "", "", env, ""); err != nil {
+	if err := SetupConductor(name, "default", true, true, "", "", "", "", env, ""); err != nil {
 		t.Fatalf("setup failed: %v", err)
 	}
 

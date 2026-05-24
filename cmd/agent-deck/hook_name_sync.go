@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/asheshgoplani/agent-deck/internal/session"
+	"github.com/asheshgoplani/agent-deck/internal/tmux"
 )
 
 // claudeSessionMetaFile is the subset of ~/.claude/sessions/<PID>.json that
@@ -121,6 +122,23 @@ func applyClaudeTitleSync(instanceID, sessionID string) {
 		groupTree := session.NewGroupTreeWithGroups(instances, groups)
 		_ = storage.SaveWithGroups(instances, groupTree)
 		_ = storage.Close()
+
+		// #1114: signal the attached agent-deck process to re-emit the
+		// iTerm2 badge for the new title. This hook subprocess is
+		// spawned detached (setsid) by Claude Code, so it has no
+		// controlling tty — the previous EmitITermBadgeViaTty path
+		// silently no-op'd because /dev/tty returned ENXIO. Writing a
+		// per-tmux-session file succeeds without a tty; the attach
+		// process (which owns the outer iTerm2 tty via os.Stdout)
+		// picks it up via fsnotify and emits the OSC.
+		//
+		// Also keep the via-tty emit for the rare case where the hook
+		// does happen to have a tty (e.g. a future Claude that doesn't
+		// setsid its hooks) — it's a silent no-op when it doesn't.
+		if tmuxSess := target.GetTmuxSession(); tmuxSess != nil && tmuxSess.Name != "" {
+			_ = tmux.WriteBadgeUpdate(tmuxSess.Name, name)
+		}
+		tmux.EmitITermBadgeViaTty(name, session.GetTerminalSettings().GetITermBadge())
 		return
 	}
 }

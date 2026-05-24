@@ -4,14 +4,18 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"regexp"
 	"strings"
 	"time"
 
+	"github.com/asheshgoplani/agent-deck/internal/logging"
 	"github.com/asheshgoplani/agent-deck/internal/session"
 )
+
+var hookHandlerLog = logging.ForComponent(logging.CompSession)
 
 // maxHookPayloadSize limits the size of JSON payloads read from stdin
 // to prevent denial-of-service via oversized input.
@@ -131,6 +135,36 @@ func handleHookHandler() {
 	// Write cost event if this hook contains usage data
 	logCostDebug("hook event=%s instance=%s status=%s", payload.HookEventName, instanceID, status)
 	writeCostEvent(instanceID, data)
+
+	// PermissionRequest in DSP-launched, agent-deck-managed sessions: emit an
+	// explicit allow decision so headless / /remote-control contexts (which
+	// have no UI fallback) do not silently deny. DSP is the user-declared
+	// trust signal; the hook just makes that declaration consistent across
+	// interactive and non-interactive Claude UIs. Without this, a sync hook
+	// that exits with no decision falls through to Claude Code's default,
+	// which denies in UI-less contexts. Status-tracking behavior above is
+	// unchanged.
+	if payload.HookEventName == "PermissionRequest" && parentIsDSP() {
+		fmt.Println(`{"hookSpecificOutput":{"hookEventName":"PermissionRequest","permissionDecision":"allow"}}`)
+	}
+}
+
+// parentIsDSP reports whether the parent process (typically the claude binary)
+// was launched with --dangerously-skip-permissions. Returns true if the
+// AGENTDECK_DSP_MODE env var is explicitly set, or, on Linux/WSL, if the
+// parent's /proc/<ppid>/cmdline contains the DSP flag. Returns false on
+// non-Linux platforms unless AGENTDECK_DSP_MODE is set, since /proc is
+// unavailable; agent-deck launch paths can opt those platforms in via the
+// env var when needed.
+func parentIsDSP() bool {
+	if os.Getenv("AGENTDECK_DSP_MODE") == "1" {
+		return true
+	}
+	cmdline, err := os.ReadFile(fmt.Sprintf("/proc/%d/cmdline", os.Getppid()))
+	if err != nil {
+		return false
+	}
+	return strings.Contains(string(cmdline), "--dangerously-skip-permissions")
 }
 
 // writeHookStatus writes a hook status file atomically for one instance.
@@ -141,6 +175,11 @@ func writeHookStatus(instanceID, status, sessionID, event string) {
 
 	hooksDir := getHooksDir()
 	if err := os.MkdirAll(hooksDir, 0700); err != nil {
+		hookHandlerLog.Warn("hook_status_mkdir_failed",
+			slog.String("dir", hooksDir),
+			slog.String("instance", instanceID),
+			slog.String("error", err.Error()),
+		)
 		return
 	}
 
@@ -160,15 +199,34 @@ func writeHookStatus(instanceID, status, sessionID, event string) {
 
 	jsonData, err := json.Marshal(statusFile)
 	if err != nil {
+		hookHandlerLog.Warn("hook_status_marshal_failed",
+			slog.String("instance", instanceID),
+			slog.String("error", err.Error()),
+		)
 		return
 	}
 
 	filePath := filepath.Join(hooksDir, filepath.Base(instanceID)+".json")
 	tmpPath := filePath + ".tmp"
 	if err := os.WriteFile(tmpPath, jsonData, 0600); err != nil {
+		hookHandlerLog.Warn("hook_status_write_failed",
+			slog.String("path", tmpPath),
+			slog.String("instance", instanceID),
+			slog.String("error", err.Error()),
+		)
 		return
 	}
-	_ = os.Rename(tmpPath, filePath)
+	if err := os.Rename(tmpPath, filePath); err != nil {
+		hookHandlerLog.Warn("hook_status_rename_failed",
+			slog.String("from", tmpPath),
+			slog.String("to", filePath),
+			slog.String("instance", instanceID),
+			slog.String("error", err.Error()),
+		)
+		// Best-effort cleanup of the orphaned temp file.
+		_ = os.Remove(tmpPath)
+		return
+	}
 
 	// Clear sticky session mapping when the upstream session is explicitly ended.
 	if isTerminalHookEvent(event) {
@@ -412,6 +470,11 @@ func writeCostEvent(instanceID string, rawPayload []byte) {
 
 	costDir := getCostEventsDir()
 	if err := os.MkdirAll(costDir, 0700); err != nil {
+		hookHandlerLog.Warn("cost_event_mkdir_failed",
+			slog.String("dir", costDir),
+			slog.String("instance", instanceID),
+			slog.String("error", err.Error()),
+		)
 		return
 	}
 
@@ -428,6 +491,10 @@ func writeCostEvent(instanceID string, rawPayload []byte) {
 
 	jsonData, err := json.Marshal(cf)
 	if err != nil {
+		hookHandlerLog.Warn("cost_event_marshal_failed",
+			slog.String("instance", instanceID),
+			slog.String("error", err.Error()),
+		)
 		return
 	}
 
@@ -436,11 +503,23 @@ func writeCostEvent(instanceID string, rawPayload []byte) {
 	finalPath := filepath.Join(costDir, filename)
 
 	if err := os.WriteFile(tmpPath, jsonData, 0600); err != nil {
+		hookHandlerLog.Warn("cost_event_write_failed",
+			slog.String("path", tmpPath),
+			slog.String("instance", instanceID),
+			slog.String("error", err.Error()),
+		)
 		logCostDebug("write failed: %v", err)
 		return
 	}
 	if err := os.Rename(tmpPath, finalPath); err != nil {
+		hookHandlerLog.Warn("cost_event_rename_failed",
+			slog.String("from", tmpPath),
+			slog.String("to", finalPath),
+			slog.String("instance", instanceID),
+			slog.String("error", err.Error()),
+		)
 		logCostDebug("rename failed: %v", err)
+		_ = os.Remove(tmpPath)
 		return
 	}
 	logCostDebug("wrote cost event: %s model=%s in=%d out=%d", finalPath, cf.Model, cf.InputTokens, cf.OutputTokens)

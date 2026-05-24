@@ -84,6 +84,62 @@ func TestApplyCreateSessionToolOverrides_NonGeminiNoop(t *testing.T) {
 	}
 }
 
+func TestPersistClaudeDialogDefaults(t *testing.T) {
+	origHome := os.Getenv("HOME")
+	tmpHome := t.TempDir()
+	os.Setenv("HOME", tmpHome)
+	session.ClearUserConfigCache()
+	defer func() {
+		os.Setenv("HOME", origHome)
+		session.ClearUserConfigCache()
+	}()
+
+	persistClaudeDialogDefaults(&session.ClaudeOptions{
+		SkipPermissions:      false,
+		AllowSkipPermissions: true,
+		AutoMode:             true,
+		UseChrome:            true,
+		UseTeammateMode:      true,
+	}, []string{"--agent", "reviewer", "", " --model "})
+	cfg, err := session.LoadUserConfig()
+	if err != nil {
+		t.Fatalf("LoadUserConfig: %v", err)
+	}
+	want := []string{"--agent", "reviewer", "--model"}
+	if len(cfg.Claude.ExtraArgs) != len(want) {
+		t.Fatalf("Claude.ExtraArgs = %v, want %v", cfg.Claude.ExtraArgs, want)
+	}
+	for i := range want {
+		if cfg.Claude.ExtraArgs[i] != want[i] {
+			t.Fatalf("Claude.ExtraArgs[%d] = %q, want %q", i, cfg.Claude.ExtraArgs[i], want[i])
+		}
+	}
+	if cfg.Claude.DangerousMode == nil || *cfg.Claude.DangerousMode {
+		t.Fatalf("Claude.DangerousMode = %v, want explicit false", cfg.Claude.DangerousMode)
+	}
+	if !cfg.Claude.AllowDangerousMode {
+		t.Fatal("Claude.AllowDangerousMode = false, want true")
+	}
+	if !cfg.Claude.AutoMode {
+		t.Fatal("Claude.AutoMode = false, want true")
+	}
+	if !cfg.Claude.UseChrome {
+		t.Fatal("Claude.UseChrome = false, want true")
+	}
+	if !cfg.Claude.UseTeammateMode {
+		t.Fatal("Claude.UseTeammateMode = false, want true")
+	}
+
+	persistClaudeDialogDefaults(&session.ClaudeOptions{}, nil)
+	cfg, err = session.LoadUserConfig()
+	if err != nil {
+		t.Fatalf("LoadUserConfig after clear: %v", err)
+	}
+	if cfg.Claude.ExtraArgs != nil {
+		t.Fatalf("Claude.ExtraArgs should clear to nil, got %v", cfg.Claude.ExtraArgs)
+	}
+}
+
 // Co-credit @masta-g3 (PR #674): TUI session creation must produce
 // Tool="pi" rather than Tool="shell" with Command="pi", matching the
 // tmux/userconfig wiring already present.
@@ -158,6 +214,36 @@ func TestShouldAttachExistingSession_WindowsOrdinarySessionIgnoresExistsFalseNeg
 
 	if !shouldAttachExistingSession(inst) {
 		t.Fatal("shouldAttachExistingSession returned false for ordinary Windows session")
+	}
+}
+
+// TUI session creation must produce Tool="copilot" rather than
+// Tool="shell" with Command="copilot", matching the tmux/userconfig
+// wiring already present since v1.7.26.
+func TestCreateSessionTool_Copilot(t *testing.T) {
+	tool, command := createSessionTool("copilot")
+	if tool != "copilot" || command != "copilot" {
+		t.Fatalf("createSessionTool(\"copilot\") = (%q, %q), want (\"copilot\", \"copilot\")", tool, command)
+	}
+}
+
+// TUI session creation must produce Tool="crush" rather than
+// Tool="shell" with Command="crush", matching the tmux/userconfig
+// wiring for the charmbracelet/crush integration (Issue #940).
+func TestCreateSessionTool_Crush(t *testing.T) {
+	tool, command := createSessionTool("crush")
+	if tool != "crush" || command != "crush" {
+		t.Fatalf("createSessionTool(\"crush\") = (%q, %q), want (\"crush\", \"crush\")", tool, command)
+	}
+}
+
+// TUI session creation must produce Tool="hermes" rather than
+// Tool="shell" with Command="hermes", matching the tmux/userconfig
+// wiring for the Hermes Agent CLI integration.
+func TestCreateSessionTool_Hermes(t *testing.T) {
+	tool, command := createSessionTool("hermes")
+	if tool != "hermes" || command != "hermes" {
+		t.Fatalf("createSessionTool(\"hermes\") = (%q, %q), want (\"hermes\", \"hermes\")", tool, command)
 	}
 }
 
@@ -2523,29 +2609,57 @@ func TestRebuildFlatItemsKeepsValidStatusFilter(t *testing.T) {
 }
 
 func TestMatchesStatusFilter(t *testing.T) {
+	// Default matches upstream's original hardcoded behavior so existing
+	// users see no change unless they opt into a narrower exclude-set.
+	defaultExcludes := map[session.Status]bool{
+		session.StatusError:   true,
+		session.StatusStopped: true,
+	}
+	errorOnly := map[session.Status]bool{session.StatusError: true}
+	excludeNothing := map[session.Status]bool{}
+
 	tests := []struct {
-		filter session.Status
-		status session.Status
-		want   bool
+		name     string
+		filter   session.Status
+		status   session.Status
+		excludes map[session.Status]bool
+		want     bool
 	}{
-		// Active filter: excludes error and stopped only
-		{FilterModeActive, session.StatusRunning, true},
-		{FilterModeActive, session.StatusWaiting, true},
-		{FilterModeActive, session.StatusIdle, true},
-		{FilterModeActive, session.StatusStarting, true},
-		{FilterModeActive, session.StatusError, false},
-		{FilterModeActive, session.StatusStopped, false},
-		// Concrete status filters: exact match
-		{session.StatusRunning, session.StatusRunning, true},
-		{session.StatusRunning, session.StatusWaiting, false},
-		{session.StatusError, session.StatusError, true},
-		{session.StatusError, session.StatusStopped, false},
+		// Default exclude-set ({error, stopped}): % hides both, matching
+		// upstream's prior hardcoded behavior exactly.
+		{"default-running", FilterModeActive, session.StatusRunning, defaultExcludes, true},
+		{"default-waiting", FilterModeActive, session.StatusWaiting, defaultExcludes, true},
+		{"default-idle", FilterModeActive, session.StatusIdle, defaultExcludes, true},
+		{"default-starting", FilterModeActive, session.StatusStarting, defaultExcludes, true},
+		{"default-error-hidden", FilterModeActive, session.StatusError, defaultExcludes, false},
+		{"default-stopped-hidden", FilterModeActive, session.StatusStopped, defaultExcludes, false},
+
+		// Opt-in via active_filter_excludes = ["error"]: closed/stopped
+		// sessions remain visible — the regression fix for users who
+		// found the upstream default too aggressive.
+		{"erronly-stopped-visible", FilterModeActive, session.StatusStopped, errorOnly, true},
+		{"erronly-error-hidden", FilterModeActive, session.StatusError, errorOnly, false},
+		{"erronly-running-visible", FilterModeActive, session.StatusRunning, errorOnly, true},
+
+		// Empty exclude-set: % filter shows everything (degenerate but valid).
+		{"empty-error-visible", FilterModeActive, session.StatusError, excludeNothing, true},
+		{"empty-stopped-visible", FilterModeActive, session.StatusStopped, excludeNothing, true},
+
+		// Concrete status filters ignore the exclude-set entirely.
+		{"concrete-running-match", session.StatusRunning, session.StatusRunning, defaultExcludes, true},
+		{"concrete-running-no-match", session.StatusRunning, session.StatusWaiting, defaultExcludes, false},
+		{"concrete-error-match", session.StatusError, session.StatusError, defaultExcludes, true},
+		{"concrete-error-no-stopped", session.StatusError, session.StatusStopped, defaultExcludes, false},
 	}
 	for _, tt := range tests {
-		got := matchesStatusFilter(tt.filter, tt.status)
-		if got != tt.want {
-			t.Errorf("matchesStatusFilter(%q, %q) = %v, want %v", tt.filter, tt.status, got, tt.want)
-		}
+		t.Run(tt.name, func(t *testing.T) {
+			h := &Home{activeFilterExcludes: tt.excludes}
+			got := h.matchesStatusFilter(tt.filter, tt.status)
+			if got != tt.want {
+				t.Errorf("matchesStatusFilter(%q, %q, %v) = %v, want %v",
+					tt.filter, tt.status, tt.excludes, got, tt.want)
+			}
+		})
 	}
 }
 
@@ -2741,6 +2855,44 @@ func TestStatusUpdateMsg_PreservesSelectedSessionAcrossRebuild(t *testing.T) {
 
 	if got := selectedSessionID(home); got != s2.ID {
 		t.Fatalf("selected session = %q, want %q", got, s2.ID)
+	}
+}
+
+func TestStatusUpdateMsg_ReconcilesAttachedSessionBeforeRender(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+
+	h := newAttachReturnTestHome()
+	inst := session.NewInstanceWithGroupAndTool("exited", "/tmp/exited", "work", "codex")
+	inst.ID = "exited-session"
+	inst.CreatedAt = time.Now().Add(-2 * time.Second)
+	inst.Status = session.StatusRunning
+	setAttachReturnTestInstances(h, []*session.Instance{inst})
+
+	hooksDir := session.GetHooksDir()
+	if err := os.MkdirAll(hooksDir, 0o755); err != nil {
+		t.Fatalf("mkdir hooks: %v", err)
+	}
+	hookPath := filepath.Join(hooksDir, inst.ID+".json")
+	hookBody := fmt.Sprintf(
+		`{"status":"running","session_id":"stale-session","event":"UserPromptSubmit","ts":%d}`,
+		time.Now().Unix(),
+	)
+	if err := os.WriteFile(hookPath, []byte(hookBody), 0o644); err != nil {
+		t.Fatalf("write stale hook: %v", err)
+	}
+
+	model, _ := h.Update(statusUpdateMsg{attachedSessionID: inst.ID})
+	home := model.(*Home)
+
+	if got := inst.GetStatusThreadSafe(); got != session.StatusError {
+		t.Fatalf("attached session status = %q, want %q", got, session.StatusError)
+	}
+	if got := home.getSessionRenderState(inst).status; got != session.StatusError {
+		t.Fatalf("render snapshot status = %q, want %q", got, session.StatusError)
+	}
+	if _, err := os.Stat(hookPath); !os.IsNotExist(err) {
+		t.Fatalf("stale hook file still exists or stat failed with unexpected error: %v", err)
 	}
 }
 
@@ -2955,4 +3107,89 @@ func TestRegression743_NOnRemoteGroup_QuickCreatesNoDialog(t *testing.T) {
 	if h.newDialog.IsVisible() {
 		t.Fatal("pressing n on a remote group must NOT open the local new-session dialog")
 	}
+}
+
+// TestHome_TerminalNavigationKeys verifies the PgUp/PgDn/Home/End bindings
+// added alongside the existing vi-style pagination (#38). PgUp/PgDn are
+// half-page aliases of Ctrl+U/Ctrl+D; Home/End jump to the first/last item
+// (End fills the gap where no single-key jump-to-bottom existed, since G
+// opens global search). Also covers the emacs-style Ctrl+N/Ctrl+P line
+// navigation aliases for the main session list.
+func TestHome_TerminalNavigationKeys(t *testing.T) {
+	// Build a 100-item list so pagination + absolute jumps have room to move.
+	items := make([]session.Item, 100)
+	for i := range items {
+		items[i] = session.Item{
+			Type:    session.ItemTypeSession,
+			Session: &session.Instance{ID: fmt.Sprintf("s%d", i), Title: fmt.Sprintf("S%d", i)},
+			Level:   0,
+		}
+	}
+
+	const width, height = 100, 30
+
+	// Compute half-page from the actual getVisibleHeight so the test
+	// stays correct if the viewport formula changes.
+	h0 := newTestHomeWithItems(width, height, items)
+	halfPage := h0.getVisibleHeight() / 2
+	if halfPage < 1 {
+		halfPage = 1
+	}
+	last := len(items) - 1
+
+	tests := []struct {
+		name        string
+		key         tea.KeyMsg
+		startCursor int
+		wantCursor  int
+	}{
+		{"PgUp from middle", tea.KeyMsg{Type: tea.KeyPgUp}, 50, 50 - halfPage},
+		{"PgUp clamps at top", tea.KeyMsg{Type: tea.KeyPgUp}, 0, 0},
+		{"PgDown from middle", tea.KeyMsg{Type: tea.KeyPgDown}, 10, 10 + halfPage},
+		{"PgDown clamps at bottom", tea.KeyMsg{Type: tea.KeyPgDown}, last, last},
+		{"Home from middle", tea.KeyMsg{Type: tea.KeyHome}, 50, 0},
+		{"Home at top no-op", tea.KeyMsg{Type: tea.KeyHome}, 0, 0},
+		{"End from middle", tea.KeyMsg{Type: tea.KeyEnd}, 5, last},
+		{"End at bottom no-op", tea.KeyMsg{Type: tea.KeyEnd}, last, last},
+		// Emacs-style line navigation (ctrl+n / ctrl+p)
+		{"ctrl+n moves down", tea.KeyMsg{Type: tea.KeyCtrlN}, 10, 11},
+		{"ctrl+n clamps at bottom", tea.KeyMsg{Type: tea.KeyCtrlN}, last, last},
+		{"ctrl+p moves up", tea.KeyMsg{Type: tea.KeyCtrlP}, 10, 9},
+		{"ctrl+p clamps at top", tea.KeyMsg{Type: tea.KeyCtrlP}, 0, 0},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newTestHomeWithItems(width, height, items)
+			h.cursor = tc.startCursor
+			h.previewScrollOffset = 42 // non-zero to verify reset contract
+			updated, _ := h.Update(tc.key)
+			got := updated.(*Home).cursor
+			if got != tc.wantCursor {
+				t.Fatalf("cursor = %d, want %d (halfPage=%d)", got, tc.wantCursor, halfPage)
+			}
+			if updated.(*Home).previewScrollOffset != 0 {
+				t.Fatalf("previewScrollOffset = %d, want 0 (nav handlers must reset)",
+					updated.(*Home).previewScrollOffset)
+			}
+		})
+	}
+
+	t.Run("End on empty list does not crash", func(t *testing.T) {
+		h := newTestHomeWithItems(width, height, nil)
+		updated, _ := h.Update(tea.KeyMsg{Type: tea.KeyEnd})
+		got := updated.(*Home).cursor
+		if got != 0 {
+			t.Fatalf("cursor = %d, want 0 on empty list", got)
+		}
+	})
+
+	t.Run("Home on empty list does not crash", func(t *testing.T) {
+		h := newTestHomeWithItems(width, height, nil)
+		updated, _ := h.Update(tea.KeyMsg{Type: tea.KeyHome})
+		got := updated.(*Home).cursor
+		if got != 0 {
+			t.Fatalf("cursor = %d, want 0 on empty list", got)
+		}
+	})
 }

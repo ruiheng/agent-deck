@@ -5,18 +5,16 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"runtime"
 	"strconv"
 	"strings"
 	"time"
-)
 
-// sshAttachReplyQuarantine matches attachReplyQuarantine in internal/tmux/pty.go.
-// Keep these in sync — they cover the same class of terminal-reply bursts on
-// their respective attach paths (local tmux vs SSH remote).
-const sshAttachReplyQuarantine = 500 * time.Millisecond
+	"github.com/asheshgoplani/agent-deck/internal/costs"
+)
 
 // sshControlDir is the directory for SSH ControlMaster sockets.
 const sshControlDir = "/tmp/agent-deck-ssh"
@@ -26,6 +24,13 @@ type SSHRunner struct {
 	Host          string // SSH destination (e.g., "user@host")
 	AgentDeckPath string // Remote agent-deck binary path
 	Profile       string // Remote profile name
+
+	// runFn lets tests stub out command execution. nil = real SSH.
+	runFn func(ctx context.Context, args ...string) ([]byte, error)
+
+	// openStreamFn lets tests stub out the persistent-stream subprocess
+	// without spawning real ssh. nil = real SSH (#1112 bug 2).
+	openStreamFn func(ctx context.Context, args ...string) (io.WriteCloser, func() error, error)
 }
 
 // NewSSHRunner creates an SSHRunner from a RemoteConfig.
@@ -51,10 +56,65 @@ func (r *SSHRunner) Run(ctx context.Context, args ...string) ([]byte, error) {
 	return r.run(timeoutCtx, args...)
 }
 
+// OpenStream spawns a single long-running remote `agent-deck <args...>`
+// subprocess over SSH and returns its stdin pipe + a close function that
+// terminates the subprocess. Used by #1112 bug 2's persistent insert-mode
+// stream so 100 keystrokes amortize to one ssh fork+exec instead of 100.
+//
+// The returned WriteCloser is goroutine-safe at the OS pipe layer; the
+// caller is responsible for serializing if it needs message-level
+// ordering (RemoteKeySender does this with its own mutex).
+func (r *SSHRunner) OpenStream(ctx context.Context, args ...string) (io.WriteCloser, func() error, error) {
+	if r.openStreamFn != nil {
+		return r.openStreamFn(ctx, args...)
+	}
+	_ = os.MkdirAll(sshControlDir, 0700)
+
+	remoteCmd := r.buildRemoteCommand(args...)
+	sshArgs := []string{
+		"-o", "ControlMaster=auto",
+		"-o", "ControlPath=" + sshControlDir + "/%r@%h:%p",
+		"-o", "ControlPersist=600",
+		"-o", "ConnectTimeout=10",
+		"-o", "BatchMode=yes",
+		r.Host,
+		remoteCmd,
+	}
+
+	cmd := exec.CommandContext(ctx, "ssh", sshArgs...)
+	stdin, err := cmd.StdinPipe()
+	if err != nil {
+		return nil, nil, fmt.Errorf("stream stdin pipe: %w", err)
+	}
+	// Drop the subprocess's stdout/stderr — `--stream` mode prints nothing
+	// on success, and surfacing partial errors would require parsing the
+	// CLIOutput JSON. Failures already surface via the stdin write erroring
+	// when the remote exits.
+	cmd.Stdout = io.Discard
+	cmd.Stderr = io.Discard
+	if err := cmd.Start(); err != nil {
+		_ = stdin.Close()
+		return nil, nil, fmt.Errorf("stream start: %w", err)
+	}
+	closeFn := func() error {
+		_ = stdin.Close()
+		if cmd.Process != nil {
+			// stdin close should make the remote loop exit; kill as backstop.
+			_ = cmd.Process.Kill()
+			_, _ = cmd.Process.Wait()
+		}
+		return nil
+	}
+	return stdin, closeFn, nil
+}
+
 // run executes an agent-deck command on the remote host using the provided context directly.
 func (r *SSHRunner) run(ctx context.Context, args ...string) ([]byte, error) {
 	if err := r.ensureSSHAvailable("ssh"); err != nil {
 		return nil, err
+	}
+	if r.runFn != nil {
+		return r.runFn(ctx, args...)
 	}
 	if runtime.GOOS != "windows" {
 		_ = os.MkdirAll(sshControlDir, 0700)
@@ -178,6 +238,48 @@ func (r *SSHRunner) FetchSessionOutput(ctx context.Context, sessionID string) (s
 	}
 
 	return parseRemoteSessionOutput(output)
+}
+
+// FetchSessionPane retrieves the tmux capture-pane content for a remote session.
+// #1101: Local TUI previews render capture-pane content (ANSI + tool UI chrome).
+// Remote previews used to fetch only the parsed transcript text via
+// FetchSessionOutput, which is why claude-formatted output never showed for
+// SSH sessions. FetchSessionPane closes that gap by asking the remote for the
+// raw pane content via `session output --pane --json`.
+func (r *SSHRunner) FetchSessionPane(ctx context.Context, sessionID string) (string, error) {
+	output, err := r.Run(ctx, "session", "output", sessionID, "--pane", "--json")
+	if err != nil {
+		return "", err
+	}
+
+	return parseRemoteSessionOutput(output)
+}
+
+// FetchCostSummary retrieves the remote agent-deck's cost summary as JSON.
+// #1101: the local TUI's status-line cost segment used to show only events
+// written to the local cost_events table — remote sessions' Stop hooks write
+// to the remote DB, so their spend never surfaced locally. The TUI calls this
+// per configured remote and folds the totals into the displayed figures.
+//
+// Returns nil with no error when the remote returns empty output (older
+// agent-deck builds that predate `costs summary --json`). Callers should
+// treat a nil summary as "remote not available; render local-only totals".
+func (r *SSHRunner) FetchCostSummary(ctx context.Context) (*costs.RemoteCostSummary, error) {
+	output, err := r.Run(ctx, "costs", "summary", "--json")
+	if err != nil {
+		return nil, err
+	}
+
+	trimmed := bytes.TrimSpace(output)
+	if len(trimmed) == 0 || trimmed[0] != '{' {
+		return nil, nil
+	}
+
+	var summary costs.RemoteCostSummary
+	if err := json.Unmarshal(trimmed, &summary); err != nil {
+		return nil, fmt.Errorf("failed to parse remote cost summary: %w", err)
+	}
+	return &summary, nil
 }
 
 // DetectPlatform returns the remote host's OS and architecture (e.g., "linux", "amd64").
@@ -382,6 +484,12 @@ func (r *SSHRunner) CreateSession(ctx context.Context) (string, error) {
 	startCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
 	defer cancel()
 	if _, err := r.run(startCtx, "session", "start", result.ID); err != nil {
+		// Compensate: the remote DB has the row but no tmux process. Best-effort
+		// delete with a fresh context so an upstream cancellation doesn't skip
+		// the cleanup. Surface the original start failure.
+		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cleanupCancel()
+		_ = r.DeleteSession(cleanupCtx, result.ID)
 		return "", fmt.Errorf("failed to start remote session: %w", err)
 	}
 
@@ -459,4 +567,37 @@ func splitSSHHostPort(host string) (dest, port string) {
 	}
 
 	return dest[:colon], candidatePort
+}
+
+// RemoteLatency is a live round-trip-time sample for a configured remote.
+// Tracked per remote host (not per session) — multiple sessions on the same
+// host share the same connection, so latency is a host-level metric. See
+// issue #1103.
+type RemoteLatency struct {
+	// MS is the round-trip time in milliseconds. Meaningful only when
+	// Offline is false.
+	MS int
+	// Offline is true when the most recent measurement attempt failed
+	// (network error, SSH dead, remote agent-deck binary missing, etc).
+	Offline bool
+	// MeasuredAt is when the sample was taken; zero value means never measured.
+	MeasuredAt time.Time
+}
+
+// MeasureLatency measures the round-trip time of a lightweight noop call
+// to the remote agent-deck binary. Returns the elapsed duration on success.
+//
+// Implementation note: we run `agent-deck --version` because it is the
+// cheapest possible call (no DB read, no tmux probe, no network back to
+// services). The ControlMaster socket is persisted across calls so we
+// measure mostly network RTT after the first hit, which is exactly what
+// the user wants to see in the header per #1103.
+func (r *SSHRunner) MeasureLatency(ctx context.Context) (time.Duration, error) {
+	timeoutCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	start := time.Now()
+	if _, err := r.run(timeoutCtx, "--version"); err != nil {
+		return 0, err
+	}
+	return time.Since(start), nil
 }

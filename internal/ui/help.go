@@ -9,6 +9,40 @@ import (
 	"github.com/asheshgoplani/agent-deck/internal/session"
 )
 
+// wrapWithHangingIndent wraps text to fit within width, indenting continuation
+// lines with the given indent string so wrapped descriptions stay aligned under
+// their column instead of bleeding back to column 0.
+//
+// width is the visible character budget for each line (excluding the indent on
+// continuation lines). If width <= 0 the text is returned unchanged.
+func wrapWithHangingIndent(text string, width int, indent string) string {
+	if text == "" || width <= 0 {
+		return text
+	}
+	words := strings.Fields(text)
+	if len(words) == 0 {
+		return text
+	}
+	var lines []string
+	current := words[0]
+	for _, w := range words[1:] {
+		if len(current)+1+len(w) <= width {
+			current += " " + w
+			continue
+		}
+		lines = append(lines, current)
+		current = w
+	}
+	lines = append(lines, current)
+	if len(lines) == 1 {
+		return lines[0]
+	}
+	for i := 1; i < len(lines); i++ {
+		lines[i] = indent + lines[i]
+	}
+	return strings.Join(lines, "\n")
+}
+
 // HelpOverlay shows keyboard shortcuts in a modal
 type HelpOverlay struct {
 	visible      bool
@@ -103,6 +137,12 @@ func (h *HelpOverlay) Update(msg tea.Msg) (*HelpOverlay, tea.Cmd) {
 				h.scrollOffset = 0
 			}
 			return h, nil
+		case "home":
+			h.scrollOffset = 0
+			return h, nil
+		case "end":
+			h.scrollOffset = 9999 // Will be clamped in View()
+			return h, nil
 		case "g":
 			h.scrollOffset = 0
 			return h, nil
@@ -126,7 +166,9 @@ func (h *HelpOverlay) View() string {
 	// Define help sections
 	newKeys := h.keyPair(hotkeyNewSession, hotkeyQuickCreate, "n/N")
 	forkKeys := h.keyPair(hotkeyQuickFork, hotkeyForkWithOptions, "f/F")
-	reorderKeys := "K / J"
+	reorderUpKeys := "+ / K / Shift+↑"
+	reorderDownKeys := "- / J / Shift+↓"
+	indentKeys := "Shift+→/←"
 	searchKey := h.key(hotkeySearch, "/")
 	settingsKey := h.key(hotkeySettings, "S")
 	helpKey := h.key(hotkeyHelp, "?")
@@ -140,6 +182,7 @@ func (h *HelpOverlay) View() string {
 	renameKey := h.key(hotkeyRename, "r")
 	moveKey := h.key(hotkeyMoveToGroup, "M")
 	mcpKey := h.key(hotkeyMCPManager, "m")
+	pluginKey := h.key(hotkeyPluginManager, "L")
 	skillsKey := h.key(hotkeySkillsManager, "s")
 	previewKey := h.key(hotkeyTogglePreview, "v")
 	unreadKey := h.key(hotkeyMarkUnread, "u")
@@ -152,6 +195,7 @@ func (h *HelpOverlay) View() string {
 		notesKey = ""
 	}
 	editPathsKey := h.key(hotkeyEditPaths, "p")
+	editSessionKey := h.key(hotkeyEditSession, "P")
 	worktreeKey := h.key(hotkeyWorktreeFinish, "W")
 	watcherPanelKey := h.key(hotkeyWatcherPanel, "w")
 	groupKey := h.key(hotkeyCreateGroup, "g")
@@ -167,22 +211,25 @@ func (h *HelpOverlay) View() string {
 				{"j / Down", "Move down"},
 				{"k / Up", "Move up"},
 				{"Ctrl+u/d", "Half page up/down"},
+				{"PgUp / PgDn", "Half page up/down"},
 				{"Ctrl+f/b", "Full page up/down"},
+				{"Home / End", "Jump to first / last item"},
 				{"gg / G", "Jump to top / global search"},
 				{"h / Left", "Collapse / parent"},
 				{"l / Right", "Expand / toggle"},
 				{"1-9", "Jump to root group"},
 				{"Space", "Jump mode"},
 				{"Enter", "Attach / toggle"},
+				{"Shift+Enter", "Open session in new iTerm window (macOS)"},
 			},
 		},
 		{
 			title: "GROUP NAVIGATION (v1.7.60)",
 			items: [][2]string{
-				{"Alt+j / Alt+k", "Next / prev session in current group"},
-				{"Alt+1 - Alt+9", "Jump to Nth session in current group"},
-				{"Alt+g / Alt+G", "First / last session in current group"},
-				{"Alt+/", "Filter search scoped to current group"},
+				{"Alt+j / Alt+k", "Next / prev session in group"},
+				{"Alt+1 - Alt+9", "Jump to Nth session in group"},
+				{"Alt+g / Alt+G", "First / last in group"},
+				{"Alt+/", "Filter search in group"},
 			},
 		},
 		{
@@ -197,17 +244,23 @@ func (h *HelpOverlay) View() string {
 				{undoKey, "Undo delete"},
 				{moveKey, "Move to group"},
 				{mcpKey, "MCP Manager (Claude/Gemini)"},
+				{pluginKey, "Plugin Manager (Claude — RFC PLUGIN_ATTACH.md)"},
 				{skillsKey, "Skills Manager"},
 				{"$", "Cost Dashboard"},
 				{previewKey, "Toggle preview mode (output/stats/both)"},
+				{"< / >", "Shrink / grow preview pane by 5% (issue #1092)"},
 				{unreadKey, "Mark unread"},
-				{quickApproveKey, "Quick approve (send '1' to Claude session)"},
-				{reorderKeys, "Reorder up/down"},
+				{quickApproveKey, "Quick approve (send '1' to Claude)"},
+				{reorderUpKeys, "Reorder up (auto-promote at edge)"},
+				{reorderDownKeys, "Reorder down (auto-promote at edge)"},
+				{indentKeys, "Indent / outdent (in group)"},
 				{forkKeys, "Fork session (Claude only)"},
 				{copyKey, "Copy output to clipboard"},
+				{"C", "Copy preview info (Repo / Path / Branch)"},
 				{sendKey, "Send output to session"},
 				{execShellKey, "Exec shell in sandbox container"},
 				{editPathsKey, "Edit multi-repo paths"},
+				{editSessionKey, "Edit session settings (title/color/...)"},
 				{notesKey, "Edit notes"},
 			},
 		},
@@ -283,18 +336,33 @@ func (h *HelpOverlay) View() string {
 		Foreground(ColorCyan).
 		Bold(true)
 
-	// Responsive dialog width
-	dialogWidth := 48
-	if h.width > 0 && h.width < dialogWidth+10 {
-		dialogWidth = h.width - 10
-		if dialogWidth < 35 {
-			dialogWidth = 35
+	// Responsive dialog width: prefer wider so descriptions don't wrap
+	// awkwardly. Default 70, scale up to ~80 when the terminal allows,
+	// shrink only on narrow terminals.
+	dialogWidth := 70
+	if h.width > 0 {
+		if h.width-10 < dialogWidth {
+			dialogWidth = h.width - 10
+			if dialogWidth < 35 {
+				dialogWidth = 35
+			}
+		} else if h.width >= 100 {
+			dialogWidth = 80
 		}
 	}
 	keyWidth := 14
 	if dialogWidth < 45 {
 		keyWidth = 10 // Compact key column for small screens
 	}
+	// Description column budget: dialogWidth minus border (2) + padding (4)
+	// + leading "  " (2) + key column. Hanging indent for wrapped lines is
+	// the same width as the leading spaces + key column so continuations sit
+	// aligned under the description column.
+	descWidth := dialogWidth - 2 - 4 - 2 - keyWidth
+	if descWidth < 10 {
+		descWidth = 10
+	}
+	hangingIndent := strings.Repeat(" ", 2+keyWidth)
 
 	keyStyle := lipgloss.NewStyle().
 		Foreground(ColorPurple).
@@ -323,7 +391,8 @@ func (h *HelpOverlay) View() string {
 	for i, section := range sections {
 		lines = append(lines, sectionStyle.Render(section.title))
 		for _, item := range section.items {
-			line := "  " + keyStyle.Render(item[0]) + descStyle.Render(item[1])
+			wrapped := wrapWithHangingIndent(item[1], descWidth, hangingIndent)
+			line := "  " + keyStyle.Render(item[0]) + descStyle.Render(wrapped)
 			lines = append(lines, line)
 		}
 		if i < len(sections)-1 {

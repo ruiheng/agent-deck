@@ -20,6 +20,24 @@ const (
 	defaultSendTimeout      = 30 * time.Second
 	defaultQueueMaxAge      = 10 * time.Minute
 	defaultQueueMaxAttempts = 20
+
+	// defaultOutputHashDedupTTL caps the (child, to_status, output_hash)
+	// suppression window from issue #1142. A dormant child that re-emits
+	// the same transition with the same pane content is silenced for the
+	// TTL, then re-emits once as a liveness ping so the operator still
+	// sees the child is alive. 2h matches the worst-case 20.2-min mean
+	// interval observed in the 2026-05-21 self-improvement report (47
+	// fires over 15.5 hours) while still giving the operator periodic
+	// confirmation a child hasn't died silently.
+	defaultOutputHashDedupTTL = 2 * time.Hour
+
+	// shortWindowDedupSeconds preserves the pre-#1142 90-second
+	// idempotency window. It catches duplicate polls inside one daemon
+	// tick (e.g. when a hook fires the same transition that the
+	// status-poll also observes). Independent of output-hash dedup so
+	// callers that haven't been wired to populate LastOutputHash still
+	// get the legacy guarantee.
+	shortWindowDedupSeconds = 90
 )
 
 type TransitionNotificationEvent struct {
@@ -30,6 +48,14 @@ type TransitionNotificationEvent struct {
 	ToStatus       string    `json:"to_status"`
 	Timestamp      time.Time `json:"timestamp"`
 
+	// LastOutputHash is a cheap stable signal (e.g. SHA-1 of the last N
+	// bytes of the child's tmux pane at transition time) used by the
+	// notifier's #1142 dedup to suppress repeated [EVENT] notifications
+	// for a dormant child whose pane content hasn't changed. Optional —
+	// empty string disables hash-based dedup and falls back to the legacy
+	// 90s short window.
+	LastOutputHash string `json:"last_output_hash,omitempty"`
+
 	TargetSessionID string `json:"target_session_id,omitempty"`
 	TargetKind      string `json:"target_kind,omitempty"` // parent | conductor
 	DeliveryResult  string `json:"delivery_result,omitempty"`
@@ -39,6 +65,10 @@ type transitionNotifyRecord struct {
 	From string `json:"from"`
 	To   string `json:"to"`
 	At   int64  `json:"at"`
+	// OutputHash mirrors TransitionNotificationEvent.LastOutputHash at
+	// the moment of the last accepted (non-deduped) emission. Used by
+	// isDuplicate to suppress identical re-fires within the TTL.
+	OutputHash string `json:"output_hash,omitempty"`
 }
 
 type transitionNotifyState struct {
@@ -66,9 +96,35 @@ type TransitionNotifier struct {
 	logPath    string
 	missedPath string
 	queuePath  string
+	orphanPath string
 
 	sender      transitionSender
 	sendTimeout time.Duration
+
+	// busyBackoff is the in-process retry schedule used when the parent is
+	// StatusRunning at dispatch time. After the last entry is exhausted the
+	// event is persisted to the per-conductor inbox. Defaults to
+	// {5s,15s,45s} via NewTransitionNotifier; tests override with shorter
+	// durations.
+	busyBackoff []time.Duration
+
+	// availability decides whether a target session is free to receive a
+	// send. Defaults to liveTargetAvailability (real tmux state); tests
+	// inject a deterministic stub.
+	availability targetAvailabilityResolver
+
+	// eventDeliverable is the centralized "is this event still deliverable
+	// to this session?" gate at the replay-dispatch boundary. Returns
+	// (false, reason) when the child should be dropped from the queue; the
+	// reason string flows into notifier-missed.log so the operator can tell
+	// removed-vs-muted apart. Issue #962 variants 1 and 3:
+	//   - variant 1 (PR #992): child rm'd between enqueue and drain
+	//   - variant 3 (this PR): child marked NoTransitionNotify after enqueue
+	// Future per-session bypass conditions (session paused, conductor
+	// stopped, etc.) plug in here too. Nil means no filter (test
+	// struct-literal back-compat); production sets it via
+	// NewTransitionNotifier.
+	eventDeliverable eventDeliverabilityResolver
 
 	mu    sync.Mutex
 	state transitionNotifyState
@@ -79,6 +135,35 @@ type TransitionNotifier struct {
 	slotsMu     sync.Mutex
 	targetSlots map[string]chan struct{}
 
+	// orphanMu guards orphanWarned. The set tracks child session ids we have
+	// already emitted a WARN for, so a long-lived orphan firing many
+	// transitions does not flood notifier-orphans.log.
+	orphanMu     sync.Mutex
+	orphanWarned map[string]bool
+
+	// missedMu guards missedSeen. The set tracks (fingerprint|reason) keys
+	// already written to notifier-missed.log so the same exhausted event
+	// firing repeatedly (issue #824) doesn't flood the log with identical
+	// lines. Process-local — restart resets the dedup state, which is fine:
+	// missed-log is operator signal, not durable replay.
+	missedMu   sync.Mutex
+	missedSeen map[string]bool
+
+	// terminatedMu guards terminatedFingerprints. An event whose retries
+	// exhausted is recorded here; subsequent EnqueueDeferred calls for the
+	// same fingerprint are no-ops. Without this guard the daemon's poll
+	// loop keeps re-pushing the exhausted event into the deferred queue,
+	// producing the 7-times-in-16-seconds re-fire loop in the production
+	// trace from issue #824.
+	terminatedMu           sync.Mutex
+	terminatedFingerprints map[string]bool
+
+	// stopCh closes when Close() is invoked. scheduleBusyRetry's sleep loops
+	// select on it so test cleanups can cancel pending retries instead of
+	// letting them write inbox files into the post-cleanup environment.
+	stopMu sync.Mutex
+	stopCh chan struct{}
+
 	// watchersWG tracks the short-lived goroutine that waits on a send's
 	// completion or timeout. Tests use it to synchronize before asserting
 	// on log file contents. sendersWG (not exposed) tracks the possibly
@@ -86,6 +171,14 @@ type TransitionNotifier struct {
 	// hangs past sendTimeout.
 	watchersWG sync.WaitGroup
 	sendersWG  sync.WaitGroup
+
+	// outputHashDedupTTLOverride lets tests shrink the issue #1142
+	// output-hash dedup window without waiting hours of wall-clock time.
+	// Zero means "use defaultOutputHashDedupTTL". Production never sets
+	// it. Tests that need a deterministic boundary drive the TTL via
+	// synthetic event.Timestamp values instead — this override exists
+	// only for the rare suite that wants to assert TTL math directly.
+	outputHashDedupTTLOverride time.Duration
 }
 
 func NewTransitionNotifier() *TransitionNotifier {
@@ -94,16 +187,50 @@ func NewTransitionNotifier() *TransitionNotifier {
 		logPath:     transitionNotifyLogPath(),
 		missedPath:  transitionNotifierMissedPath(),
 		queuePath:   transitionNotifierQueuePath(),
+		orphanPath:  transitionNotifierOrphanLogPath(),
 		sender:      SendSessionMessageReliable,
 		sendTimeout: defaultSendTimeout,
+		busyBackoff: []time.Duration{5 * time.Second, 15 * time.Second, 45 * time.Second},
 		state: transitionNotifyState{
 			Records: map[string]transitionNotifyRecord{},
 		},
-		targetSlots: map[string]chan struct{}{},
+		targetSlots:            map[string]chan struct{}{},
+		orphanWarned:           map[string]bool{},
+		missedSeen:             map[string]bool{},
+		terminatedFingerprints: map[string]bool{},
+		stopCh:                 make(chan struct{}),
 	}
+	n.eventDeliverable = n.liveEventDeliverable
 	n.loadState()
 	n.loadQueue()
 	return n
+}
+
+// Close cancels any pending in-process busy retries. Production callers do
+// not need it because the daemon process owns the notifier for its
+// lifetime; tests use it to stop scheduleBusyRetry goroutines from writing
+// to inbox files after t.TempDir cleanup. Idempotent.
+func (n *TransitionNotifier) Close() {
+	n.stopMu.Lock()
+	defer n.stopMu.Unlock()
+	if n.stopCh == nil {
+		return
+	}
+	select {
+	case <-n.stopCh:
+		// already closed
+	default:
+		close(n.stopCh)
+	}
+}
+
+func (n *TransitionNotifier) getStopCh() <-chan struct{} {
+	n.stopMu.Lock()
+	defer n.stopMu.Unlock()
+	if n.stopCh == nil {
+		n.stopCh = make(chan struct{})
+	}
+	return n.stopCh
 }
 
 func ShouldNotifyTransition(fromStatus, toStatus string) bool {
@@ -216,6 +343,43 @@ func (n *TransitionNotifier) prepareDispatch(event TransitionNotificationEvent) 
 		return plan
 	}
 
+	// Top-level conductor self-suppress (issue #824 cause B). A real
+	// top-level conductor has parent_session_id == "" AND its own title
+	// starts with `conductor-`. That isn't an orphan — it's the root —
+	// so drop silently without writing to notifier-orphans.log. The
+	// production trace showed agent-deck conductors flooding the orphan
+	// log with their own self-transitions because PR #807's check at
+	// the outer line-211 only looked at event.ChildTitle, which was
+	// empty in some emit paths.
+	if strings.TrimSpace(child.ParentSessionID) == "" && isConductorSessionTitle(child.Title) {
+		plan.event.DeliveryResult = transitionDeliveryDropped
+		plan.finalized = true
+		return plan
+	}
+
+	// Orphan-on-creation guard (issue #805 cause A). When a child is born
+	// without a parent linkage — typically because a worktree-setup hook
+	// or sandboxed shell dropped $AGENTDECK_INSTANCE_ID — every transition
+	// it fires resolves to nil parent and drops silently. Log a single WARN
+	// per orphan child so the operator gets actionable signal pointing at
+	// the documented `agent-deck session set-parent` workflow.
+	if strings.TrimSpace(child.ParentSessionID) == "" {
+		n.logOrphanOnce(plan.event, child.ID)
+		plan.event.DeliveryResult = transitionDeliveryDropped
+		plan.finalized = true
+		return plan
+	}
+
+	// Self-pointing conductor: parent_session_id == child.id. This is the
+	// case PR #807 explicitly covered. resolveParentNotificationTarget
+	// would also return nil here, but we drop earlier (without an orphan
+	// log) so a self-pointing conductor doesn't get spurious WARN noise.
+	if strings.TrimSpace(child.ParentSessionID) == child.ID && isConductorSessionTitle(child.Title) {
+		plan.event.DeliveryResult = transitionDeliveryDropped
+		plan.finalized = true
+		return plan
+	}
+
 	parent := resolveParentNotificationTarget(child, byID)
 	if parent == nil {
 		plan.event.DeliveryResult = transitionDeliveryDropped
@@ -234,6 +398,13 @@ func (n *TransitionNotifier) prepareDispatch(event TransitionNotificationEvent) 
 		plan.event.DeliveryResult = transitionDeliveryDeferred
 		plan.finalized = true
 		n.EnqueueDeferred(plan.event)
+		// In-process retry-with-backoff (issue #805 cause B). The disk
+		// queue + daemon poll path is the long-term retry; this is the
+		// fast path that catches the common case where the parent is
+		// busy for seconds, not minutes. After exhaustion the event is
+		// persisted to the per-conductor inbox so the conductor's next
+		// idle drain still sees it.
+		n.scheduleBusyRetry(plan.event)
 		return plan
 	}
 
@@ -271,6 +442,12 @@ func (n *TransitionNotifier) dispatchAsync(targetID, message string, event Trans
 			e.DeliveryResult = transitionDeliveryFailed
 		} else {
 			e.DeliveryResult = transitionDeliverySent
+			// Issue #962 variant: clear any earlier persisted inbox
+			// entry for the same (child, from, to) now that the live
+			// delivery succeeded — see SweepInboxByTuple.
+			if targetID != "" {
+				_, _ = SweepInboxByTuple(targetID, event.ChildSessionID, event.FromStatus, event.ToStatus)
+			}
 		}
 		doneCh <- e
 		// Slot is only released once the send really returns, which prevents
@@ -374,6 +551,21 @@ func isLiveSessionStatus(status Status) bool {
 	}
 }
 
+// isDuplicate reports whether the event should be suppressed because the
+// parent has already seen an equivalent [EVENT] line. Two layered checks:
+//
+//  1. Short-window (legacy): identical (from→to) within shortWindowDedupSeconds.
+//     Catches duplicate polls inside one daemon tick and back-compat callers
+//     that don't populate LastOutputHash.
+//
+//  2. Output-hash (issue #1142): identical to_status AND identical
+//     LastOutputHash within outputHashDedupTTL. Suppresses a dormant child
+//     re-emitting the same transition with no new pane content. After the
+//     TTL elapses, the event re-emits once as a liveness ping and the
+//     stored record resets via markNotified.
+//
+// Either layer matching is enough to dedup. From-status is intentionally
+// ignored in layer 2 since ShouldNotifyTransition already pins from=running.
 func (n *TransitionNotifier) isDuplicate(event TransitionNotificationEvent) bool {
 	n.mu.Lock()
 	defer n.mu.Unlock()
@@ -382,10 +574,47 @@ func (n *TransitionNotifier) isDuplicate(event TransitionNotificationEvent) bool
 	if !ok {
 		return false
 	}
-	if record.From != event.FromStatus || record.To != event.ToStatus {
-		return false
+
+	elapsed := event.Timestamp.Unix() - record.At
+
+	if record.From == event.FromStatus && record.To == event.ToStatus && elapsed <= shortWindowDedupSeconds {
+		return true
 	}
-	return event.Timestamp.Unix()-record.At <= 90
+
+	if event.LastOutputHash != "" &&
+		record.To == event.ToStatus &&
+		record.OutputHash == event.LastOutputHash &&
+		elapsed <= int64(n.outputHashTTL().Seconds()) {
+		return true
+	}
+
+	return false
+}
+
+// outputHashTTL returns the active TTL for the output-hash dedup layer. The
+// override field is reserved for tests; production callers get the default.
+func (n *TransitionNotifier) outputHashTTL() time.Duration {
+	if n.outputHashDedupTTLOverride > 0 {
+		return n.outputHashDedupTTLOverride
+	}
+	return defaultOutputHashDedupTTL
+}
+
+// transitionEventOutputHash derives the cheap stable pane-activity signal
+// used by the issue #1142 output-hash dedup. It returns the inst's
+// LastActivityTime serialized to ns precision: identical bytes mean the pane
+// content hasn't changed since the last accepted [EVENT], so the notifier
+// safely suppresses the re-fire. Empty string for nil/missing — falls back
+// to the legacy 90s dedup window.
+func transitionEventOutputHash(inst *Instance) string {
+	if inst == nil {
+		return ""
+	}
+	t := inst.GetLastActivityTime()
+	if t.IsZero() {
+		return ""
+	}
+	return fmt.Sprintf("act:%d", t.UnixNano())
 }
 
 func (n *TransitionNotifier) markNotified(event TransitionNotificationEvent) {
@@ -396,9 +625,10 @@ func (n *TransitionNotifier) markNotified(event TransitionNotificationEvent) {
 		n.state.Records = map[string]transitionNotifyRecord{}
 	}
 	n.state.Records[event.ChildSessionID] = transitionNotifyRecord{
-		From: event.FromStatus,
-		To:   event.ToStatus,
-		At:   event.Timestamp.Unix(),
+		From:       event.FromStatus,
+		To:         event.ToStatus,
+		At:         event.Timestamp.Unix(),
+		OutputHash: event.LastOutputHash,
 	}
 	_ = n.saveStateLocked()
 }
@@ -453,6 +683,22 @@ func (n *TransitionNotifier) logEvent(event TransitionNotificationEvent) {
 }
 
 func (n *TransitionNotifier) logMissed(event TransitionNotificationEvent, reason string) {
+	// Dedup by (fingerprint|reason) so repeated exhaust calls for the same
+	// logical event don't flood the log. A different reason for the same
+	// event still records — operators want to see e.g. timeout AND expired
+	// for the same transition, but not seven exhaust lines in a row.
+	key := EventFingerprint(event) + "|" + reason
+	n.missedMu.Lock()
+	if n.missedSeen == nil {
+		n.missedSeen = map[string]bool{}
+	}
+	if n.missedSeen[key] {
+		n.missedMu.Unlock()
+		return
+	}
+	n.missedSeen[key] = true
+	n.missedMu.Unlock()
+
 	if err := os.MkdirAll(filepath.Dir(n.missedPath), 0o755); err != nil {
 		return
 	}
@@ -462,6 +708,7 @@ func (n *TransitionNotifier) logMissed(event TransitionNotificationEvent, reason
 		"event":  fmt.Sprintf("%s→%s", event.FromStatus, event.ToStatus),
 		"child":  event.ChildSessionID,
 		"reason": reason,
+		"fp":     EventFingerprint(event),
 	}
 	line, err := json.Marshal(entry)
 	if err != nil {
@@ -473,6 +720,24 @@ func (n *TransitionNotifier) logMissed(event TransitionNotificationEvent, reason
 	}
 	defer f.Close()
 	_, _ = f.Write(append(line, '\n'))
+}
+
+// markTerminated records that an event's retries have exhausted and the
+// event has been persisted to the inbox. Subsequent EnqueueDeferred calls
+// for the same fingerprint will no-op via isTerminated.
+func (n *TransitionNotifier) markTerminated(event TransitionNotificationEvent) {
+	n.terminatedMu.Lock()
+	defer n.terminatedMu.Unlock()
+	if n.terminatedFingerprints == nil {
+		n.terminatedFingerprints = map[string]bool{}
+	}
+	n.terminatedFingerprints[EventFingerprint(event)] = true
+}
+
+func (n *TransitionNotifier) isTerminated(event TransitionNotificationEvent) bool {
+	n.terminatedMu.Lock()
+	defer n.terminatedMu.Unlock()
+	return n.terminatedFingerprints[EventFingerprint(event)]
 }
 
 // --- deferred retry queue ----------------------------------------------------
@@ -487,6 +752,14 @@ func (n *TransitionNotifier) EnqueueDeferred(event TransitionNotificationEvent) 
 }
 
 func (n *TransitionNotifier) enqueueDeferredAt(event TransitionNotificationEvent, firstDeferredAt time.Time) {
+	// Terminated fingerprints (events already exhausted to inbox) must not
+	// be re-queued. Issue #824 trace showed the same event re-firing 7 times
+	// in 16 seconds because the daemon's poll loop kept re-discovering the
+	// transition and EnqueueDeferred kept accepting it.
+	if n.isTerminated(event) {
+		return
+	}
+
 	n.queueMu.Lock()
 	defer n.queueMu.Unlock()
 
@@ -521,6 +794,14 @@ func deferredKey(event TransitionNotificationEvent) string {
 // live instance's status; tests pass a canned function.
 type targetAvailabilityResolver func(profile, targetID string) bool
 
+// eventDeliverabilityResolver is the centralized per-child gate used at the
+// replay-dispatch boundary (DrainRetryQueueWithResolver). It returns
+// (true, "") to let the queued event through, or (false, reason) to drop it
+// — the reason string is logged into notifier-missed.log so removed-vs-
+// muted-vs-future-bypass categories stay distinguishable in diagnostics.
+// Issue #962 v1 (removed) + v3 (muted) share this seam.
+type eventDeliverabilityResolver func(profile, childID string) (deliverable bool, reason string)
+
 // DrainRetryQueue is the production entry point used by the daemon's poll
 // loop. It resolves target availability by reading the live session state.
 func (n *TransitionNotifier) DrainRetryQueue(profile string) {
@@ -538,14 +819,34 @@ func (n *TransitionNotifier) DrainRetryQueueWithResolver(profile string, isAvail
 	n.queue.Entries = nil
 	n.queueMu.Unlock()
 
+	type droppedEntry struct {
+		entry  deferredQueueEntry
+		reason string
+	}
 	var keep []deferredQueueEntry
 	var toDispatch []deferredQueueEntry
 	var toExpire []deferredQueueEntry
+	var toDrop []droppedEntry
 
 	for _, entry := range snapshot {
 		if entry.Event.Profile != profile {
 			keep = append(keep, entry)
 			continue
+		}
+		// Issue #962 (v1 + v3): consult the centralized per-child gate
+		// before re-dispatch. Drops events whose child has been removed
+		// from the registry (v1, PR #992) OR has been muted via
+		// `set-transition-notify off` after the event was queued (v3, this
+		// PR). Done BEFORE the age-out check so we don't emit "expired"
+		// missed-log lines for sessions that are no longer valid delivery
+		// targets. The resolver returns a category string so
+		// notifier-missed.log stays diagnostic-friendly across both
+		// variants.
+		if n.eventDeliverable != nil {
+			if ok, reason := n.eventDeliverable(profile, entry.Event.ChildSessionID); !ok {
+				toDrop = append(toDrop, droppedEntry{entry: entry, reason: reason})
+				continue
+			}
 		}
 		expired := now.Sub(entry.FirstDeferredAt) > defaultQueueMaxAge ||
 			entry.Attempts >= defaultQueueMaxAttempts
@@ -561,6 +862,9 @@ func (n *TransitionNotifier) DrainRetryQueueWithResolver(profile string, isAvail
 		toDispatch = append(toDispatch, entry)
 	}
 
+	for _, d := range toDrop {
+		n.logMissed(d.entry.Event, d.reason)
+	}
 	for _, entry := range toExpire {
 		n.logMissed(entry.Event, "expired")
 	}
@@ -598,6 +902,67 @@ func (n *TransitionNotifier) liveTargetAvailability(profile, targetID string) bo
 		return inst.GetStatusThreadSafe() != StatusRunning
 	}
 	return false
+}
+
+// liveEventDeliverable is the production wiring of eventDeliverable. It
+// answers "is this child currently a valid delivery target?" by reading the
+// live registry. Returns (false, reason) when the queued event should be
+// dropped on the next drain pass:
+//
+//   - "child_removed_from_registry" — child rm'd between enqueue and drain
+//     (issue #962 v1, PR #992). The rm path sweeps the inbox + dedup ledger
+//     but not this queue file, so consumer-side defense-in-depth catches
+//     stale entries surviving across upgrades or rm/drain races.
+//   - "child_muted" — child has NoTransitionNotify=true (issue #962 v3, this
+//     PR). The flag is checked at NEW emission (transition_daemon.go:210
+//     and :375) but pre-fix never on replay, so per-session mute toggled
+//     after enqueue had no effect on already-queued events.
+//
+// Fail-open on storage errors: if the SQLite file is missing, locked, or
+// the load returns an error, return (true, "") so a transient outage
+// doesn't silently drop legitimate events. The trade-off is that during a
+// real outage we may briefly replay events; the alternative (fail-closed)
+// would be a silent-loss path strictly worse than the bug being fixed.
+func (n *TransitionNotifier) liveEventDeliverable(profile, childID string) (bool, string) {
+	if strings.TrimSpace(childID) == "" {
+		return false, "child_removed_from_registry"
+	}
+	storage, err := NewStorageWithProfile(profile)
+	if err != nil {
+		return true, ""
+	}
+	defer storage.Close()
+	instances, _, err := storage.LoadWithGroups()
+	if err != nil {
+		return true, ""
+	}
+	for _, inst := range instances {
+		if inst.ID == childID {
+			if !instanceAcceptsTransitionEvents(inst) {
+				return false, "child_muted"
+			}
+			return true, ""
+		}
+	}
+	return false, "child_removed_from_registry"
+}
+
+// instanceAcceptsTransitionEvents is the centralized per-session predicate
+// shared by NEW-emission (transition_daemon.go) and replay-dispatch
+// (DrainRetryQueueWithResolver via liveEventDeliverable). All "is this
+// session currently accepting transition events?" logic lives here so the
+// two code paths can't drift — the original bite path for issue #962 v3
+// was exactly that the emission site checked NoTransitionNotify and the
+// replay site did not. Future per-session bypass conditions (paused,
+// stopped, etc.) extend this predicate, not its callers.
+func instanceAcceptsTransitionEvents(inst *Instance) bool {
+	if inst == nil {
+		return false
+	}
+	if inst.NoTransitionNotify {
+		return false
+	}
+	return true
 }
 
 func (n *TransitionNotifier) snapshotQueueForTest() []deferredQueueEntry {
@@ -678,4 +1043,167 @@ func transitionNotifierQueuePath() string {
 		return filepath.Join(os.TempDir(), ".agent-deck", "runtime", "transition-deferred-queue.json")
 	}
 	return filepath.Join(dir, "runtime", "transition-deferred-queue.json")
+}
+
+func transitionNotifierOrphanLogPath() string {
+	dir, err := GetAgentDeckDir()
+	if err != nil {
+		return filepath.Join(os.TempDir(), ".agent-deck", "logs", "notifier-orphans.log")
+	}
+	return filepath.Join(dir, "logs", "notifier-orphans.log")
+}
+
+// --- orphan WARN -------------------------------------------------------------
+
+// logOrphanOnce writes a single WARN line per child id to
+// notifier-orphans.log. Subsequent transitions for the same child are
+// silently dropped from this stream so a long-lived orphan does not flood
+// logs. The hint string is stable so operators can grep + redirect to the
+// documented `agent-deck session set-parent` workflow.
+func (n *TransitionNotifier) logOrphanOnce(event TransitionNotificationEvent, childID string) {
+	n.orphanMu.Lock()
+	if n.orphanWarned == nil {
+		n.orphanWarned = map[string]bool{}
+	}
+	if n.orphanWarned[childID] {
+		n.orphanMu.Unlock()
+		return
+	}
+	n.orphanWarned[childID] = true
+	n.orphanMu.Unlock()
+
+	path := n.orphanPath
+	if path == "" {
+		path = transitionNotifierOrphanLogPath()
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return
+	}
+	entry := map[string]any{
+		"ts":      time.Now().Format(time.RFC3339Nano),
+		"level":   "WARN",
+		"child":   childID,
+		"title":   event.ChildTitle,
+		"profile": event.Profile,
+		"event":   fmt.Sprintf("%s→%s", event.FromStatus, event.ToStatus),
+		"message": "orphan child detected; run orphan sweep: agent-deck session set-parent <child> <conductor>",
+	}
+	line, err := json.Marshal(entry)
+	if err != nil {
+		return
+	}
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+	if err != nil {
+		return
+	}
+	defer f.Close()
+	_, _ = f.Write(append(line, '\n'))
+}
+
+// --- in-process retry-with-backoff ------------------------------------------
+
+// scheduleBusyRetry kicks off a goroutine that retries delivery on a fixed
+// backoff schedule (n.busyBackoff, default {5s,15s,45s}). On each tick:
+//   - check availability(profile,target); if free, send via n.sender
+//   - on send success: log to delivery stream, mark dedup, drain queue entry
+//   - on availability false: continue to the next backoff entry
+//
+// After the last entry without a successful send, persist the event to the
+// per-conductor inbox and write notifier-missed.log{reason=exhausted_busy_retries}
+// so the conductor's next idle drain still sees the transition.
+//
+// Bounded by len(busyBackoff). Cancellable via Close() — the select on
+// stopCh releases pending sleeps so test cleanups don't leak retries past
+// t.TempDir teardown.
+func (n *TransitionNotifier) scheduleBusyRetry(event TransitionNotificationEvent) {
+	delays := n.busyBackoff
+	if len(delays) == 0 {
+		return
+	}
+	stop := n.getStopCh()
+
+	n.sendersWG.Add(1)
+	go func() {
+		defer n.sendersWG.Done()
+
+		for _, d := range delays {
+			select {
+			case <-time.After(d):
+			case <-stop:
+				return
+			}
+
+			isAvail := n.availability
+			if isAvail == nil {
+				isAvail = n.liveTargetAvailability
+			}
+			if !isAvail(event.Profile, event.TargetSessionID) {
+				continue
+			}
+
+			send := n.sender
+			if send == nil {
+				send = SendSessionMessageReliable
+			}
+			err := send(event.Profile, event.TargetSessionID, buildTransitionMessage(event))
+			if err == nil {
+				e := event
+				e.DeliveryResult = transitionDeliverySent
+				n.markNotified(e)
+				n.logEvent(e)
+				// Terminal: subsequent EnqueueDeferred calls for the same
+				// fingerprint must no-op. v1.7.74 (#825) added this for the
+				// exhaustion path; without the same guard here, parallel
+				// scheduleBusyRetry goroutines spawned during a busy window
+				// each fire a [EVENT] when the parent frees up (production
+				// trace: child 384aa29c had 5 sent records at the same ts).
+				// Mark terminated BEFORE removeFromQueue so a concurrent
+				// drain that races us to EnqueueDeferred can't slip the
+				// event back in between the queue prune and the mark.
+				n.markTerminated(event)
+				n.removeFromQueue(event)
+				// Issue #962 variant: any earlier persisted inbox entry
+				// for the same (child, from, to) is now superseded by
+				// this live delivery — sweep it so the operator's next
+				// drain doesn't replay stale events.
+				if event.TargetSessionID != "" {
+					_, _ = SweepInboxByTuple(event.TargetSessionID, event.ChildSessionID, event.FromStatus, event.ToStatus)
+				}
+				return
+			}
+			// Send failed: try the next backoff entry.
+		}
+
+		// Exhausted — persist to the parent's inbox, signal via missed log,
+		// and mark terminated so the deferred queue cannot re-add this
+		// fingerprint. Order matters: mark terminated BEFORE removeFromQueue
+		// so a concurrent drain that races us to EnqueueDeferred can't slip
+		// the event back in between the queue prune and the terminated mark.
+		if event.TargetSessionID != "" {
+			_ = WriteInboxEvent(event.TargetSessionID, event)
+		}
+		n.markTerminated(event)
+		n.logMissed(event, "exhausted_busy_retries")
+		n.removeFromQueue(event)
+	}()
+}
+
+func (n *TransitionNotifier) removeFromQueue(event TransitionNotificationEvent) {
+	n.queueMu.Lock()
+	defer n.queueMu.Unlock()
+	key := deferredKey(event)
+	keep := n.queue.Entries[:0]
+	dropped := false
+	for _, entry := range n.queue.Entries {
+		if deferredKey(entry.Event) == key {
+			dropped = true
+			continue
+		}
+		keep = append(keep, entry)
+	}
+	if !dropped {
+		return
+	}
+	n.queue.Entries = keep
+	_ = n.saveQueueLocked()
 }

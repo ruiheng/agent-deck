@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"sync"
@@ -57,6 +58,13 @@ type UserConfig struct {
 	// These can be attached/detached per-project via the MCP Manager (M key)
 	MCPs map[string]MCPDef `toml:"mcps"`
 
+	// Plugins defines available Claude Code plugins for per-session attach
+	// (RFC docs/rfc/PLUGIN_ATTACH.md). Catalog-only in v1: every name passed
+	// via `--plugin <name>` must resolve to an entry here. Each entry maps a
+	// short catalog name (e.g. "octopus") to a Claude Code plugin id
+	// (`<name>@<source>`) plus per-plugin policy (auto-install, channel link).
+	Plugins map[string]PluginDef `toml:"plugins"`
+
 	// Claude defines Claude Code integration settings
 	Claude ClaudeSettings `toml:"claude"`
 
@@ -93,6 +101,12 @@ type UserConfig struct {
 
 	// Copilot defines GitHub Copilot CLI integration settings (Issue #556)
 	Copilot CopilotSettings `toml:"copilot"`
+
+	// Crush defines charmbracelet/crush CLI integration settings (Issue #940)
+	Crush CrushSettings `toml:"crush"`
+
+	// Hermes defines Hermes Agent CLI integration settings
+	Hermes HermesSettings `toml:"hermes"`
 
 	// Worktree defines git worktree preferences
 	Worktree WorktreeSettings `toml:"worktree"`
@@ -161,6 +175,111 @@ type UserConfig struct {
 	// Mirrors the opt-out in ~/.agent-deck/feedback-state.json so it is visible
 	// to the user and editable without running `agent-deck feedback`.
 	Feedback FeedbackSettings `toml:"feedback"`
+
+	// Terminal defines outer-terminal chrome settings — sequences agent-deck
+	// writes directly to the host terminal (iTerm2 badge, etc), distinct
+	// from anything tmux draws. Empty/absent uses defaults; see TerminalSettings.
+	Terminal TerminalSettings `toml:"terminal"`
+
+	// Web defines `agent-deck web` HTTP server settings.
+	Web WebSettings `toml:"web"`
+
+	// UI defines TUI layout settings (split ratios, etc).
+	UI UISettings `toml:"ui"`
+}
+
+// UISettings controls TUI layout proportions.
+// See issue #1092.
+type UISettings struct {
+	// PreviewPct is the percentage of horizontal width allocated to the
+	// preview pane (sessions list gets the remainder). Valid range: 10-90.
+	// Default: 65 (current behavior — sessions 35 / preview 65).
+	// Adjustable at runtime via < and > keybindings (5% step).
+	PreviewPct int `toml:"preview_pct"`
+
+	// ITermOpenAs controls whether Shift+Enter pops the focused session
+	// into a new iTerm2 *tab* or a new iTerm2 *window* on macOS. Valid
+	// values: "tab", "window". Empty defaults to "tab" (iTerm's natural
+	// UX). Issue #1100, follow-up to #1098 — credit @ddorman-dn.
+	ITermOpenAs string `toml:"iterm_open_as"`
+	// RemoteLatencyRefreshSecs sets how often the TUI re-measures the
+	// round-trip latency to each configured remote (issue #1103). Valid
+	// range: 2-300. Default: matches [system_stats].refresh_seconds (5s)
+	// so the latency marker ticks alongside CPU/RAM/load.
+	RemoteLatencyRefreshSecs int `toml:"remote_latency_refresh_secs"`
+}
+
+// DefaultPreviewPct is the default preview-pane width percentage.
+// Matches the historical hardcoded 0.35 sessions / 0.65 preview split.
+const DefaultPreviewPct = 65
+
+// MinPreviewPct and MaxPreviewPct bound the preview width to keep both
+// panes usable.
+const (
+	MinPreviewPct = 10
+	MaxPreviewPct = 90
+)
+
+// iTerm "open as" modes for Shift+Enter dispatch.
+const (
+	ITermOpenAsTab     = "tab"
+	ITermOpenAsWindow  = "window"
+	DefaultITermOpenAs = ITermOpenAsTab
+)
+
+// GetPreviewPct returns the configured preview percentage, clamped to
+// [MinPreviewPct, MaxPreviewPct]. Falls back to DefaultPreviewPct when
+// unset or out of range.
+func (u UISettings) GetPreviewPct() int {
+	if u.PreviewPct <= 0 {
+		return DefaultPreviewPct
+	}
+	if u.PreviewPct < MinPreviewPct {
+		return MinPreviewPct
+	}
+	if u.PreviewPct > MaxPreviewPct {
+		return MaxPreviewPct
+	}
+	return u.PreviewPct
+}
+
+// GetITermOpenAs returns the configured iTerm open mode. Unknown or
+// empty values fall through to the default ("tab"). Matching is
+// case-insensitive so users can write "Tab" or "WINDOW" in TOML.
+func (u UISettings) GetITermOpenAs() string {
+	switch strings.ToLower(strings.TrimSpace(u.ITermOpenAs)) {
+	case ITermOpenAsWindow:
+		return ITermOpenAsWindow
+	case ITermOpenAsTab:
+		return ITermOpenAsTab
+	}
+	return DefaultITermOpenAs
+}
+
+// GetRemoteLatencyRefreshSecs returns the remote latency refresh interval
+// in seconds, clamped to [2, 300]. When the user has not set this value
+// it falls back to fallbackSecs (typically the system_stats refresh
+// interval, so the latency marker ticks at the same cadence as CPU/RAM
+// per #1103). fallbackSecs <= 0 maps to 5.
+func (u UISettings) GetRemoteLatencyRefreshSecs(fallbackSecs int) int {
+	val := u.RemoteLatencyRefreshSecs
+	if val <= 0 {
+		val = fallbackSecs
+	}
+	if val < 2 {
+		val = 5
+	}
+	if val > 300 {
+		val = 300
+	}
+	return val
+}
+
+// WebSettings configures the `agent-deck web` HTTP server.
+type WebSettings struct {
+	// MutationsEnabled controls whether POST/PATCH/DELETE endpoints accept
+	// requests. nil (omitted) defaults to true. Forced off by --read-only.
+	MutationsEnabled *bool `toml:"mutations_enabled"`
 }
 
 // FeedbackSettings controls the in-product feedback prompts.
@@ -222,11 +341,23 @@ func (rc RemoteConfig) GetProfile() string {
 type ProfileSettings struct {
 	// Claude defines Claude Code overrides for a specific profile.
 	Claude ProfileClaudeSettings `toml:"claude"`
+	// Codex defines Codex CLI overrides for a specific profile.
+	Codex ProfileCodexSettings `toml:"codex"`
+	// Costs defines profile-specific cost-tracking overrides.
+	// Nil pointer means "no [profiles.<name>.costs] block in TOML"; the
+	// resolver falls through to global [costs] settings.
+	Costs *ProfileCosts `toml:"costs"`
 }
 
 // ProfileClaudeSettings defines profile-specific Claude overrides.
 type ProfileClaudeSettings struct {
 	// ConfigDir overrides [claude].config_dir for this profile only.
+	ConfigDir string `toml:"config_dir"`
+}
+
+// ProfileCodexSettings defines profile-specific Codex overrides.
+type ProfileCodexSettings struct {
+	// ConfigDir overrides [codex].config_dir for this profile only.
 	ConfigDir string `toml:"config_dir"`
 }
 
@@ -652,6 +783,17 @@ type ClaudeSettings struct {
 	// Default: false
 	AutoMode bool `toml:"auto_mode"`
 
+	// ExtraArgs are user-supplied Claude CLI flags used as the New Session
+	// dialog default. They are persisted as discrete TOML array entries and
+	// copied to Instance.ExtraArgs when a Claude session is created.
+	ExtraArgs []string `toml:"extra_args"`
+
+	// UseChrome enables --chrome by default for Claude sessions.
+	UseChrome bool `toml:"use_chrome"`
+
+	// UseTeammateMode enables --teammate-mode tmux by default for Claude sessions.
+	UseTeammateMode bool `toml:"use_teammate_mode"`
+
 	// EnvFile is a .env file specific to Claude sessions
 	// Sourced AFTER global [shell].env_files
 	// Path can be absolute, ~ for home, $HOME/${VAR} for env vars, or relative to session working directory
@@ -662,6 +804,13 @@ type ClaudeSettings struct {
 	// for instant, deterministic status updates instead of polling tmux content.
 	// Default: true (nil = use default true, set false to disable)
 	HooksEnabled *bool `toml:"hooks_enabled"`
+
+	// AutoResumeSummary auto-presses Enter on Claude's "Resume from summary"
+	// picker that appears after `claude --resume` on long-running sessions
+	// (>~250k tokens). Critical for unattended conductors which would
+	// otherwise sit frozen on the picker forever (closes #67).
+	// Default: true (nil = use default true, set false to disable).
+	AutoResumeSummary *bool `toml:"auto_resume_summary"`
 }
 
 // GetProfileClaudeConfigDir returns the profile-specific Claude config directory, if configured.
@@ -676,28 +825,37 @@ func (c *UserConfig) GetProfileClaudeConfigDir(profile string) string {
 	return ExpandPath(profileCfg.Claude.ConfigDir)
 }
 
-// GetGroupClaudeConfigDir returns the group-specific Claude config directory, if configured.
+// GetGroupClaudeConfigDir returns the group-specific Claude config directory,
+// walking ancestor groups when the exact path has no override. A child group
+// like "personal/foo" inherits the [groups."personal".claude].config_dir
+// setting from its parent so per-group account isolation propagates through
+// nested groups.
 func (c *UserConfig) GetGroupClaudeConfigDir(groupPath string) string {
 	if c == nil || groupPath == "" || c.Groups == nil {
 		return ""
 	}
-	groupCfg, ok := c.Groups[groupPath]
-	if !ok || groupCfg.Claude.ConfigDir == "" {
-		return ""
+	for p := groupPath; p != ""; p = getParentPath(p) {
+		if groupCfg, ok := c.Groups[p]; ok && groupCfg.Claude.ConfigDir != "" {
+			return ExpandPath(groupCfg.Claude.ConfigDir)
+		}
 	}
-	return ExpandPath(groupCfg.Claude.ConfigDir)
+	return ""
 }
 
-// GetGroupClaudeEnvFile returns the group-specific Claude env file, if configured.
+// GetGroupClaudeEnvFile returns the group-specific Claude env file, walking
+// ancestor groups when the exact path has no override. Mirrors
+// GetGroupClaudeConfigDir's inheritance semantics so nested groups don't
+// silently drop the parent's env_file.
 func (c *UserConfig) GetGroupClaudeEnvFile(groupPath string) string {
 	if c == nil || groupPath == "" || c.Groups == nil {
 		return ""
 	}
-	groupCfg, ok := c.Groups[groupPath]
-	if !ok || groupCfg.Claude.EnvFile == "" {
-		return ""
+	for p := groupPath; p != ""; p = getParentPath(p) {
+		if groupCfg, ok := c.Groups[p]; ok && groupCfg.Claude.EnvFile != "" {
+			return groupCfg.Claude.EnvFile
+		}
 	}
-	return groupCfg.Claude.EnvFile
+	return ""
 }
 
 // GetConductorClaudeConfigDir returns the conductor-specific Claude config
@@ -748,6 +906,18 @@ func (c *ClaudeSettings) GetHooksEnabled() bool {
 	return *c.HooksEnabled
 }
 
+// GetAutoResumeSummary returns whether the "Resume from summary" picker is
+// auto-confirmed on session restart, defaulting to true. Conductors and any
+// other unattended session runner depend on this — without it, a single
+// claude --resume on a >250k-token session leaves the session frozen on the
+// picker screen forever.
+func (c *ClaudeSettings) GetAutoResumeSummary() bool {
+	if c.AutoResumeSummary == nil {
+		return true
+	}
+	return *c.AutoResumeSummary
+}
+
 // GeminiSettings defines Gemini CLI configuration
 type GeminiSettings struct {
 	// YoloMode enables --yolo flag for Gemini sessions (auto-approve all actions)
@@ -762,6 +932,10 @@ type GeminiSettings struct {
 	// Sourced AFTER global [shell].env_files
 	// Path can be absolute, ~ for home, $HOME/${VAR} for env vars, or relative to session working directory
 	EnvFile string `toml:"env_file"`
+
+	// Command overrides the default binary/invocation for Gemini sessions.
+	// Supports flags (e.g., "gemini --custom-flag"). Default: "gemini"
+	Command string `toml:"command"`
 }
 
 // OpenCodeSettings defines OpenCode CLI configuration
@@ -779,13 +953,42 @@ type OpenCodeSettings struct {
 	// Sourced AFTER global [shell].env_files
 	// Path can be absolute, ~ for home, $HOME/${VAR} for env vars, or relative to session working directory
 	EnvFile string `toml:"env_file"`
+
+	// Command overrides the default binary/invocation for OpenCode sessions.
+	// Supports flags (e.g., "opencode --custom-flag"). Default: "opencode"
+	Command string `toml:"command"`
 }
 
 // CodexSettings defines Codex CLI configuration
 type CodexSettings struct {
+	// Command is the Codex CLI command or alias to use (e.g., "codex", "codex-v2")
+	// Default: "codex"
+	Command string `toml:"command"`
+
+	// ConfigDir is the path to Codex home directory.
+	// Default: ~/.codex (or CODEX_HOME env var)
+	ConfigDir string `toml:"config_dir"`
+
 	// YoloMode enables --yolo flag for Codex sessions (bypass approvals and sandbox)
 	// Default: false
 	YoloMode bool `toml:"yolo_mode"`
+
+	// EnvFile is a .env file specific to Codex sessions
+	// Sourced AFTER global [shell].env_files
+	// Path can be absolute, ~ for home, $HOME/${VAR} for env vars, or relative to session working directory
+	EnvFile string `toml:"env_file"`
+}
+
+// GetProfileCodexConfigDir returns the profile-specific Codex config directory, if configured.
+func (c *UserConfig) GetProfileCodexConfigDir(profile string) string {
+	if c == nil || profile == "" || c.Profiles == nil {
+		return ""
+	}
+	profileCfg, ok := c.Profiles[profile]
+	if !ok || profileCfg.Codex.ConfigDir == "" {
+		return ""
+	}
+	return ExpandPath(profileCfg.Codex.ConfigDir)
 }
 
 // CopilotSettings defines GitHub Copilot CLI configuration (Issue #556).
@@ -795,6 +998,52 @@ type CopilotSettings struct {
 	// EnvFile is a .env file specific to Copilot sessions (sourced before
 	// the `copilot` command runs, like [gemini].env_file). Optional.
 	EnvFile string `toml:"env_file"`
+
+	// Command overrides the default binary/invocation for Copilot sessions.
+	// Supports flags (e.g., "copilot --custom-flag"). Default: "copilot"
+	Command string `toml:"command"`
+
+	// DefaultModel sets the Copilot model for new sessions (e.g., "claude-opus-4.6",
+	// "gpt-5.2"). Passed as --model <value>. Can be overridden per-session.
+	DefaultModel string `toml:"default_model"`
+
+	// AllowAll enables --allow-all by default for new sessions (equivalent to
+	// --allow-all-tools --allow-all-paths --allow-all-urls). Can be overridden
+	// per-session.
+	AllowAll bool `toml:"allow_all"`
+}
+
+// HermesSettings defines Hermes Agent CLI configuration.
+// Binary: `hermes` from github.com/NousResearch/hermes-agent (MIT, v0.13.0+).
+// Status detection: process-alive/dead only (content-sniffing deferred).
+type HermesSettings struct {
+	// Command is the Hermes CLI command or invocation to use.
+	// Supports flags (e.g., "hermes --model gpt-5.5-pro --provider openai").
+	// Default: "hermes"
+	Command string `toml:"command"`
+	// EnvFile is a .env file specific to Hermes sessions (sourced before
+	// the `hermes` command runs). Optional.
+	EnvFile string `toml:"env_file"`
+	// YoloMode enables --yolo flag for Hermes sessions (auto-approve all tool calls).
+	// Default: false
+	YoloMode bool `toml:"yolo_mode"`
+}
+
+// CrushSettings defines charmbracelet/crush CLI configuration (Issue #940).
+// Binary: `crush` from github.com/charmbracelet/crush. Interactive TUI.
+// Key flags: --yolo, --session/-s <id>, --continue/-C, --cwd, --debug.
+type CrushSettings struct {
+	// Command overrides the default binary/invocation for Crush sessions.
+	// Supports flags (e.g., "crush --debug"). Default: "crush"
+	Command string `toml:"command"`
+
+	// EnvFile is a .env file specific to Crush sessions (sourced before
+	// the `crush` command runs, like [gemini].env_file). Optional.
+	EnvFile string `toml:"env_file"`
+
+	// YoloMode enables --yolo flag for Crush sessions (auto-accept all
+	// permission prompts). Default: false
+	YoloMode bool `toml:"yolo_mode"`
 }
 
 // WorktreeSettings contains git worktree preferences.
@@ -1071,6 +1320,57 @@ func (m *MCPDef) GetTransport() string {
 // HasAutoStartServer returns true if this HTTP MCP has server auto-start configured
 func (m *MCPDef) HasAutoStartServer() bool {
 	return m.IsHTTP() && m.Server != nil && m.Server.Command != ""
+}
+
+// PluginDef defines a Claude Code plugin entry exposed via `agent-deck add
+// --plugin <name>` and `agent-deck session set <id> plugins <csv>`.
+//
+// Plugin id at runtime is constructed as "<Name>@<Source>" and written to
+// the per-session scratch settings.json under enabledPlugins (see
+// internal/session/worker_scratch.go). v1 is catalog-only: only short names
+// listed in [plugins.<name>] tables in ~/.agent-deck/config.toml are valid
+// values for the --plugin flag.
+//
+// RFC: docs/rfc/PLUGIN_ATTACH.md.
+type PluginDef struct {
+	// Name is the short plugin name as exposed by the upstream marketplace's
+	// plugin.json (e.g. "telegram", "octopus"). Required.
+	Name string `toml:"name"`
+
+	// Source is the marketplace identifier the plugin lives in. Either a
+	// curated marketplace name (e.g. "claude-plugins-official") or a github
+	// "owner/repo" pair (e.g. "nyldn/claude-octopus"). Required.
+	Source string `toml:"source"`
+
+	// EmitsChannel hints that this plugin participates in the inbound
+	// `notifications/claude/channel` protocol — when true, attaching the
+	// plugin via --plugin auto-populates Instance.Channels with
+	// "plugin:<Name>@<Source>" so the harness registers the inbound handler.
+	// Catalog hint only; agent-deck does not introspect the plugin source.
+	EmitsChannel bool `toml:"emits_channel"`
+
+	// AutoInstall enables shell-out to `claude plugin install <Name>@<Source>`
+	// at session spawn when the plugin code is not yet present under the
+	// source profile's plugins/ directory. Best-effort: install failure is
+	// logged but does not block session start.
+	AutoInstall bool `toml:"auto_install"`
+
+	// Description is optional help text shown in the Edit Session dialog
+	// pill list.
+	Description string `toml:"description"`
+}
+
+// ID returns the fully-qualified plugin identifier "<Name>@<Source>" used
+// both as the enabledPlugins key in settings.json and as the channel id
+// "plugin:<ID>" when EmitsChannel is true.
+func (p *PluginDef) ID() string {
+	return p.Name + "@" + p.Source
+}
+
+// ChannelID returns the channel id produced by the auto-link path when
+// EmitsChannel is true. Format: "plugin:<Name>@<Source>".
+func (p *PluginDef) ChannelID() string {
+	return "plugin:" + p.ID()
 }
 
 // TmuxSettings allows users to override tmux options applied to every session.
@@ -1425,6 +1725,43 @@ type DisplaySettings struct {
 	// ActiveFilterLabel sets the label shown on the filter pill when the active
 	// filter is engaged. Default: "Open". Examples: "Active", "Live", "Open".
 	ActiveFilterLabel string `toml:"active_filter_label"`
+
+	// ActiveFilterExcludes is the list of session statuses that the % "Open"
+	// filter hides. Default: ["error", "stopped"] — matches the original
+	// upstream behavior. Set to ["error"] to keep stopped/closed sessions
+	// visible while still hiding errors, or extend with "idle" for an
+	// aggressive "show only running/waiting" definition. Unknown statuses
+	// are dropped silently; if all entries are unknown the default applies.
+	// Valid statuses: "running", "waiting", "idle", "error", "starting",
+	// "stopped".
+	ActiveFilterExcludes []string `toml:"active_filter_excludes"`
+}
+
+// GetActiveFilterExcludes returns the resolved set of statuses the % filter
+// should hide. Default {error, stopped} matches the original upstream
+// hardcoded behavior; opt into ["error"] to keep stopped sessions visible.
+// Unknown values are dropped; an empty resolved set falls back to the default.
+func (d DisplaySettings) GetActiveFilterExcludes() map[Status]bool {
+	defaults := func() map[Status]bool {
+		return map[Status]bool{StatusError: true, StatusStopped: true}
+	}
+	if len(d.ActiveFilterExcludes) == 0 {
+		return defaults()
+	}
+	valid := map[Status]bool{
+		StatusRunning: true, StatusWaiting: true, StatusIdle: true,
+		StatusError: true, StatusStarting: true, StatusStopped: true,
+	}
+	out := make(map[Status]bool, len(d.ActiveFilterExcludes))
+	for _, s := range d.ActiveFilterExcludes {
+		if st := Status(s); valid[st] {
+			out[st] = true
+		}
+	}
+	if len(out) == 0 {
+		return defaults()
+	}
+	return out
 }
 
 // ValidDefaultFilters lists acceptable values for DefaultFilter.
@@ -1456,8 +1793,9 @@ func (d DisplaySettings) GetFullRepaint() bool {
 
 // Default user config (empty maps)
 var defaultUserConfig = UserConfig{
-	Tools: make(map[string]ToolDef),
-	MCPs:  make(map[string]MCPDef),
+	Tools:   make(map[string]ToolDef),
+	MCPs:    make(map[string]MCPDef),
+	Plugins: make(map[string]PluginDef),
 }
 
 // cloneDefaultUserConfig returns a fresh shallow copy of defaultUserConfig with
@@ -1474,6 +1812,10 @@ func cloneDefaultUserConfig() UserConfig {
 	c.MCPs = make(map[string]MCPDef, len(defaultUserConfig.MCPs))
 	for k, v := range defaultUserConfig.MCPs {
 		c.MCPs[k] = v
+	}
+	c.Plugins = make(map[string]PluginDef, len(defaultUserConfig.Plugins))
+	for k, v := range defaultUserConfig.Plugins {
+		c.Plugins[k] = v
 	}
 	return c
 }
@@ -1560,6 +1902,9 @@ func LoadUserConfig() (*UserConfig, error) {
 	}
 	if config.MCPs == nil {
 		config.MCPs = make(map[string]MCPDef)
+	}
+	if config.Plugins == nil {
+		config.Plugins = make(map[string]PluginDef)
 	}
 
 	userConfigCache = &config
@@ -1689,6 +2034,15 @@ func IsCodexCompatible(toolName string) bool {
 	return false
 }
 
+// GetCodexCommand returns the configured Codex command/alias.
+func GetCodexCommand() string {
+	userConfig, _ := LoadUserConfig()
+	if userConfig != nil && strings.TrimSpace(userConfig.Codex.Command) != "" {
+		return strings.TrimSpace(userConfig.Codex.Command)
+	}
+	return "codex"
+}
+
 func isClaudeCommand(command string) bool {
 	return isCommand(command, "claude")
 }
@@ -1781,9 +2135,45 @@ func GetCustomToolNames() []string {
 	return names
 }
 
+// GetToolCommand returns the configured command override for a builtin tool,
+// falling back to the bare tool name if no override is set.
+func GetToolCommand(toolName string) string {
+	config, _ := LoadUserConfig()
+	if config == nil {
+		return toolName
+	}
+	switch toolName {
+	case "claude":
+		if config.Claude.Command != "" {
+			return config.Claude.Command
+		}
+	case "gemini":
+		if config.Gemini.Command != "" {
+			return config.Gemini.Command
+		}
+	case "opencode":
+		if config.OpenCode.Command != "" {
+			return config.OpenCode.Command
+		}
+	case "codex":
+		if config.Codex.Command != "" {
+			return config.Codex.Command
+		}
+	case "copilot":
+		if config.Copilot.Command != "" {
+			return config.Copilot.Command
+		}
+	case "hermes":
+		if config.Hermes.Command != "" {
+			return config.Hermes.Command
+		}
+	}
+	return toolName
+}
+
 func isBuiltinToolName(toolName string) bool {
 	switch toolName {
-	case "claude", "gemini", "opencode", "codex", "copilot", "pi", "shell", "cursor", "aider":
+	case "claude", "gemini", "opencode", "codex", "copilot", "crush", "cursor", "hermes", "pi", "shell", "aider":
 		return true
 	default:
 		return false
@@ -1809,10 +2199,14 @@ func GetToolIcon(toolName string) string {
 		return "💻"
 	case "copilot":
 		return "🐙"
-	case "pi":
-		return "π"
+	case "crush":
+		return "💘"
 	case "cursor":
 		return "📝"
+	case "hermes":
+		return "☤"
+	case "pi":
+		return "π"
 	case "shell":
 		return "🐚"
 	default:
@@ -1878,6 +2272,17 @@ func GetDefaultTool() string {
 		return ""
 	}
 	return config.DefaultTool
+}
+
+// GetWebMutationsEnabled returns whether `agent-deck web` should accept
+// mutating HTTP requests (POST/PATCH/DELETE). Defaults to true when the
+// `[web].mutations_enabled` key is omitted from config.toml.
+func GetWebMutationsEnabled() bool {
+	config, err := LoadUserConfig()
+	if err != nil || config == nil || config.Web.MutationsEnabled == nil {
+		return true
+	}
+	return *config.Web.MutationsEnabled
 }
 
 // GetHotkeyOverrides returns user-configured hotkey overrides from config.toml.
@@ -2160,6 +2565,55 @@ func GetTmuxSettings() TmuxSettings {
 	return config.Tmux
 }
 
+// TerminalSettings controls outer-terminal chrome agent-deck writes directly
+// to the host terminal (bypassing tmux). These settings affect what the
+// terminal emulator displays — currently only iTerm2's badge.
+//
+// Example config.toml:
+//
+//	[terminal]
+//	iterm_badge = true
+type TerminalSettings struct {
+	// ITermBadge controls whether agent-deck sets the iTerm2 badge to the
+	// attached session's title for the duration of the attach, and refreshes
+	// it when Claude renames the session mid-attach. No-op outside iTerm2.
+	//
+	// AGENTDECK_ITERM_BADGE env var overrides this in either direction
+	// (=1/true/yes/on force on, =0/false/no/off force off; unset defers to
+	// this config). Caveat: env reliably reaches the attach/detach path
+	// (agent-deck reads its own env directly) but the rename-while-attached
+	// path runs in a hook subprocess spawned through agent-deck → tmux →
+	// Claude → hook, and Claude may filter custom env vars. For consistent
+	// behavior on both paths, prefer this config setting — every process
+	// re-reads it from disk, so propagation is independent of the spawn
+	// chain.
+	//
+	// Default: false (opt-in). Most users have their own iTerm2 badge scheme
+	// (e.g. host/cwd via shell PROMPT_COMMAND), so silently overwriting it on
+	// every attach is too presumptuous a default. Users who want the
+	// per-session badge set this to true explicitly.
+	ITermBadge *bool `toml:"iterm_badge"`
+}
+
+// GetITermBadge returns whether the iTerm2 badge integration is enabled,
+// defaulting to false (opt-in). Mirrors the GetInjectStatusLine pattern but
+// with the inverse default — see ITermBadge field doc for rationale.
+func (t TerminalSettings) GetITermBadge() bool {
+	if t.ITermBadge == nil {
+		return false
+	}
+	return *t.ITermBadge
+}
+
+// GetTerminalSettings returns terminal-chrome settings from config.
+func GetTerminalSettings() TerminalSettings {
+	config, err := LoadUserConfig()
+	if err != nil || config == nil {
+		return TerminalSettings{}
+	}
+	return config.Terminal
+}
+
 // GetInstanceSettings returns instance behavior settings
 func GetInstanceSettings() InstanceSettings {
 	config, err := LoadUserConfig()
@@ -2271,6 +2725,11 @@ func CreateExampleConfig() error {
 # config_dir = "~/.claude-work"
 # Enable --dangerously-skip-permissions by default (default: false)
 # dangerous_mode = true
+# Extra Claude CLI flags remembered from the New Session dialog
+# extra_args = ["--agent", "reviewer"]
+# Enable Chrome / teammate mode by default
+# use_chrome = false
+# use_teammate_mode = false
 
 # Gemini CLI integration
 # [gemini]
@@ -2286,6 +2745,14 @@ func CreateExampleConfig() error {
 
 # Codex CLI integration
 # [codex]
+# Codex CLI command or alias to use (default: "codex")
+# command = "codex"
+# Custom config directory/home for Codex sessions
+# Default: ~/.codex (or CODEX_HOME env var takes priority)
+# config_dir = "~/.codex-work"
+# Optional per-profile override (takes precedence over [codex] when profile matches)
+# [profiles.work.codex]
+# config_dir = "~/.codex-work"
 # Enable --yolo (bypass approvals and sandbox) by default (default: false)
 # yolo_mode = true
 
@@ -2389,6 +2856,21 @@ auto_cleanup = true
 # options = { "allow-passthrough" = "all", "history-limit" = "50000" }
 # Example: keep agent-deck notifications but use a 2-line status bar
 # options = { "status" = "2" }
+
+# Outer-terminal chrome (sequences agent-deck writes to the host terminal,
+# bypassing tmux). Currently controls the iTerm2 badge; future window-title
+# integrations will live in the same section.
+# [terminal]
+# iterm_badge sets the iTerm2 badge to the attached session's title for the
+# duration of the attach (cleared on detach), and refreshes it when Claude
+# renames the session mid-attach. Opt-in because most users already drive
+# the badge from their shell prompt. No-op outside iTerm2.
+# Override at runtime: AGENTDECK_ITERM_BADGE=1 forces on, =0 forces off.
+# Caveat: the env var reliably reaches the attach/detach path but is
+# unreliable for rename-while-attached (Claude may filter env vars when
+# spawning hook subprocesses). Prefer this config setting for both paths.
+# Default: false
+# iterm_badge = true
 
 # ============================================================================
 # MCP Server Definitions
@@ -2601,13 +3083,170 @@ func GetMCPDef(name string) *MCPDef {
 	return nil
 }
 
+// telegramOfficialRefusalSource is the marketplace id whose telegram entry
+// is rejected at catalog-load and CLI/mutator level in v1
+// (RFC docs/rfc/PLUGIN_ATTACH.md §6). Forks (different source) are allowed.
+const telegramOfficialRefusalSource = "claude-plugins-official"
+
+// pluginIdentifierRe is the strict charset for PluginDef.Name and
+// PluginDef.Source (RFC docs/rfc/PLUGIN_ATTACH.md, security finding S5/S6).
+// Closes the path-traversal / argv-injection class:
+//   - rejects ".." segments via the no-leading-dot anchor + rune set
+//   - rejects leading "-" so values can't be parsed as flags by claude
+//   - rejects "/" except as a single owner/repo separator (Source only)
+//   - rejects null bytes, whitespace, shell metacharacters
+//
+// Name: single segment, no slash. Source: single segment OR owner/repo.
+var (
+	pluginNameRe   = regexp.MustCompile(`^[a-zA-Z0-9_][a-zA-Z0-9._-]*$`)
+	pluginSourceRe = regexp.MustCompile(`^[a-zA-Z0-9_][a-zA-Z0-9._-]*(/[a-zA-Z0-9_][a-zA-Z0-9._-]*)?$`)
+)
+
+// validatePluginDef returns nil iff the def's Name and Source pass the
+// strict charset filter. Catalog accessors call this so unsafe values
+// never reach exec, filesystem ops, or settings.json mutations.
+func validatePluginDef(name string, def PluginDef) error {
+	if !pluginNameRe.MatchString(def.Name) {
+		return fmt.Errorf("plugin %q: invalid name %q (allowed: [a-zA-Z0-9._-], no leading dot/dash, no path separators)", name, def.Name)
+	}
+	if !pluginSourceRe.MatchString(def.Source) {
+		return fmt.Errorf("plugin %q: invalid source %q (allowed: <single-segment> or <owner>/<repo>, charset [a-zA-Z0-9._-])", name, def.Source)
+	}
+	return nil
+}
+
+// IsTelegramOfficialRefusal reports whether (name, source) pair is the
+// exact "telegram@claude-plugins-official" id refused in v1. The check is
+// case-sensitive — the upstream catalog uses these literal strings.
+func IsTelegramOfficialRefusal(name, source string) bool {
+	return name == "telegram" && source == telegramOfficialRefusalSource
+}
+
+// GetAvailablePlugins returns the plugin catalog from config.toml, never nil.
+// Filters out:
+//   - entries refused by IsTelegramOfficialRefusal (RFC §6)
+//   - entries failing validatePluginDef (RFC charset filter — security
+//     defense against path traversal, argv injection, lock-path escape)
+//
+// Invalid entries are logged once per LoadUserConfig cycle and silently
+// dropped — callers never see them, so unsafe values cannot reach exec,
+// filesystem ops, or settings.json mutations.
+func GetAvailablePlugins() map[string]PluginDef {
+	config, err := LoadUserConfig()
+	if err != nil || config == nil {
+		return make(map[string]PluginDef)
+	}
+	out := make(map[string]PluginDef, len(config.Plugins))
+	for k, v := range config.Plugins {
+		if IsTelegramOfficialRefusal(v.Name, v.Source) {
+			continue
+		}
+		if err := validatePluginDef(k, v); err != nil {
+			slog.Warn("plugin_catalog_entry_rejected",
+				slog.String("key", k),
+				slog.String("error", err.Error()),
+			)
+			continue
+		}
+		out[k] = v
+	}
+	return out
+}
+
+// GetAvailablePluginNames returns sorted catalog keys of plugins.
+// Refused entries are excluded (consistent with GetAvailablePlugins).
+func GetAvailablePluginNames() []string {
+	plugins := GetAvailablePlugins()
+	names := make([]string, 0, len(plugins))
+	for name := range plugins {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
+}
+
+// GetPluginDef returns a specific plugin definition by catalog key.
+// Returns nil if not found OR if the entry matches the v1 refusal policy.
+func GetPluginDef(name string) *PluginDef {
+	plugins := GetAvailablePlugins()
+	if def, ok := plugins[name]; ok {
+		return &def
+	}
+	return nil
+}
+
 // CostsSettings configures cost tracking, budgets, and pricing overrides.
 type CostsSettings struct {
-	Currency      string          `toml:"currency"`
-	Timezone      string          `toml:"timezone"`
-	RetentionDays int             `toml:"retention_days"`
-	Budgets       BudgetSettings  `toml:"budgets"`
-	Pricing       PricingSettings `toml:"pricing"`
+	Currency      string `toml:"currency"`
+	Timezone      string `toml:"timezone"`
+	RetentionDays int    `toml:"retention_days"`
+	// CostLineTemplate overrides the home status-bar cost segment.
+	// Three-state pointer: nil falls through to the next layer
+	// (profile -> global -> hardcoded); explicit empty string disables.
+	CostLineTemplate *string `toml:"cost_line_template"`
+	// CostLineHideWhenZero hides the segment when every recognized variable
+	// in the active template renders to $0.00. Three-state pointer; default
+	// is true (preserves the legacy "no events, no segment" behavior).
+	CostLineHideWhenZero *bool           `toml:"cost_line_hide_when_zero"`
+	Budgets              BudgetSettings  `toml:"budgets"`
+	Pricing              PricingSettings `toml:"pricing"`
+}
+
+// ProfileCosts holds per-profile overrides for cost-related settings.
+// Pointer fields use the same fall-through semantics as CostsSettings.
+type ProfileCosts struct {
+	CostLineTemplate     *string `toml:"cost_line_template"`
+	CostLineHideWhenZero *bool   `toml:"cost_line_hide_when_zero"`
+}
+
+// defaultCostLineTemplate is the hardcoded fallback that preserves the
+// pre-template status-bar segment exactly: render today's total and hide
+// when zero events have been recorded.
+const defaultCostLineTemplate = "{cost_today} today"
+
+// ResolveCostLineTemplate returns the active status-bar cost-line template
+// and hide-when-zero flag, applying the resolution chain:
+//
+//	profile.costs > [costs] > hardcoded "{cost_today} today" (template, default true for hide)
+//
+// Pointer semantics:
+//   - nil at any level falls through to the next level
+//   - explicit empty string for template disables the segment (returned as "")
+//   - explicit bool for hide_when_zero is honored at that level
+//
+// Safe to call with cfg == nil; returns the hardcoded default + true.
+func ResolveCostLineTemplate(cfg *UserConfig, profile string) (template string, hideWhenZero bool) {
+	template = defaultCostLineTemplate
+	hideWhenZero = true
+
+	if cfg == nil {
+		return
+	}
+
+	var profileCosts *ProfileCosts
+	if cfg.Profiles != nil {
+		if p, ok := cfg.Profiles[profile]; ok {
+			profileCosts = p.Costs
+		}
+	}
+
+	// Template: profile (set) > global (set) > hardcoded
+	switch {
+	case profileCosts != nil && profileCosts.CostLineTemplate != nil:
+		template = *profileCosts.CostLineTemplate
+	case cfg.Costs.CostLineTemplate != nil:
+		template = *cfg.Costs.CostLineTemplate
+	}
+
+	// Hide flag: profile (set) > global (set) > true
+	switch {
+	case profileCosts != nil && profileCosts.CostLineHideWhenZero != nil:
+		hideWhenZero = *profileCosts.CostLineHideWhenZero
+	case cfg.Costs.CostLineHideWhenZero != nil:
+		hideWhenZero = *cfg.Costs.CostLineHideWhenZero
+	}
+
+	return
 }
 
 type BudgetSettings struct {

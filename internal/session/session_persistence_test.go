@@ -55,11 +55,14 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"strconv"
 	"strings"
 	"syscall"
 	"testing"
 	"time"
+
+	"github.com/asheshgoplani/agent-deck/internal/statedb"
 )
 
 // uniqueTmuxServerName returns a tmux server name with the mandatory
@@ -220,142 +223,9 @@ func randomHex8(t *testing.T) string {
 	return hex.EncodeToString(b[:])
 }
 
-// startFakeLoginScope launches a throwaway systemd user scope that simulates
-// an SSH login-session scope: `systemd-run --user --scope --unit=fake-login-<hex>
-// bash -c "exec sleep 300"`. The scope stays alive until the test (or its
-// cleanup) calls `systemctl --user stop <name>.scope`. Returns the unit name
-// (without the ".scope" suffix) and registers a best-effort stop in t.Cleanup.
-//
-// Safety: scope unit names use the literal "fake-login-" prefix plus an 8-hex
-// random suffix. Cleanup only ever stops that exact unit — never a wildcard.
-func startFakeLoginScope(t *testing.T) string {
-	t.Helper()
-	fakeName := "fake-login-" + randomHex8(t)
-	cmd := exec.Command("systemd-run", "--user", "--scope", "--quiet",
-		"--collect", "--unit="+fakeName,
-		"bash", "-c", "exec sleep 300")
-	if err := cmd.Start(); err != nil {
-		t.Fatalf("startFakeLoginScope: systemd-run start: %v", err)
-	}
-	t.Cleanup(func() {
-		// Idempotent: scope may already be stopped by the test body.
-		_ = exec.Command("systemctl", "--user", "stop", fakeName+".scope").Run()
-	})
-	// Give systemd up to 2s to register the transient scope so a racing
-	// systemctl stop in the test body is not a no-op.
-	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) {
-		if err := exec.Command("systemctl", "--user", "is-active", "--quiet", fakeName+".scope").Run(); err == nil {
-			return fakeName
-		}
-		time.Sleep(50 * time.Millisecond)
-	}
-	// Not strictly fatal — the scope may be in "activating" state which
-	// is still stoppable. Return the name and let the caller proceed.
-	return fakeName
-}
-
-// startAgentDeckTmuxInUserScope launches a tmux server under its OWN
-// `agentdeck-tmux-<serverName>` user scope — mirroring the production
-// `LaunchInUserScope=true` path in internal/tmux/tmux.go:startCommandSpec.
-// Uses `tmux -L <serverName>` so kill-server is scoped to this test's
-// private socket (never touches user sessions — see repo CLAUDE.md tmux
-// safety mandate and 2025-12-10 incident).
-//
-// Returns the tmux server PID (read from `systemctl --user show -p MainPID`).
-// Registers cleanup that kills the private tmux socket and stops the scope.
-func startAgentDeckTmuxInUserScope(t *testing.T, serverName string) int {
-	t.Helper()
-	unit := "agentdeck-tmux-" + serverName
-	cmd := exec.Command("systemd-run", "--user", "--scope", "--quiet",
-		"--collect", "--unit="+unit,
-		"tmux", "-L", serverName, "new-session", "-d", "-s", "persist",
-		"bash", "-c", "exec sleep 300")
-	if err := cmd.Start(); err != nil {
-		t.Fatalf("startAgentDeckTmuxInUserScope: systemd-run start: %v", err)
-	}
-	t.Cleanup(func() {
-		// -L <serverName> confines kill-server to this test's private socket.
-		_ = exec.Command("tmux", "-L", serverName, "kill-server").Run()
-		_ = exec.Command("systemctl", "--user", "stop", unit+".scope").Run()
-	})
-	// Wait up to 2s for `tmux -L <serverName> list-sessions` to succeed.
-	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) {
-		if err := exec.Command("tmux", "-L", serverName, "list-sessions").Run(); err == nil {
-			break
-		}
-		time.Sleep(100 * time.Millisecond)
-	}
-	// Read MainPID from systemd user manager — the server PID is the
-	// MainPID of its enclosing scope.
-	out, err := exec.Command("systemctl", "--user", "show", "-p", "MainPID", "--value", unit+".scope").Output()
-	if err != nil {
-		t.Fatalf("startAgentDeckTmuxInUserScope: systemctl show MainPID: %v", err)
-	}
-	pidStr := strings.TrimSpace(string(out))
-	pid, perr := strconv.Atoi(pidStr)
-	if perr != nil || pid <= 0 {
-		t.Skipf("startAgentDeckTmuxInUserScope: MainPID unavailable (%q) — systemd user scope does not track MainPID for double-forking tmux on this host (CI runners, nested tmux). Skipping cgroup survival test.", pidStr)
-	}
-	return pid
-}
-
-// TestPersistence_TmuxSurvivesLoginSessionRemoval replicates the 2026-04-14
-// incident root cause. It:
-//
-//  1. Checks GetLaunchInUserScope() default — on current v1.5.1 this is
-//     false, which means the production path would have inherited the
-//     login-session cgroup and died. Test fails RED here with a diagnostic
-//     message telling Phase 2 what to fix. No tmux spawning happens in
-//     the RED branch, so there is nothing to leak.
-//  2. (Post-Phase-2 flow) Starts a fake-login user scope simulating an
-//     SSH login session, starts a tmux server under its OWN
-//     agentdeck-tmux-<name>.scope (mirroring the fix), tears down the
-//     fake-login scope, and asserts the tmux server survives because it
-//     was parented under user@UID.service, NOT under the login-session
-//     scope tree.
-//
-// Skip semantics: requireSystemdRun skips cleanly on macOS / non-systemd
-// hosts with "no systemd-run available:" in the message.
-func TestPersistence_TmuxSurvivesLoginSessionRemoval(t *testing.T) {
-	requireSystemdRun(t)
-
-	// RED-state gate: if the default is still false, this test fails with
-	// the diagnostic that tells Phase 2 what to fix. This check intentionally
-	// runs BEFORE any tmux spawning so the RED message is unambiguous and
-	// no tmux server is created to leak.
-	_ = isolatedHomeDir(t)
-	settings := GetTmuxSettings()
-	if !settings.GetLaunchInUserScope() {
-		t.Fatalf("TEST-01 RED: GetLaunchInUserScope() default is false on Linux+systemd; simulated teardown would kill production tmux. Phase 2 must flip the default; rerun this test after the flip to exercise real cgroup survival.")
-	}
-
-	// Post-Phase-2 flow: simulate the 2026-04-14 incident.
-	serverName := uniqueTmuxServerName(t)
-	fakeLogin := startFakeLoginScope(t)
-
-	pid := startAgentDeckTmuxInUserScope(t, serverName)
-	if !pidAlive(pid) {
-		t.Fatalf("setup failure: tmux pid %d not alive immediately after spawn", pid)
-	}
-
-	// Teardown the fake login scope — simulates logind removing an SSH login session.
-	if err := exec.Command("systemctl", "--user", "stop", fakeLogin+".scope").Run(); err != nil {
-		// Treat non-existence as acceptable (already stopped / never registered).
-		t.Logf("systemctl stop %s: %v (continuing)", fakeLogin, err)
-	}
-
-	// Give systemd up to 3s to settle the teardown.
-	deadline := time.Now().Add(3 * time.Second)
-	for time.Now().Before(deadline) {
-		time.Sleep(100 * time.Millisecond)
-	}
-
-	if !pidAlive(pid) {
-		t.Fatalf("TEST-01 RED: tmux server pid %d died after fake-login scope teardown; expected to survive because the server was launched under its own agentdeck-tmux-<name>.scope. The 2026-04-14 incident is recurring.", pid)
-	}
-}
+// TestPersistence_TmuxSurvivesLoginSessionRemoval and its helpers
+// startFakeLoginScope / startAgentDeckTmuxInUserScope moved to
+// session_persistence_hostsensitive_test.go (#969).
 
 // startTmuxInsideFakeLogin launches a tmux server as a grandchild of a
 // throwaway fake-login-<hex> user scope — mirroring the production
@@ -1628,4 +1498,144 @@ func TestEnsureClaudeSessionIDFromDisk_RestartDoesDiscovery(t *testing.T) {
 			"should discover JSONL. Got ClaudeSessionID=%q, want %q.",
 			inst.ClaudeSessionID, existingUUID)
 	}
+}
+
+// TestPersistence_PluginsSurviveRestart locks the RFC PLUGIN_ATTACH.md §2
+// invariant: an Instance with a populated Plugins list MUST replay its
+// enabledPlugins overlay on every spawn. The contract is "Plugins persist
+// across restart and re-apply on the next worker-scratch creation."
+//
+// This test exercises the full persistence cycle without requiring a real
+// tmux session (which is independently covered by
+// TestPersistence_RestartResumesConversation). The cycle:
+//
+//  1. Construct an Instance with Plugins=["octopus"] under a HOME with a
+//     valid catalog containing octopus.
+//  2. Call EnsureWorkerScratchConfigDir → assert scratch settings.json
+//     contains enabledPlugins["octopus@nyldn/claude-octopus"] = true.
+//  3. Persist via state.db: MarshalToolData → UnmarshalToolData → assert
+//     the unmarshalled Plugins matches the original list.
+//  4. Construct a "reloaded" Instance from the unmarshalled data, call
+//     Ensure again on a fresh scratch dir → assert enabledPlugins still
+//     reflects the same overlay (i.e., Restart's worker-scratch path
+//     re-applies the persisted Plugins).
+//
+// Mandate: CLAUDE.md:13-31 lists internal/session/{instance,userconfig,storage*}.go
+// as touched paths for plugin attach. RFC §2/§8.1 explicitly committed
+// to this test. Removing it requires an RFC.
+func TestPersistence_PluginsSurviveRestart(t *testing.T) {
+	home := isolatedHomeDir(t)
+
+	// Catalog with a non-channel-emitting plugin (channel auto-link is
+	// covered separately in plugin_channels_test.go; this test focuses on
+	// the persistence/scratch-replay invariant).
+	catalogPath := filepath.Join(home, ".agent-deck", "config.toml")
+	if err := os.WriteFile(catalogPath, []byte(`
+[plugins.octopus]
+name = "octopus"
+source = "nyldn/claude-octopus"
+emits_channel = false
+auto_install = false
+`), 0o600); err != nil {
+		t.Fatalf("write config.toml: %v", err)
+	}
+	ClearUserConfigCache()
+
+	// Source profile dir for the scratch's symlink mirror.
+	sourceProfile := filepath.Join(home, ".claude")
+	if err := os.MkdirAll(sourceProfile, 0o700); err != nil {
+		t.Fatalf("mkdir source profile: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(sourceProfile, "settings.json"), []byte(`{}`), 0o600); err != nil {
+		t.Fatalf("write source settings: %v", err)
+	}
+
+	// Phase 1: original instance writes scratch settings.json with the
+	// allow-list overlay.
+	original := &Instance{
+		ID:      "11111111-1111-1111-1111-111111111111",
+		Tool:    "claude",
+		Title:   "persist-test",
+		Plugins: []string{"octopus"},
+	}
+
+	scratch1, err := original.EnsureWorkerScratchConfigDir(sourceProfile)
+	if err != nil {
+		t.Fatalf("first Ensure: %v", err)
+	}
+	if scratch1 == "" {
+		t.Fatal("first Ensure must create scratch dir for non-empty Plugins")
+	}
+	assertScratchHasOctopus := func(scratchDir, phase string) {
+		t.Helper()
+		data, err := os.ReadFile(filepath.Join(scratchDir, "settings.json"))
+		if err != nil {
+			t.Fatalf("[%s] read scratch settings.json: %v", phase, err)
+		}
+		var parsed map[string]interface{}
+		if err := json.Unmarshal(data, &parsed); err != nil {
+			t.Fatalf("[%s] unmarshal scratch settings: %v", phase, err)
+		}
+		plugins, _ := parsed["enabledPlugins"].(map[string]interface{})
+		if plugins == nil {
+			t.Fatalf("[%s] scratch settings missing enabledPlugins block: %s", phase, string(data))
+		}
+		if v, ok := plugins["octopus@nyldn/claude-octopus"]; !ok || v != true {
+			t.Fatalf("[%s] enabledPlugins[octopus@...] must be true; got %v (full block: %v)", phase, plugins["octopus@nyldn/claude-octopus"], plugins)
+		}
+	}
+	assertScratchHasOctopus(scratch1, "first-spawn")
+
+	// Phase 2: state.db round-trip. Marshal the instance the same way
+	// storage.go does, then Unmarshal — this is the exact bytes-on-disk
+	// path that survives a process restart.
+	marshalled := statedb.MarshalToolData(
+		original.ClaudeSessionID, original.ClaudeDetectedAt,
+		original.GeminiSessionID, original.GeminiDetectedAt,
+		original.GeminiYoloMode, original.GeminiModel,
+		original.OpenCodeSessionID, original.OpenCodeDetectedAt,
+		original.CodexSessionID, original.CodexDetectedAt,
+		original.LatestPrompt, original.Notes, original.LoadedMCPNames,
+		original.ToolOptionsJSON,
+		nil, original.SandboxContainer, // sandbox JSON nil — not needed for plugins persistence
+		original.SSHHost, original.SSHRemotePath,
+		original.MultiRepoEnabled, original.AdditionalPaths,
+		original.MultiRepoTempDir, nil,
+		original.Channels,
+		original.ExtraArgs,
+		original.Plugins,
+		original.PluginChannelLinkDisabled,
+		original.AutoLinkedChannels,
+		original.Color,
+	)
+	_, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _,
+		_, _, _, _, _, _, restoredPlugins, restoredLinkDisabled, _, _ := statedb.UnmarshalToolData(marshalled)
+	if !reflect.DeepEqual(restoredPlugins, []string{"octopus"}) {
+		t.Fatalf("state.db round-trip: Plugins = %v, want [octopus]", restoredPlugins)
+	}
+	if restoredLinkDisabled != false {
+		t.Fatalf("state.db round-trip: PluginChannelLinkDisabled = %v, want false", restoredLinkDisabled)
+	}
+
+	// Phase 3: reconstruct the instance from persisted bytes and re-Ensure.
+	// This models a session reload after a process restart — the scratch
+	// dir is recreated under the same instance ID, with the same Plugins.
+	reloaded := &Instance{
+		ID:                        original.ID,
+		Tool:                      original.Tool,
+		Title:                     original.Title,
+		Plugins:                   restoredPlugins,
+		PluginChannelLinkDisabled: restoredLinkDisabled,
+	}
+	scratch2, err := reloaded.EnsureWorkerScratchConfigDir(sourceProfile)
+	if err != nil {
+		t.Fatalf("re-Ensure after restart: %v", err)
+	}
+	if scratch2 == "" {
+		t.Fatal("re-Ensure must produce scratch dir for reloaded instance with non-empty Plugins")
+	}
+	if scratch2 != scratch1 {
+		t.Fatalf("scratch dir is keyed on instance ID and MUST be deterministic across restarts; got first=%q, second=%q", scratch1, scratch2)
+	}
+	assertScratchHasOctopus(scratch2, "post-restart")
 }

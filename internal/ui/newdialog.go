@@ -126,6 +126,7 @@ const (
 	focusName      focusTarget = iota
 	focusPath                  // project path input (hidden when multi-repo enabled).
 	focusCommand               // tool/command picker.
+	focusModel                 // optional per-session model/version override.
 	focusWorktree              // worktree checkbox.
 	focusSandbox               // sandbox checkbox.
 	focusConductor             // conducting parent dropdown (conditional — only when conductors exist).
@@ -133,6 +134,17 @@ const (
 	focusInherited             // inherited Docker settings toggle (conditional).
 	focusBranch                // branch input (conditional — only when worktree enabled).
 	focusOptions               // tool-specific options panel (conditional).
+)
+
+// New session dialog: outer box and textinput widths stay in sync so long
+// project paths are not clipped in the path field.
+const (
+	newDialogPreferredOuterWidth = 84
+	newDialogMinOuterWidth       = 44
+	newDialogTerminalGutter      = 10 // margin when shrinking to terminal width
+	newDialogInputWidthPad       = 12 // outer width minus indent ≈ textinput width
+	newDialogInputMinWidth       = 28
+	newDialogInputMaxWidth       = 100
 )
 
 // settingDisplay pairs a label with a formatted value for read-only display.
@@ -143,27 +155,36 @@ type settingDisplay struct {
 
 // NewDialog represents the new session creation dialog.
 type NewDialog struct {
-	nameInput            textinput.Model
-	pathInput            textinput.Model
-	commandInput         textinput.Model
-	claudeOptions        *ClaudeOptionsPanel // Claude-specific options (concrete for value extraction).
-	geminiOptions        *YoloOptionsPanel   // Gemini YOLO panel (concrete for value extraction).
-	codexOptions         *YoloOptionsPanel   // Codex YOLO panel (concrete for value extraction).
-	toolOptions          OptionsPanel        // Currently active tool options panel (nil if none).
-	focusTargets         []focusTarget       // Ordered list of active focusable elements.
-	focusIndex           int                 // Index into focusTargets.
-	width                int
-	height               int
-	visible              bool
-	presetCommands       []string
-	commandCursor        int
-	parentGroupPath      string
-	parentGroupName      string
-	pathSuggestions      []string // filtered subset of path suggestions shown in dropdown.
-	allPathSuggestions   []string // full unfiltered set of path suggestions.
-	pathSuggestionCursor int      // tracks selected suggestion in dropdown.
-	suggestionNavigated  bool     // tracks if user explicitly navigated suggestions.
-	pathSoftSelected     bool     // true when path text is "soft selected" (ready to replace on type).
+	nameInput             textinput.Model
+	pathInput             textinput.Model
+	commandInput          textinput.Model
+	modelInput            textinput.Model
+	claudeOptions         *ClaudeOptionsPanel // Claude-specific options (concrete for value extraction).
+	geminiOptions         *YoloOptionsPanel   // Gemini YOLO panel (concrete for value extraction).
+	codexOptions          *YoloOptionsPanel   // Codex YOLO panel (concrete for value extraction).
+	toolOptions           OptionsPanel        // Currently active tool options panel (nil if none).
+	focusTargets          []focusTarget       // Ordered list of active focusable elements.
+	focusIndex            int                 // Index into focusTargets.
+	width                 int
+	height                int
+	visible               bool
+	presetCommands        []string
+	commandCursor         int
+	parentGroupPath       string
+	parentGroupName       string
+	pathSuggestions       []string // filtered subset of path suggestions shown in dropdown.
+	allPathSuggestions    []string // full unfiltered set of path suggestions.
+	pathSuggestionCursor  int      // tracks selected entry in dropdown (0 = "Type custom", 1.. = suggestions).
+	suggestionNavigated   bool     // tracks if user explicitly navigated suggestions.
+	pathSoftSelected      bool     // true when path text is "soft selected" (ready to replace on type).
+	suggestionsActive     bool     // true when arrow-key focus is inside the suggestions dropdown.
+	suggestionsHidden     bool     // true when the dropdown is explicitly dismissed (e.g. after Enter).
+	modelSuggestions      []string // filtered model ID suggestions shown while editing modelInput.
+	modelSuggestionCursor int      // tracks selected model entry (0 = type custom, 1.. = suggestions).
+	modelSuggestionActive bool     // true when arrow-key focus is inside the model dropdown.
+	modelSuggestionHidden bool     // true when the model dropdown is explicitly dismissed.
+	modelNavigated        bool     // true when the user explicitly navigated model suggestions.
+	modelLineOffset       int      // Content line where model suggestions overlay should appear.
 	// Worktree support.
 	worktreeEnabled bool
 	branchInput     textinput.Model
@@ -199,6 +220,7 @@ type dialogSnapshot struct {
 	path             string
 	commandCursor    int
 	commandInput     string
+	modelInput       string
 	sandboxEnabled   bool
 	worktreeEnabled  bool
 	branch           string
@@ -211,10 +233,20 @@ type dialogSnapshot struct {
 	conductorCursor  int
 }
 
+// displayCommandPreset returns the visible label for a built-in preset slot.
+// The stored preset for Cursor remains "cursor" (tool id); the pill shows the
+// actual CLI users run ("cursor agent").
+func displayCommandPreset(cmd string) string {
+	if cmd == "cursor" {
+		return "cursor agent"
+	}
+	return cmd
+}
+
 // buildPresetCommands returns the list of commands for the picker,
 // including any custom tools from config.toml.
 func buildPresetCommands() []string {
-	presets := []string{"", "claude", "gemini", "opencode", "codex", "pi"}
+	presets := []string{"", "claude", "gemini", "opencode", "codex", "pi", "copilot", "crush", "cursor", "hermes"}
 	if customTools := session.GetCustomToolNames(); len(customTools) > 0 {
 		presets = append(presets, customTools...)
 	}
@@ -258,13 +290,11 @@ func NewNewDialog() *NewDialog {
 	nameInput.Placeholder = "session-name"
 	nameInput.Focus()
 	nameInput.CharLimit = MaxNameLength
-	nameInput.Width = 40
 
 	// Create path input
 	pathInput := textinput.New()
 	pathInput.Placeholder = "~/project/path"
 	pathInput.CharLimit = 256
-	pathInput.Width = 40
 	pathInput.ShowSuggestions = false // we use our own dropdown with filtering
 
 	// Get current working directory for default path
@@ -277,18 +307,22 @@ func NewNewDialog() *NewDialog {
 	commandInput := textinput.New()
 	commandInput.Placeholder = "custom command"
 	commandInput.CharLimit = 100
-	commandInput.Width = 40
+
+	// Optional per-session model/version override for supported tools.
+	modelInput := textinput.New()
+	modelInput.Placeholder = "tool default"
+	modelInput.CharLimit = 128
 
 	// Create branch input for worktree
 	branchInput := textinput.New()
 	branchInput.Placeholder = "feature/branch-name"
 	branchInput.CharLimit = 100
-	branchInput.Width = 40
 
 	dlg := &NewDialog{
 		nameInput:       nameInput,
 		pathInput:       pathInput,
 		commandInput:    commandInput,
+		modelInput:      modelInput,
 		branchInput:     branchInput,
 		branchPicker:    NewBranchPickerDialog(),
 		claudeOptions:   NewClaudeOptionsPanel(),
@@ -303,6 +337,7 @@ func NewNewDialog() *NewDialog {
 		worktreeEnabled: false,
 		branchPrefix:    "feature/",
 	}
+	dlg.syncInputWidths()
 	dlg.updateToolOptions() // Also calls rebuildFocusTargets.
 	return dlg
 }
@@ -323,8 +358,15 @@ func (d *NewDialog) ShowInGroup(groupPath, groupName, defaultPath string, conduc
 	d.nameInput.Focus()
 	d.suggestionNavigated = false // reset on show
 	d.pathSuggestionCursor = 0    // reset cursor too
-	d.pathCycler.Reset()          // clear stale autocomplete matches from previous show
-	d.showRecentPicker = false    // reset recent picker
+	d.suggestionsActive = false
+	d.suggestionsHidden = false
+	d.modelSuggestions = nil
+	d.modelSuggestionCursor = 0
+	d.modelSuggestionActive = false
+	d.modelSuggestionHidden = false
+	d.modelNavigated = false
+	d.pathCycler.Reset()       // clear stale autocomplete matches from previous show
+	d.showRecentPicker = false // reset recent picker
 	d.recentSessionCursor = 0
 	d.conductorSessions = conductors
 	d.conductorCursor = 0
@@ -335,7 +377,10 @@ func (d *NewDialog) ShowInGroup(groupPath, groupName, defaultPath string, conduc
 		}
 	}
 	d.pathInput.Blur()
+	d.modelInput.SetValue("")
+	d.modelInput.Blur()
 	d.claudeOptions.Blur()
+	d.claudeOptions.ResetStartQuery() // #741: per-session query must not leak across openings
 	d.geminiOptions.Blur()
 	d.codexOptions.Blur()
 	if d.branchPicker != nil {
@@ -413,10 +458,37 @@ func (d *NewDialog) GetSelectedGroup() string {
 	return d.parentGroupPath
 }
 
+func (d *NewDialog) effectiveDialogWidth() int {
+	w := newDialogPreferredOuterWidth
+	if d.width > 0 && d.width < w+newDialogTerminalGutter {
+		w = d.width - newDialogTerminalGutter
+		if w < newDialogMinOuterWidth {
+			w = newDialogMinOuterWidth
+		}
+	}
+	return w
+}
+
+func (d *NewDialog) syncInputWidths() {
+	iw := d.effectiveDialogWidth() - newDialogInputWidthPad
+	if iw < newDialogInputMinWidth {
+		iw = newDialogInputMinWidth
+	}
+	if iw > newDialogInputMaxWidth {
+		iw = newDialogInputMaxWidth
+	}
+	d.nameInput.Width = iw
+	d.pathInput.Width = iw
+	d.commandInput.Width = iw
+	d.modelInput.Width = iw
+	d.branchInput.Width = iw
+}
+
 // SetSize sets the dialog dimensions
 func (d *NewDialog) SetSize(width, height int) {
 	d.width = width
 	d.height = height
+	d.syncInputWidths()
 	if d.branchPicker != nil {
 		d.branchPicker.SetSize(width, height)
 	}
@@ -439,6 +511,82 @@ func (d *NewDialog) IsBranchPickerOpen() bool {
 	return d.branchPicker != nil && d.branchPicker.IsVisible()
 }
 
+// IsSuggestionsActive returns whether arrow-key focus is inside the path
+// suggestions dropdown. Used by the parent so it can forward keys to the
+// dialog before its own Enter/Esc handlers consume them.
+func (d *NewDialog) IsSuggestionsActive() bool {
+	return d.suggestionsActive
+}
+
+// IsTypeCustomHighlighted returns true when the synthetic "Type custom"
+// entry is the highlighted item in the active dropdown.
+func (d *NewDialog) IsTypeCustomHighlighted() bool {
+	return d.suggestionsActive && d.pathSuggestionCursor == 0
+}
+
+// ApplyHighlightedSuggestion applies the currently highlighted real
+// suggestion to the path input and exits the active dropdown mode (dropdown
+// remains visible). Has no effect on the input when "Type custom" is
+// highlighted — only the active mode is exited.
+func (d *NewDialog) ApplyHighlightedSuggestion() {
+	if d.suggestionsActive && d.pathSuggestionCursor > 0 {
+		suggestionIdx := d.pathSuggestionCursor - 1
+		if suggestionIdx < len(d.pathSuggestions) {
+			d.pathInput.SetValue(d.pathSuggestions[suggestionIdx])
+			d.pathInput.SetCursor(len(d.pathInput.Value()))
+		}
+		d.suggestionNavigated = true
+	}
+	d.suggestionsActive = false
+	d.pathSoftSelected = false
+	d.pathInput.Focus()
+}
+
+// DismissSuggestions hides the dropdown until the user types in the
+// input or focus changes. Used after Enter so the dropdown disappears
+// even when the form fails to submit due to validation errors.
+func (d *NewDialog) DismissSuggestions() {
+	d.suggestionsHidden = true
+	d.suggestionsActive = false
+}
+
+func (d *NewDialog) IsModelSuggestionsActive() bool {
+	return d.modelSuggestionActive
+}
+
+func (d *NewDialog) IsModelTypeCustomHighlighted() bool {
+	return d.modelSuggestionActive && d.modelSuggestionCursor == 0
+}
+
+func (d *NewDialog) shouldHandleEnterLocally() bool {
+	switch d.currentTarget() {
+	case focusPath, focusModel:
+		return true
+	case focusMultiRepo:
+		return d.multiRepoEnabled
+	default:
+		return d.suggestionsActive || d.modelSuggestionActive
+	}
+}
+
+func (d *NewDialog) ApplyHighlightedModelSuggestion() {
+	if d.modelSuggestionActive && d.modelSuggestionCursor > 0 {
+		suggestionIdx := d.modelSuggestionCursor - 1
+		if suggestionIdx < len(d.modelSuggestions) {
+			d.modelInput.SetValue(d.modelSuggestions[suggestionIdx])
+			d.modelInput.SetCursor(len(d.modelInput.Value()))
+		}
+		d.modelNavigated = true
+	}
+	d.modelSuggestionActive = false
+	d.modelInput.Focus()
+}
+
+func (d *NewDialog) DismissModelSuggestions() {
+	d.modelSuggestionHidden = true
+	d.modelSuggestionActive = false
+}
+
 // SetRecentSessions sets the list of recently deleted session configs.
 func (d *NewDialog) SetRecentSessions(sessions []*statedb.RecentSessionRow) {
 	d.recentSessions = sessions
@@ -459,6 +607,7 @@ func (d *NewDialog) saveSnapshot() *dialogSnapshot {
 		path:             d.pathInput.Value(),
 		commandCursor:    d.commandCursor,
 		commandInput:     d.commandInput.Value(),
+		modelInput:       d.modelInput.Value(),
 		sandboxEnabled:   d.sandboxEnabled,
 		worktreeEnabled:  d.worktreeEnabled,
 		branch:           d.branchInput.Value(),
@@ -478,6 +627,7 @@ func (d *NewDialog) restoreSnapshot(s *dialogSnapshot) {
 	d.pathInput.SetValue(s.path)
 	d.commandCursor = s.commandCursor
 	d.commandInput.SetValue(s.commandInput)
+	d.modelInput.SetValue(s.modelInput)
 	d.sandboxEnabled = s.sandboxEnabled
 	d.worktreeEnabled = s.worktreeEnabled
 	d.branchInput.SetValue(s.branch)
@@ -504,6 +654,7 @@ func (d *NewDialog) previewRecentSession(rs *statedb.RecentSessionRow) {
 	// Default to shell/custom command mode.
 	d.commandCursor = 0
 	d.commandInput.SetValue("")
+	d.modelInput.SetValue("")
 
 	// Set command/tool.
 	if rs.Tool == "" || rs.Tool == "shell" {
@@ -534,6 +685,9 @@ func (d *NewDialog) previewRecentSession(rs *statedb.RecentSessionRow) {
 				var opts session.ClaudeOptions
 				if err := json.Unmarshal(wrapper.Options, &opts); err == nil {
 					d.claudeOptions.SetFromOptions(&opts)
+					if opts.Model != "" {
+						d.modelInput.SetValue(opts.Model)
+					}
 				}
 			}
 		case rs.Tool == "gemini":
@@ -544,14 +698,28 @@ func (d *NewDialog) previewRecentSession(rs *statedb.RecentSessionRow) {
 			var wrapper session.ToolOptionsWrapper
 			if err := json.Unmarshal(rs.ToolOptions, &wrapper); err == nil && wrapper.Tool == "codex" {
 				var opts session.CodexOptions
-				if err := json.Unmarshal(wrapper.Options, &opts); err == nil && opts.YoloMode != nil {
-					d.codexOptions.SetDefaults(*opts.YoloMode)
+				if err := json.Unmarshal(wrapper.Options, &opts); err == nil {
+					if opts.YoloMode != nil {
+						d.codexOptions.SetDefaults(*opts.YoloMode)
+					}
+					if opts.Model != "" {
+						d.modelInput.SetValue(opts.Model)
+					}
+				}
+			}
+		case rs.Tool == "opencode":
+			var wrapper session.ToolOptionsWrapper
+			if err := json.Unmarshal(rs.ToolOptions, &wrapper); err == nil && wrapper.Tool == "opencode" {
+				var opts session.OpenCodeOptions
+				if err := json.Unmarshal(wrapper.Options, &opts); err == nil && opts.Model != "" {
+					d.modelInput.SetValue(opts.Model)
 				}
 			}
 		}
 	}
 
 	d.sandboxEnabled = rs.SandboxEnabled
+	d.filterModelSuggestions()
 
 	// Reset worktree (ephemeral, never pre-filled)
 	d.worktreeEnabled = false
@@ -581,8 +749,90 @@ func (d *NewDialog) filterPathSuggestions() {
 		}
 		d.pathSuggestions = filtered
 	}
-	if d.pathSuggestionCursor >= len(d.pathSuggestions) {
+	// Cursor space: 0 = "Type custom", 1..N = pathSuggestions[0..N-1]
+	if d.pathSuggestionCursor > len(d.pathSuggestions) {
 		d.pathSuggestionCursor = 0
+	}
+}
+
+func knownModelIDsForTool(tool string) []string {
+	switch {
+	case session.IsClaudeCompatible(tool):
+		return []string{
+			"claude-sonnet-4-6",
+			"claude-opus-4-7",
+			"claude-haiku-4-5",
+			"claude-haiku-4-5-20251001",
+		}
+	case tool == "gemini":
+		return []string{
+			"gemini-3.1-pro-preview",
+			"gemini-3.1-pro-preview-customtools",
+			"gemini-3-flash-preview",
+			"gemini-3.1-flash-lite",
+			"gemini-3.1-flash-lite-preview",
+			"gemini-2.5-pro",
+			"gemini-2.5-flash",
+			"gemini-2.5-flash-lite",
+		}
+	case tool == "opencode":
+		return []string{
+			"openai/gpt-5.5",
+			"openai/gpt-5.5-pro",
+			"openai/gpt-5.4",
+			"openai/gpt-5.4-pro",
+			"openai/gpt-5.4-mini",
+			"openai/gpt-5.3-codex",
+			"openai/gpt-5",
+			"openai/o3",
+			"anthropic/claude-sonnet-4-6",
+			"anthropic/claude-opus-4-7",
+			"anthropic/claude-haiku-4-5",
+		}
+	case session.IsCodexCompatible(tool):
+		return []string{
+			"gpt-5.5",
+			"gpt-5.5-pro",
+			"gpt-5.4",
+			"gpt-5.4-pro",
+			"gpt-5.4-mini",
+			"gpt-5.4-nano",
+			"gpt-5.3-codex",
+			"gpt-5.2",
+			"gpt-5.2-pro",
+			"gpt-5.1",
+			"gpt-5-pro",
+			"gpt-5",
+			"gpt-5-mini",
+			"gpt-5-nano",
+			"gpt-4.1",
+			"gpt-4.1-mini",
+			"gpt-4o",
+			"gpt-4o-mini",
+			"o3-pro",
+			"o3",
+		}
+	default:
+		return nil
+	}
+}
+
+func (d *NewDialog) filterModelSuggestions() {
+	all := knownModelIDsForTool(d.GetSelectedCommand())
+	query := strings.ToLower(strings.TrimSpace(d.modelInput.Value()))
+	if query == "" {
+		d.modelSuggestions = all
+	} else {
+		filtered := make([]string, 0, len(all))
+		for _, modelID := range all {
+			if strings.Contains(strings.ToLower(modelID), query) {
+				filtered = append(filtered, modelID)
+			}
+		}
+		d.modelSuggestions = filtered
+	}
+	if d.modelSuggestionCursor > len(d.modelSuggestions) {
+		d.modelSuggestionCursor = 0
 	}
 }
 
@@ -747,6 +997,48 @@ func (d *NewDialog) GetSelectedCommand() string {
 	return ""
 }
 
+func (d *NewDialog) selectedToolSupportsModel() bool {
+	return session.SupportsLaunchModel(d.GetSelectedCommand())
+}
+
+func (d *NewDialog) updateModelPlaceholder() {
+	switch cmd := d.GetSelectedCommand(); {
+	case session.IsClaudeCompatible(cmd):
+		d.modelInput.Placeholder = "claude-sonnet-4-6"
+	case cmd == "gemini":
+		d.modelInput.Placeholder = "gemini-3.1-pro-preview"
+	case cmd == "opencode":
+		d.modelInput.Placeholder = "openai/gpt-5.5"
+	case session.IsCodexCompatible(cmd):
+		d.modelInput.Placeholder = "gpt-5.5"
+	default:
+		d.modelInput.Placeholder = "tool default"
+	}
+}
+
+func (d *NewDialog) modelInputHint() string {
+	switch cmd := d.GetSelectedCommand(); {
+	case session.IsClaudeCompatible(cmd):
+		return "Examples: claude-sonnet-4-6, claude-opus-4-7, claude-haiku-4-5"
+	case cmd == "gemini":
+		return "Examples: gemini-3.1-pro-preview, gemini-3-flash-preview, gemini-2.5-pro"
+	case cmd == "opencode":
+		return "Examples: openai/gpt-5.5, openai/gpt-5.4, anthropic/claude-sonnet-4-6"
+	case session.IsCodexCompatible(cmd):
+		return "Examples: gpt-5.5, gpt-5.4, gpt-5.3-codex, gpt-5.4-mini"
+	default:
+		return ""
+	}
+}
+
+// GetLaunchModelID returns the optional model/version override for supported tools.
+func (d *NewDialog) GetLaunchModelID() string {
+	if !d.selectedToolSupportsModel() {
+		return ""
+	}
+	return strings.TrimSpace(d.modelInput.Value())
+}
+
 // GetClaudeOptions returns the Claude-specific options (only relevant if command is "claude")
 func (d *NewDialog) GetClaudeOptions() *session.ClaudeOptions {
 	if !d.isClaudeSelected() {
@@ -875,10 +1167,14 @@ func (d *NewDialog) rebuildFocusTargets() {
 	var targets []focusTarget
 	if d.multiRepoEnabled {
 		// Multi-repo replaces the single path field with a path list under focusMultiRepo
-		targets = []focusTarget{focusName, focusMultiRepo, focusCommand, focusWorktree, focusSandbox}
+		targets = []focusTarget{focusName, focusMultiRepo, focusCommand}
 	} else {
-		targets = []focusTarget{focusName, focusMultiRepo, focusPath, focusCommand, focusWorktree, focusSandbox}
+		targets = []focusTarget{focusName, focusMultiRepo, focusPath, focusCommand}
 	}
+	if d.selectedToolSupportsModel() {
+		targets = append(targets, focusModel)
+	}
+	targets = append(targets, focusWorktree, focusSandbox)
 	if len(d.conductorSessions) > 0 {
 		targets = append(targets, focusConductor)
 	}
@@ -904,6 +1200,12 @@ func (d *NewDialog) rebuildFocusTargets() {
 // updateToolOptions sets d.toolOptions to the panel matching the current tool selection.
 func (d *NewDialog) updateToolOptions() {
 	cmd := d.GetSelectedCommand()
+	d.updateModelPlaceholder()
+	d.modelSuggestionCursor = 0
+	d.modelSuggestionActive = false
+	d.modelSuggestionHidden = false
+	d.modelNavigated = false
+	d.filterModelSuggestions()
 	switch {
 	case session.IsClaudeCompatible(cmd):
 		d.toolOptions = d.claudeOptions
@@ -921,13 +1223,18 @@ func (d *NewDialog) updateFocus() {
 	d.nameInput.Blur()
 	d.pathInput.Blur()
 	d.commandInput.Blur()
+	d.modelInput.Blur()
 	d.branchInput.Blur()
 	d.claudeOptions.Blur()
 	d.geminiOptions.Blur()
 	d.codexOptions.Blur()
 
-	// Manage soft-select: re-activate when entering path field with a value.
+	// Reset dropdown and soft-select state when focus changes.
 	d.pathSoftSelected = false
+	d.suggestionsActive = false
+	d.suggestionsHidden = false
+	d.modelSuggestionActive = false
+	d.modelSuggestionHidden = false
 	switch d.currentTarget() {
 	case focusName:
 		d.nameInput.Focus()
@@ -943,6 +1250,8 @@ func (d *NewDialog) updateFocus() {
 		if d.commandCursor == 0 { // shell.
 			d.commandInput.Focus()
 		}
+	case focusModel:
+		d.modelInput.Focus()
 	case focusWorktree, focusSandbox, focusConductor, focusInherited:
 		// Checkbox/toggle rows and conductor dropdown — no text input to focus.
 	case focusBranch:
@@ -954,12 +1263,39 @@ func (d *NewDialog) updateFocus() {
 	}
 }
 
+func (d *NewDialog) moveFocus(delta int) {
+	if len(d.focusTargets) == 0 {
+		return
+	}
+	d.focusIndex += delta
+	for d.focusIndex < 0 {
+		d.focusIndex += len(d.focusTargets)
+	}
+	if d.focusIndex >= len(d.focusTargets) {
+		d.focusIndex %= len(d.focusTargets)
+	}
+	d.updateFocus()
+}
+
+func isNewDialogTabKey(msg tea.KeyMsg) bool {
+	return msg.Type == tea.KeyTab || msg.String() == "tab"
+}
+
+func isNewDialogShiftTabKey(msg tea.KeyMsg) bool {
+	switch msg.String() {
+	case "shift+tab", "shift-tab", "backtab", "btab":
+		return true
+	default:
+		return msg.Type == tea.KeyShiftTab
+	}
+}
+
 // Update handles key messages.
 // isTextInputFocused returns true when a text input field is actively receiving
 // keystrokes. Single-letter shortcuts must be suppressed in this state.
 func (d *NewDialog) isTextInputFocused() bool {
 	switch d.currentTarget() {
-	case focusName, focusPath, focusBranch:
+	case focusName, focusPath, focusModel, focusBranch:
 		return true
 	case focusCommand:
 		return d.commandCursor == 0 // custom command input
@@ -999,11 +1335,11 @@ func (d *NewDialog) Update(msg tea.Msg) (*NewDialog, tea.Cmd) {
 		// Recent sessions picker handling
 		if d.showRecentPicker && len(d.recentSessions) > 0 {
 			switch msg.String() {
-			case "ctrl+n", "down":
+			case "ctrl+n", "down", "j":
 				d.recentSessionCursor = (d.recentSessionCursor + 1) % len(d.recentSessions)
 				d.previewRecentSession(d.recentSessions[d.recentSessionCursor])
 				return d, nil
-			case "ctrl+p", "up":
+			case "ctrl+p", "up", "k":
 				d.recentSessionCursor--
 				if d.recentSessionCursor < 0 {
 					d.recentSessionCursor = len(d.recentSessions) - 1
@@ -1037,8 +1373,127 @@ func (d *NewDialog) Update(msg tea.Msg) (*NewDialog, tea.Cmd) {
 			return d, nil
 		}
 
+		// Issue #896 sub-bug 4: when the path-suggestions popup is visible
+		// and the user is actively editing the path (pathInput focused,
+		// not soft-selected), arrow keys auto-activate the popup so the
+		// suggestionsActive handler below takes over and home.go's Enter
+		// handler can pick the highlighted suggestion (sub-bug 3).
+		//
+		// Issue #1020 (@JMBattista): in soft-select mode (Tab-landed on a
+		// path field with a pre-filled value, pathInput blurred), Up/Down
+		// must NOT auto-activate — they must fall through to form-field
+		// navigation so the user can escape the path section. Explicit
+		// entry into popup-nav stays available via Space or Right, handled
+		// in the soft-select block just below.
+		if !d.suggestionsActive && d.currentTarget() == focusPath &&
+			len(d.pathSuggestions) > 0 && !d.suggestionsHidden &&
+			!d.pathSoftSelected {
+			if s := msg.String(); s == "down" || s == "up" {
+				d.suggestionsActive = true
+				d.pathInput.Blur()
+				d.suggestionNavigated = true
+				// fall through to the suggestionsActive arrow handler below
+			}
+		}
+		if !d.modelSuggestionActive && d.currentTarget() == focusModel &&
+			!d.modelSuggestionHidden && d.selectedToolSupportsModel() {
+			if s := msg.String(); s == "down" || s == "up" {
+				d.filterModelSuggestions()
+				d.modelSuggestionActive = true
+				d.modelInput.Blur()
+				d.modelNavigated = true
+				// fall through to the modelSuggestionActive arrow handler below
+			}
+		}
+
+		// Suggestions dropdown active: arrow keys navigate, space/enter select,
+		// left/esc exit. The dropdown shows a synthetic "Type custom path..."
+		// entry at index 0, followed by real suggestions at indices 1..N.
+		if d.suggestionsActive && d.currentTarget() == focusPath {
+			if isNewDialogTabKey(msg) {
+				d.DismissSuggestions()
+				d.moveFocus(1)
+				return d, nil
+			}
+			if isNewDialogShiftTabKey(msg) {
+				d.DismissSuggestions()
+				d.moveFocus(-1)
+				return d, nil
+			}
+			total := len(d.pathSuggestions) + 1 // +1 for the "Type custom" entry
+			switch msg.String() {
+			case "down", "j", "ctrl+n":
+				d.pathSuggestionCursor = (d.pathSuggestionCursor + 1) % total
+				return d, nil
+			case "up", "k", "ctrl+p":
+				d.pathSuggestionCursor--
+				if d.pathSuggestionCursor < 0 {
+					d.pathSuggestionCursor = total - 1
+				}
+				return d, nil
+			case " ", "enter":
+				// Space: apply highlighted entry + close dropdown (stay in form).
+				d.ApplyHighlightedSuggestion()
+				d.DismissSuggestions()
+				if msg.String() == "enter" {
+					d.moveFocus(1)
+				}
+				return d, nil
+			case "left", "h", "esc":
+				d.suggestionsActive = false
+				d.pathInput.Focus()
+				return d, nil
+			}
+			return d, nil // consume all other keys while dropdown is active
+		}
+
+		if d.modelSuggestionActive && d.currentTarget() == focusModel {
+			if isNewDialogTabKey(msg) {
+				d.DismissModelSuggestions()
+				d.moveFocus(1)
+				return d, nil
+			}
+			if isNewDialogShiftTabKey(msg) {
+				d.DismissModelSuggestions()
+				d.moveFocus(-1)
+				return d, nil
+			}
+			total := len(d.modelSuggestions) + 1 // +1 for the "Type custom" entry
+			switch msg.String() {
+			case "down", "j":
+				d.modelSuggestionCursor = (d.modelSuggestionCursor + 1) % total
+				return d, nil
+			case "up", "k":
+				d.modelSuggestionCursor--
+				if d.modelSuggestionCursor < 0 {
+					d.modelSuggestionCursor = total - 1
+				}
+				return d, nil
+			case " ", "enter":
+				d.ApplyHighlightedModelSuggestion()
+				d.DismissModelSuggestions()
+				if msg.String() == "enter" {
+					d.moveFocus(1)
+				}
+				return d, nil
+			case "left", "h", "esc":
+				d.modelSuggestionActive = false
+				d.modelInput.Focus()
+				return d, nil
+			}
+			return d, nil
+		}
+
 		// Soft-select interception for path field
 		if d.currentTarget() == focusPath && d.pathSoftSelected {
+			// Space or Right enters the suggestions dropdown.
+			if msg.String() == " " || msg.Type == tea.KeyRight {
+				d.suggestionsActive = true
+				d.pathSuggestionCursor = 0 // start on "Type custom" entry
+				d.pathSoftSelected = false
+				d.pathInput.Blur()
+				return d, nil
+			}
 			switch msg.Type {
 			case tea.KeyRunes:
 				// Printable char: clear field, focus textinput, let rune fall through
@@ -1056,15 +1511,14 @@ func (d *NewDialog) Update(msg tea.Msg) (*NewDialog, tea.Cmd) {
 				d.pathCycler.Reset()
 				d.filterPathSuggestions()
 				return d, nil // consume the key
-			case tea.KeyLeft, tea.KeyRight:
+			case tea.KeyLeft:
 				d.pathSoftSelected = false
 				d.pathInput.Focus() // exit soft-select, allow editing
 			}
 			// Tab, Enter, Esc, Ctrl+N, Ctrl+P, Up, Down fall through to existing handlers
 		}
 
-		switch msg.String() {
-		case "tab":
+		if isNewDialogTabKey(msg) {
 			// On path field (or multi-repo path editing): trigger autocomplete or cycle through matches.
 			isPathEditing := cur == focusPath || d.multiRepoEditing
 			if isPathEditing {
@@ -1090,9 +1544,11 @@ func (d *NewDialog) Update(msg tea.Msg) (*NewDialog, tea.Cmd) {
 			}
 
 			// On path field: apply selected suggestion ONLY if user explicitly navigated.
-			if isPathEditing && d.suggestionNavigated && len(d.pathSuggestions) > 0 {
-				if d.pathSuggestionCursor < len(d.pathSuggestions) {
-					d.pathInput.SetValue(d.pathSuggestions[d.pathSuggestionCursor])
+			// Cursor 0 = "Type custom" (no-op); cursor 1..N maps to pathSuggestions[0..N-1].
+			if isPathEditing && d.suggestionNavigated && d.pathSuggestionCursor > 0 {
+				suggestionIdx := d.pathSuggestionCursor - 1
+				if suggestionIdx < len(d.pathSuggestions) {
+					d.pathInput.SetValue(d.pathSuggestions[suggestionIdx])
 					d.pathInput.SetCursor(len(d.pathInput.Value()))
 				}
 			}
@@ -1100,42 +1556,127 @@ func (d *NewDialog) Update(msg tea.Msg) (*NewDialog, tea.Cmd) {
 			if d.multiRepoEditing {
 				return d, nil
 			}
-			// Move to next field.
-			if d.focusIndex < maxIdx {
-				d.focusIndex++
-				d.updateFocus()
-			} else if cur == focusOptions && d.toolOptions != nil {
-				return d, d.toolOptions.Update(msg)
-			} else {
-				d.focusIndex = 0
-				d.updateFocus()
+			if cur == focusModel {
+				if d.modelNavigated && d.modelSuggestionCursor > 0 {
+					d.ApplyHighlightedModelSuggestion()
+				}
+				d.DismissModelSuggestions()
 			}
+			// Issue #896 (problem 1): don't advance focus from a non-empty path
+			// that doesn't point to an existing directory. Tab should stick to
+			// the input until the user has a usable path; otherwise it silently
+			// jumps to the agent selector and the typed path is left dangling.
+			if isPathEditing {
+				v := strings.Trim(strings.TrimSpace(d.pathInput.Value()), "'\"")
+				if v != "" {
+					expanded := session.ExpandPath(v)
+					if info, err := os.Stat(expanded); err != nil || !info.IsDir() {
+						return d, nil
+					}
+				}
+			}
+			// Move to next field.
+			d.moveFocus(1)
 			// Reset navigation flag when leaving path field.
 			if d.currentTarget() != focusPath {
 				d.suggestionNavigated = false
 			}
 			return d, cmd
+		}
 
+		if isNewDialogShiftTabKey(msg) {
+			d.DismissSuggestions()
+			d.DismissModelSuggestions()
+			d.moveFocus(-1)
+			return d, nil
+		}
+
+		switch msg.String() {
 		case "ctrl+n":
-			// Next suggestion (when on path field or editing multi-repo path).
+			// Next suggestion (cursor space includes synthetic "Type custom" at 0).
 			if (cur == focusPath || d.multiRepoEditing) && len(d.pathSuggestions) > 0 {
 				d.pathSoftSelected = false
 				d.pathInput.Focus() // exit soft-select, focus for future input.
-				d.pathSuggestionCursor = (d.pathSuggestionCursor + 1) % len(d.pathSuggestions)
+				d.pathSuggestionCursor = (d.pathSuggestionCursor + 1) % (len(d.pathSuggestions) + 1)
 				d.suggestionNavigated = true
 				return d, nil
 			}
+			// Emacs fallback: advance to next form field (mirrors "down").
+			if cur == focusConductor {
+				total := len(d.conductorSessions) + 1
+				if d.conductorCursor < total-1 {
+					d.conductorCursor++
+					return d, nil
+				}
+			}
+			if cur == focusMultiRepo && d.multiRepoEnabled && !d.multiRepoEditing {
+				if d.multiRepoPathCursor < len(d.multiRepoPaths)-1 {
+					d.multiRepoPathCursor++
+					return d, nil
+				}
+			}
+			if d.focusIndex < maxIdx {
+				d.focusIndex++
+				d.updateFocus()
+			} else if cur == focusOptions && d.toolOptions != nil {
+				return d, d.toolOptions.Update(msg)
+			}
+			return d, nil
 
 		case "ctrl+p":
-			// Previous suggestion (when on path field or editing multi-repo path).
+			// Previous suggestion (cursor space includes synthetic "Type custom" at 0).
 			if (cur == focusPath || d.multiRepoEditing) && len(d.pathSuggestions) > 0 {
 				d.pathSoftSelected = false
 				d.pathInput.Focus() // exit soft-select, focus for future input.
 				d.pathSuggestionCursor--
 				if d.pathSuggestionCursor < 0 {
-					d.pathSuggestionCursor = len(d.pathSuggestions) - 1
+					d.pathSuggestionCursor = len(d.pathSuggestions)
 				}
 				d.suggestionNavigated = true
+				return d, nil
+			}
+			// Emacs fallback: retreat to previous form field (mirrors "shift+tab"/"up").
+			if cur == focusConductor {
+				if d.conductorCursor > 0 {
+					d.conductorCursor--
+					return d, nil
+				}
+			}
+			if cur == focusMultiRepo && d.multiRepoEnabled && !d.multiRepoEditing {
+				if d.multiRepoPathCursor > 0 {
+					d.multiRepoPathCursor--
+					return d, nil
+				}
+			}
+			if cur == focusOptions && d.toolOptions != nil && !d.toolOptions.AtTop() {
+				return d, d.toolOptions.Update(msg)
+			}
+			d.focusIndex--
+			if d.focusIndex < 0 {
+				d.focusIndex = maxIdx
+			}
+			d.updateFocus()
+			return d, nil
+
+		case "ctrl+w":
+			// Path-aware backward word delete: stop at '/', not just whitespace.
+			// Default bubbles textinput behaviour wipes the entire field for
+			// path values that contain no spaces. Issue #896.
+			switch {
+			case cur == focusPath || (cur == focusMultiRepo && d.multiRepoEditing):
+				d.pathSoftSelected = false
+				d.pathInput.Focus()
+				deleteWordBackwardPath(&d.pathInput)
+				d.suggestionNavigated = false
+				d.suggestionsActive = false
+				d.suggestionsHidden = false
+				d.pathSuggestionCursor = 0
+				d.pathCycler.Reset()
+				d.filterPathSuggestions()
+				return d, nil
+			case cur == focusBranch:
+				deleteWordBackwardPath(&d.branchInput)
+				d.branchAutoSet = false
 				return d, nil
 			}
 
@@ -1176,7 +1717,7 @@ func (d *NewDialog) Update(msg tea.Msg) (*NewDialog, tea.Cmd) {
 			}
 			return d, nil
 
-		case "shift+tab", "up":
+		case "up":
 			if cur == focusConductor {
 				if d.conductorCursor > 0 {
 					d.conductorCursor--
@@ -1192,11 +1733,7 @@ func (d *NewDialog) Update(msg tea.Msg) (*NewDialog, tea.Cmd) {
 			if cur == focusOptions && d.toolOptions != nil && !d.toolOptions.AtTop() {
 				return d, d.toolOptions.Update(msg)
 			}
-			d.focusIndex--
-			if d.focusIndex < 0 {
-				d.focusIndex = maxIdx
-			}
-			d.updateFocus()
+			d.moveFocus(-1)
 			return d, nil
 
 		case "esc":
@@ -1210,6 +1747,20 @@ func (d *NewDialog) Update(msg tea.Msg) (*NewDialog, tea.Cmd) {
 			return d, nil
 
 		case "enter":
+			if cur == focusPath {
+				d.suggestionsActive = true
+				d.suggestionsHidden = false
+				d.pathSoftSelected = false
+				d.pathInput.Blur()
+				return d, nil
+			}
+			if cur == focusModel {
+				d.filterModelSuggestions()
+				d.modelSuggestionActive = true
+				d.modelSuggestionHidden = false
+				d.modelInput.Blur()
+				return d, nil
+			}
 			if cur == focusMultiRepo && d.multiRepoEnabled {
 				if d.multiRepoEditing {
 					// Save the edited path back
@@ -1238,6 +1789,7 @@ func (d *NewDialog) Update(msg tea.Msg) (*NewDialog, tea.Cmd) {
 				if d.commandCursor < 0 {
 					d.commandCursor = len(d.presetCommands) - 1
 				}
+				d.modelInput.SetValue("")
 				d.updateToolOptions()
 				d.updateFocus()
 				return d, nil
@@ -1249,6 +1801,7 @@ func (d *NewDialog) Update(msg tea.Msg) (*NewDialog, tea.Cmd) {
 		case "right":
 			if cur == focusCommand {
 				d.commandCursor = (d.commandCursor + 1) % len(d.presetCommands)
+				d.modelInput.SetValue("")
 				d.updateToolOptions()
 				d.updateFocus()
 				return d, nil
@@ -1390,6 +1943,8 @@ func (d *NewDialog) Update(msg tea.Msg) (*NewDialog, tea.Cmd) {
 		d.pathInput, cmd = d.pathInput.Update(msg)
 		if d.pathInput.Value() != oldValue {
 			d.suggestionNavigated = false
+			d.suggestionsActive = false
+			d.suggestionsHidden = false // typing re-opens the dropdown
 			d.pathSuggestionCursor = 0
 			d.pathCycler.Reset()
 			d.filterPathSuggestions()
@@ -1397,6 +1952,16 @@ func (d *NewDialog) Update(msg tea.Msg) (*NewDialog, tea.Cmd) {
 	case focusCommand:
 		if d.commandCursor == 0 {
 			d.commandInput, cmd = d.commandInput.Update(msg)
+		}
+	case focusModel:
+		oldValue := d.modelInput.Value()
+		d.modelInput, cmd = d.modelInput.Update(msg)
+		if d.modelInput.Value() != oldValue {
+			d.modelSuggestionActive = false
+			d.modelSuggestionHidden = false
+			d.modelSuggestionCursor = 0
+			d.modelNavigated = false
+			d.filterModelSuggestions()
 		}
 	case focusMultiRepo:
 		// When editing a multi-repo path, forward keystrokes to pathInput.
@@ -1447,14 +2012,7 @@ func (d *NewDialog) View() string {
 	labelStyle := lipgloss.NewStyle().
 		Foreground(ColorText)
 
-	// Responsive dialog width
-	dialogWidth := 60
-	if d.width > 0 && d.width < dialogWidth+10 {
-		dialogWidth = d.width - 10
-		if dialogWidth < 40 {
-			dialogWidth = 40
-		}
-	}
+	dialogWidth := d.effectiveDialogWidth()
 
 	dialogStyle := lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
@@ -1617,10 +2175,18 @@ func (d *NewDialog) View() string {
 		content.WriteString("\n")
 		content.WriteString("  ")
 		if cur == focusPath && d.pathSoftSelected && d.pathInput.Value() != "" {
-			selectedStyle := lipgloss.NewStyle().
+			// Soft-select highlight: render the textinput's own View() (which
+			// includes Bubble Tea's blinking cursor) with TextStyle set to
+			// reverse colors. The previous static-string render dropped the
+			// cursor entirely, leaving users editing blind (#765). Saving and
+			// restoring the prior TextStyle keeps this branch's mutation local
+			// to the soft-select case.
+			savedTextStyle := d.pathInput.TextStyle
+			d.pathInput.TextStyle = lipgloss.NewStyle().
 				Background(ColorAccent).
 				Foreground(ColorBg)
-			content.WriteString(selectedStyle.Render(d.pathInput.Value()))
+			content.WriteString(d.pathInput.View())
+			d.pathInput.TextStyle = savedTextStyle
 		} else {
 			content.WriteString(d.pathInput.View())
 		}
@@ -1645,6 +2211,8 @@ func (d *NewDialog) View() string {
 		displayName := cmd
 		if displayName == "" {
 			displayName = "shell"
+		} else {
+			displayName = displayCommandPreset(cmd)
 		}
 		// Prepend icon for custom tools
 		if icon := session.GetToolIcon(cmd); cmd != "" && icon != "" {
@@ -1685,6 +2253,24 @@ func (d *NewDialog) View() string {
 		}
 		content.WriteString("\n    ")
 		content.WriteString(d.commandInput.View())
+		content.WriteString("\n\n")
+	}
+
+	// Optional model/version override for supported tools.
+	if d.selectedToolSupportsModel() {
+		if cur == focusModel {
+			content.WriteString(activeLabelStyle.Render("▶ Model ID:"))
+		} else {
+			content.WriteString(labelStyle.Render("  Model ID:"))
+		}
+		content.WriteString("\n  ")
+		content.WriteString(d.modelInput.View())
+		d.modelLineOffset = strings.Count(content.String(), "\n")
+		if hint := d.modelInputHint(); hint != "" {
+			dimStyle := lipgloss.NewStyle().Foreground(ColorComment)
+			content.WriteString("\n  ")
+			content.WriteString(dimStyle.Render(hint))
+		}
 		content.WriteString("\n\n")
 	}
 
@@ -1823,10 +2409,12 @@ func (d *NewDialog) View() string {
 	}
 	helpText := recentPrefix + "Tab next/accept │ ↑↓ navigate │ Enter create │ Esc cancel"
 	if cur == focusPath {
-		if d.pathSoftSelected {
-			helpText = "Type to replace │ ←→ to edit │ ^N/^P recent │ Tab next │ Esc cancel"
+		if d.suggestionsActive {
+			helpText = "↑/↓ navigate │ Space/Enter select │ Tab next │ Esc back"
+		} else if d.pathSoftSelected {
+			helpText = "Type to replace │ Enter browse list │ ← edit │ Tab next │ Esc cancel"
 		} else {
-			helpText = "Tab autocomplete │ ^N/^P recent │ ↑↓ navigate │ Enter create │ Esc cancel"
+			helpText = "Tab autocomplete │ Enter browse list │ Esc cancel"
 		}
 	} else if cur == focusBranch {
 		if d.branchPicker != nil && d.branchPicker.IsVisible() {
@@ -1840,6 +2428,12 @@ func (d *NewDialog) View() string {
 			helpText = "←→ command │ w worktree │ s sandbox │ y yolo │ Tab next │ Enter create │ Esc cancel"
 		} else {
 			helpText = "←→ command │ w worktree │ s sandbox │ Tab next │ Enter create │ Esc cancel"
+		}
+	} else if cur == focusModel {
+		if d.modelSuggestionActive {
+			helpText = "↑/↓ navigate │ Space/Enter select │ Esc back │ Tab next"
+		} else {
+			helpText = "Type custom model ID │ Enter browse known IDs │ Tab next"
 		}
 	} else if cur == focusConductor {
 		helpText = "↑↓ select parent │ Tab next │ Enter create │ Esc cancel"
@@ -1885,6 +2479,18 @@ func (d *NewDialog) View() string {
 		placed = overlayDropdown(placed, suggestionsOverlay, overlayRow, overlayCol)
 	}
 
+	if modelOverlay := d.renderModelSuggestionsDropdown(); modelOverlay != "" {
+		dialogHeight := lipgloss.Height(dialog)
+		dialogWidth := lipgloss.Width(dialog)
+		topRow := (d.height - dialogHeight) / 2
+		leftCol := (d.width - dialogWidth) / 2
+
+		overlayRow := topRow + 1 + 2 + d.modelLineOffset
+		overlayCol := leftCol + 1 + 4
+
+		placed = overlayDropdown(placed, modelOverlay, overlayRow, overlayCol)
+	}
+
 	return placed
 }
 
@@ -1902,75 +2508,196 @@ func dropdownMenuBg() lipgloss.Color {
 func (d *NewDialog) renderSuggestionsDropdown() string {
 	cur := d.currentTarget()
 
-	// Single-path mode: show when path focused
-	showSingle := !d.multiRepoEnabled && cur == focusPath && len(d.pathSuggestions) > 0
-	// Multi-repo mode: show when editing a path entry
-	showMulti := d.multiRepoEnabled && cur == focusMultiRepo && d.multiRepoEditing && len(d.pathSuggestions) > 0
+	// The dropdown shows whenever the path field is focused — even with no
+	// real suggestions, the synthetic "✎ Type custom path…" entry is always
+	// available at the top. Hidden after explicit dismiss (e.g. Enter).
+	showSingle := !d.multiRepoEnabled && cur == focusPath
+	showMulti := d.multiRepoEnabled && cur == focusMultiRepo && d.multiRepoEditing
 
-	if !showSingle && !showMulti {
+	if (!showSingle && !showMulti) || d.suggestionsHidden {
 		return ""
 	}
 
 	menuBg := dropdownMenuBg()
 	suggestionStyle := lipgloss.NewStyle().Foreground(ColorComment).Background(menuBg)
+	customStyle := lipgloss.NewStyle().Foreground(ColorPurple).Italic(true).Background(menuBg)
+	customSelectedStyle := lipgloss.NewStyle().Foreground(ColorCyan).Bold(true).Italic(true).Background(menuBg)
 	selectedStyle := lipgloss.NewStyle().Foreground(ColorCyan).Bold(true).Background(menuBg)
-
-	maxShow := 5
-	total := len(d.pathSuggestions)
-	startIdx := 0
-	endIdx := total
-	if total > maxShow {
-		startIdx = d.pathSuggestionCursor - maxShow/2
-		if startIdx < 0 {
-			startIdx = 0
-		}
-		endIdx = startIdx + maxShow
-		if endIdx > total {
-			endIdx = total
-			startIdx = endIdx - maxShow
-		}
-	}
 
 	var b strings.Builder
 
-	if startIdx > 0 {
-		b.WriteString(suggestionStyle.Render(fmt.Sprintf("  ↑ %d more above", startIdx)))
-		b.WriteString("\n")
+	// Synthetic "Type custom path" entry — always pinned at the top.
+	{
+		label := "✎ Type custom path…"
+		prefix := "  "
+		style := customStyle
+		if d.pathSuggestionCursor == 0 {
+			prefix = "▶ "
+			style = customSelectedStyle
+		}
+		b.WriteString(style.Render(prefix + label))
 	}
 
-	for i := startIdx; i < endIdx; i++ {
-		if i > startIdx {
+	// Real suggestions below, with paginated scrolling around the selected one.
+	maxShow := 5
+	total := len(d.pathSuggestions)
+	if total > 0 {
+		// Cursor 1..N maps to suggestions 0..N-1; -1 means "Type custom" is selected.
+		suggCursor := d.pathSuggestionCursor - 1
+		startIdx := 0
+		endIdx := total
+		if total > maxShow {
+			anchor := suggCursor
+			if anchor < 0 {
+				anchor = 0
+			}
+			startIdx = anchor - maxShow/2
+			if startIdx < 0 {
+				startIdx = 0
+			}
+			endIdx = startIdx + maxShow
+			if endIdx > total {
+				endIdx = total
+				startIdx = endIdx - maxShow
+			}
+		}
+
+		b.WriteString("\n")
+		if startIdx > 0 {
+			b.WriteString(suggestionStyle.Render(fmt.Sprintf("  ↑ %d more above", startIdx)))
 			b.WriteString("\n")
 		}
-		style := suggestionStyle
-		prefix := "  "
-		if i == d.pathSuggestionCursor {
-			style = selectedStyle
-			prefix = "▶ "
+
+		for i := startIdx; i < endIdx; i++ {
+			if i > startIdx {
+				b.WriteString("\n")
+			}
+			style := suggestionStyle
+			prefix := "  "
+			if i+1 == d.pathSuggestionCursor {
+				style = selectedStyle
+				prefix = "▶ "
+			}
+			b.WriteString(style.Render(prefix + d.pathSuggestions[i]))
 		}
-		b.WriteString(style.Render(prefix + d.pathSuggestions[i]))
+
+		if endIdx < total {
+			b.WriteString("\n")
+			b.WriteString(suggestionStyle.Render(fmt.Sprintf("  ↓ %d more below", total-endIdx)))
+		}
 	}
 
-	if endIdx < total {
-		b.WriteString("\n")
-		b.WriteString(suggestionStyle.Render(fmt.Sprintf("  ↓ %d more below", total-endIdx)))
-	}
-
-	// Footer with keybinding hints
+	// Footer with keybinding hints — different text when actively browsing.
 	var footerText string
-	if len(d.pathSuggestions) < len(d.allPathSuggestions) {
-		footerText = fmt.Sprintf(" %d/%d matching │ ^N/^P cycle │ Tab accept ",
-			len(d.pathSuggestions), len(d.allPathSuggestions))
+	if d.suggestionsActive {
+		footerText = " ↑/↓ navigate │ Space select │ Enter select & close "
 	} else {
-		footerText = " ^N/^P cycle │ Tab accept "
+		footerText = " →/Space browse "
 	}
 	b.WriteString("\n")
 	b.WriteString(lipgloss.NewStyle().Foreground(ColorBorder).Background(menuBg).Render(footerText))
 
-	// Wrap in a bordered menu box
+	// Wrap in a bordered menu box — accent border when actively browsing.
+	borderColor := ColorBorder
+	if d.suggestionsActive {
+		borderColor = ColorCyan
+	}
 	menuStyle := lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
-		BorderForeground(ColorBorder).
+		BorderForeground(borderColor).
+		Background(menuBg).
+		Padding(0, 1)
+
+	return menuStyle.Render(b.String())
+}
+
+func (d *NewDialog) renderModelSuggestionsDropdown() string {
+	if d.currentTarget() != focusModel || d.modelSuggestionHidden || !d.selectedToolSupportsModel() {
+		return ""
+	}
+
+	if d.modelSuggestions == nil {
+		d.filterModelSuggestions()
+	}
+
+	menuBg := dropdownMenuBg()
+	suggestionStyle := lipgloss.NewStyle().Foreground(ColorComment).Background(menuBg)
+	customStyle := lipgloss.NewStyle().Foreground(ColorPurple).Italic(true).Background(menuBg)
+	customSelectedStyle := lipgloss.NewStyle().Foreground(ColorCyan).Bold(true).Italic(true).Background(menuBg)
+	selectedStyle := lipgloss.NewStyle().Foreground(ColorCyan).Bold(true).Background(menuBg)
+
+	var b strings.Builder
+
+	label := "✎ Type custom model ID…"
+	prefix := "  "
+	style := customStyle
+	if d.modelSuggestionCursor == 0 {
+		prefix = "▶ "
+		style = customSelectedStyle
+	}
+	b.WriteString(style.Render(prefix + label))
+
+	maxShow := 6
+	total := len(d.modelSuggestions)
+	if total > 0 {
+		suggCursor := d.modelSuggestionCursor - 1
+		startIdx := 0
+		endIdx := total
+		if total > maxShow {
+			anchor := suggCursor
+			if anchor < 0 {
+				anchor = 0
+			}
+			startIdx = anchor - maxShow/2
+			if startIdx < 0 {
+				startIdx = 0
+			}
+			endIdx = startIdx + maxShow
+			if endIdx > total {
+				endIdx = total
+				startIdx = endIdx - maxShow
+			}
+		}
+
+		b.WriteString("\n")
+		if startIdx > 0 {
+			b.WriteString(suggestionStyle.Render(fmt.Sprintf("  ↑ %d more above", startIdx)))
+			b.WriteString("\n")
+		}
+
+		for i := startIdx; i < endIdx; i++ {
+			if i > startIdx {
+				b.WriteString("\n")
+			}
+			style := suggestionStyle
+			prefix := "  "
+			if i+1 == d.modelSuggestionCursor {
+				style = selectedStyle
+				prefix = "▶ "
+			}
+			b.WriteString(style.Render(prefix + d.modelSuggestions[i]))
+		}
+
+		if endIdx < total {
+			b.WriteString("\n")
+			b.WriteString(suggestionStyle.Render(fmt.Sprintf("  ↓ %d more below", total-endIdx)))
+		}
+	}
+
+	footerText := " ↑/↓ navigate │ Space select │ Type custom "
+	if d.modelSuggestionActive {
+		footerText = " ↑/↓ navigate │ Space/Enter select │ Esc back "
+	}
+	b.WriteString("\n")
+	b.WriteString(lipgloss.NewStyle().Foreground(ColorBorder).Background(menuBg).Render(footerText))
+
+	borderColor := ColorBorder
+	if d.modelSuggestionActive {
+		borderColor = ColorCyan
+	}
+	menuStyle := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(borderColor).
 		Background(menuBg).
 		Padding(0, 1)
 

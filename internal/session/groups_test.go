@@ -1316,6 +1316,343 @@ func TestMoveSessionDownOrder(t *testing.T) {
 	}
 }
 
+// childrenOf returns IDs of sub-sessions whose ParentSessionID matches parentID,
+// in the order they appear in the group's flat session slice. Mirrors the
+// rendering path's bucketing in groups.go::Items().
+func childrenOf(group *Group, parentID string) []string {
+	var ids []string
+	for _, s := range group.Sessions {
+		if s.ParentSessionID == parentID {
+			ids = append(ids, s.ID)
+		}
+	}
+	return ids
+}
+
+// TestMoveSessionUp_SubSessionSkipsNonSiblings documents the bug fix:
+// when sub-sessions of different parents are interleaved in the flat
+// group.Sessions slice, MoveSessionUp on a sub-session must swap with
+// the previous SAME-parent sibling, not with the immediately-preceding
+// non-sibling. Otherwise a single key press produces no visible change
+// and the user has to press the reorder key multiple times.
+func TestMoveSessionUp_SubSessionSkipsNonSiblings(t *testing.T) {
+	instances := []*Instance{
+		{ID: "p1", Title: "parent1", GroupPath: "test"},
+		{ID: "s1a", Title: "child1a", GroupPath: "test", ParentSessionID: "p1"},
+		{ID: "p2", Title: "parent2", GroupPath: "test"},
+		{ID: "s1b", Title: "child1b", GroupPath: "test", ParentSessionID: "p1"},
+	}
+	tree := NewGroupTree(instances)
+	group := tree.Groups["test"]
+
+	var s1b *Instance
+	for _, s := range group.Sessions {
+		if s.ID == "s1b" {
+			s1b = s
+			break
+		}
+	}
+
+	tree.MoveSessionUp(s1b)
+
+	// After one move, the visual children-of-p1 order should be [s1b, s1a].
+	got := childrenOf(group, "p1")
+	want := []string{"s1b", "s1a"}
+	if len(got) != len(want) || got[0] != want[0] || got[1] != want[1] {
+		t.Errorf("children of p1 after MoveSessionUp(s1b) = %v, want %v", got, want)
+	}
+}
+
+func TestMoveSessionDown_SubSessionSkipsNonSiblings(t *testing.T) {
+	instances := []*Instance{
+		{ID: "p1", Title: "parent1", GroupPath: "test"},
+		{ID: "s1a", Title: "child1a", GroupPath: "test", ParentSessionID: "p1"},
+		{ID: "p2", Title: "parent2", GroupPath: "test"},
+		{ID: "s1b", Title: "child1b", GroupPath: "test", ParentSessionID: "p1"},
+	}
+	tree := NewGroupTree(instances)
+	group := tree.Groups["test"]
+
+	var s1a *Instance
+	for _, s := range group.Sessions {
+		if s.ID == "s1a" {
+			s1a = s
+			break
+		}
+	}
+
+	tree.MoveSessionDown(s1a)
+
+	got := childrenOf(group, "p1")
+	want := []string{"s1b", "s1a"}
+	if len(got) != len(want) || got[0] != want[0] || got[1] != want[1] {
+		t.Errorf("children of p1 after MoveSessionDown(s1a) = %v, want %v", got, want)
+	}
+}
+
+// TestMoveSessionUp_FirstChildPromotes: K on the first child of a parent
+// promotes the child to top-level, inserted in the slice immediately before
+// the parent (so the renderer places it as a top-level peer just above the
+// parent block). The remaining children stay under the parent.
+func TestMoveSessionUp_FirstChildPromotes(t *testing.T) {
+	instances := []*Instance{
+		{ID: "p1", Title: "parent1", GroupPath: "test"},
+		{ID: "s1a", Title: "child1a", GroupPath: "test", ParentSessionID: "p1"},
+		{ID: "s1b", Title: "child1b", GroupPath: "test", ParentSessionID: "p1"},
+	}
+	tree := NewGroupTree(instances)
+	group := tree.Groups["test"]
+
+	var s1a *Instance
+	for _, s := range group.Sessions {
+		if s.ID == "s1a" {
+			s1a = s
+			break
+		}
+	}
+
+	tree.MoveSessionUp(s1a)
+
+	if s1a.ParentSessionID != "" {
+		t.Errorf("s1a.ParentSessionID after promote = %q, want empty", s1a.ParentSessionID)
+	}
+	gotTop := childrenOf(group, "")
+	wantTop := []string{"s1a", "p1"}
+	if len(gotTop) != len(wantTop) || gotTop[0] != wantTop[0] || gotTop[1] != wantTop[1] {
+		t.Errorf("top-level order after promote = %v, want %v", gotTop, wantTop)
+	}
+	gotKids := childrenOf(group, "p1")
+	wantKids := []string{"s1b"}
+	if len(gotKids) != len(wantKids) || gotKids[0] != wantKids[0] {
+		t.Errorf("p1's children after promote = %v, want %v", gotKids, wantKids)
+	}
+}
+
+// TestMoveSessionDown_LastChildPromotes: J on the last child of a parent
+// promotes the child to top-level. The slice position stays where the child
+// already was (right after the parent's other children), so the renderer
+// shows it as a top-level peer immediately after the parent block.
+func TestMoveSessionDown_LastChildPromotes(t *testing.T) {
+	instances := []*Instance{
+		{ID: "p1", Title: "parent1", GroupPath: "test"},
+		{ID: "s1a", Title: "child1a", GroupPath: "test", ParentSessionID: "p1"},
+		{ID: "s1b", Title: "child1b", GroupPath: "test", ParentSessionID: "p1"},
+		{ID: "p2", Title: "parent2", GroupPath: "test"},
+	}
+	tree := NewGroupTree(instances)
+	group := tree.Groups["test"]
+
+	var s1b *Instance
+	for _, s := range group.Sessions {
+		if s.ID == "s1b" {
+			s1b = s
+			break
+		}
+	}
+
+	tree.MoveSessionDown(s1b)
+
+	if s1b.ParentSessionID != "" {
+		t.Errorf("s1b.ParentSessionID after promote = %q, want empty", s1b.ParentSessionID)
+	}
+	gotTop := childrenOf(group, "")
+	wantTop := []string{"p1", "s1b", "p2"}
+	if len(gotTop) != len(wantTop) {
+		t.Fatalf("top-level after promote = %v, want %v", gotTop, wantTop)
+	}
+	for i := range wantTop {
+		if gotTop[i] != wantTop[i] {
+			t.Errorf("top-level[%d] = %q, want %q", i, gotTop[i], wantTop[i])
+		}
+	}
+	gotKids := childrenOf(group, "p1")
+	wantKids := []string{"s1a"}
+	if len(gotKids) != len(wantKids) || gotKids[0] != wantKids[0] {
+		t.Errorf("p1's children after promote = %v, want %v", gotKids, wantKids)
+	}
+}
+
+// TestMoveSessionDown_OnlyChildPromotes: J on the only child of a parent
+// promotes the child to top-level; parent ends up with no children.
+func TestMoveSessionDown_OnlyChildPromotes(t *testing.T) {
+	instances := []*Instance{
+		{ID: "p1", Title: "parent1", GroupPath: "test"},
+		{ID: "s1", Title: "child1", GroupPath: "test", ParentSessionID: "p1"},
+		{ID: "p2", Title: "parent2", GroupPath: "test"},
+	}
+	tree := NewGroupTree(instances)
+	group := tree.Groups["test"]
+
+	var s1 *Instance
+	for _, s := range group.Sessions {
+		if s.ID == "s1" {
+			s1 = s
+			break
+		}
+	}
+
+	tree.MoveSessionDown(s1)
+
+	if s1.ParentSessionID != "" {
+		t.Errorf("s1.ParentSessionID after promote = %q, want empty", s1.ParentSessionID)
+	}
+	gotTop := childrenOf(group, "")
+	wantTop := []string{"p1", "s1", "p2"}
+	if len(gotTop) != len(wantTop) {
+		t.Fatalf("top-level after promote = %v, want %v", gotTop, wantTop)
+	}
+	for i := range wantTop {
+		if gotTop[i] != wantTop[i] {
+			t.Errorf("top-level[%d] = %q, want %q", i, gotTop[i], wantTop[i])
+		}
+	}
+	if len(childrenOf(group, "p1")) != 0 {
+		t.Errorf("p1's children after promoting only child = %v, want []", childrenOf(group, "p1"))
+	}
+}
+
+// TestMoveSessionUp_OnlyChildPromotes: K on the only child of a parent
+// promotes it before the parent. Parent ends up with no children.
+func TestMoveSessionUp_OnlyChildPromotes(t *testing.T) {
+	instances := []*Instance{
+		{ID: "p0", Title: "parent0", GroupPath: "test"},
+		{ID: "p1", Title: "parent1", GroupPath: "test"},
+		{ID: "s1", Title: "child1", GroupPath: "test", ParentSessionID: "p1"},
+	}
+	tree := NewGroupTree(instances)
+	group := tree.Groups["test"]
+
+	var s1 *Instance
+	for _, s := range group.Sessions {
+		if s.ID == "s1" {
+			s1 = s
+			break
+		}
+	}
+
+	tree.MoveSessionUp(s1)
+
+	if s1.ParentSessionID != "" {
+		t.Errorf("s1.ParentSessionID after promote = %q, want empty", s1.ParentSessionID)
+	}
+	gotTop := childrenOf(group, "")
+	wantTop := []string{"p0", "s1", "p1"}
+	if len(gotTop) != len(wantTop) {
+		t.Fatalf("top-level after promote = %v, want %v", gotTop, wantTop)
+	}
+	for i := range wantTop {
+		if gotTop[i] != wantTop[i] {
+			t.Errorf("top-level[%d] = %q, want %q", i, gotTop[i], wantTop[i])
+		}
+	}
+	if len(childrenOf(group, "p1")) != 0 {
+		t.Errorf("p1's children after promoting only child = %v, want []", childrenOf(group, "p1"))
+	}
+}
+
+// TestMoveSessionUp_TopLevelAtFirstNoOp: K on the first top-level session
+// in a group is a no-op. Cross-group moves stay on the M shortcut.
+func TestMoveSessionUp_TopLevelAtFirstNoOp(t *testing.T) {
+	instances := []*Instance{
+		{ID: "p1", Title: "parent1", GroupPath: "test"},
+		{ID: "s1", Title: "child1", GroupPath: "test", ParentSessionID: "p1"},
+		{ID: "p2", Title: "parent2", GroupPath: "test"},
+	}
+	tree := NewGroupTree(instances)
+	group := tree.Groups["test"]
+
+	var p1 *Instance
+	for _, s := range group.Sessions {
+		if s.ID == "p1" {
+			p1 = s
+			break
+		}
+	}
+
+	before := []string{}
+	for _, s := range group.Sessions {
+		before = append(before, s.ID)
+	}
+	tree.MoveSessionUp(p1)
+	after := []string{}
+	for _, s := range group.Sessions {
+		after = append(after, s.ID)
+	}
+	for i := range before {
+		if before[i] != after[i] {
+			t.Errorf("first top-level should not move: %v -> %v", before, after)
+			break
+		}
+	}
+}
+
+// TestMoveSessionDown_TopLevelAtLastNoOp: J on the last top-level session
+// in a group is a no-op. Cross-group moves stay on the M shortcut.
+func TestMoveSessionDown_TopLevelAtLastNoOp(t *testing.T) {
+	instances := []*Instance{
+		{ID: "p1", Title: "parent1", GroupPath: "test"},
+		{ID: "p2", Title: "parent2", GroupPath: "test"},
+		{ID: "s2", Title: "child2", GroupPath: "test", ParentSessionID: "p2"},
+	}
+	tree := NewGroupTree(instances)
+	group := tree.Groups["test"]
+
+	var p2 *Instance
+	for _, s := range group.Sessions {
+		if s.ID == "p2" {
+			p2 = s
+			break
+		}
+	}
+
+	before := []string{}
+	for _, s := range group.Sessions {
+		before = append(before, s.ID)
+	}
+	tree.MoveSessionDown(p2)
+	after := []string{}
+	for _, s := range group.Sessions {
+		after = append(after, s.ID)
+	}
+	for i := range before {
+		if before[i] != after[i] {
+			t.Errorf("last top-level should not move: %v -> %v", before, after)
+			break
+		}
+	}
+}
+
+// TestMoveSessionUp_TopLevelSkipsSubSessions: a top-level session moved up
+// should swap with the previous TOP-LEVEL session, skipping any sub-sessions
+// belonging to another parent that happen to be between them in the slice.
+func TestMoveSessionUp_TopLevelSkipsSubSessions(t *testing.T) {
+	instances := []*Instance{
+		{ID: "p1", Title: "parent1", GroupPath: "test"},
+		{ID: "s1a", Title: "child1a", GroupPath: "test", ParentSessionID: "p1"},
+		{ID: "p2", Title: "parent2", GroupPath: "test"},
+	}
+	tree := NewGroupTree(instances)
+	group := tree.Groups["test"]
+
+	var p2 *Instance
+	for _, s := range group.Sessions {
+		if s.ID == "p2" {
+			p2 = s
+			break
+		}
+	}
+
+	tree.MoveSessionUp(p2)
+
+	// Top-level peers (sessions with empty ParentSessionID) order should
+	// now be [p2, p1].
+	got := childrenOf(group, "")
+	want := []string{"p2", "p1"}
+	if len(got) != len(want) || got[0] != want[0] || got[1] != want[1] {
+		t.Errorf("top-level order after MoveSessionUp(p2) = %v, want %v", got, want)
+	}
+}
+
 func TestSessionOrderPersistence(t *testing.T) {
 	// Simulate sessions with Order values (as if saved after reorder)
 	instances := []*Instance{
@@ -1528,4 +1865,208 @@ func TestFlattenIncludesWindowType(t *testing.T) {
 	}
 	assert.Equal(t, 1, sessionCount)
 	assert.Equal(t, 0, windowCount, "no windows injected at Flatten level")
+}
+
+// TestPromoteSession_SubSessionBecomesTopLevel: explicit Shift+Left promote
+// converts a sub-session into a top-level peer. Slice position is preserved
+// so the renderer places it after the parent's children block.
+func TestPromoteSession_SubSessionBecomesTopLevel(t *testing.T) {
+	instances := []*Instance{
+		{ID: "p1", Title: "parent1", GroupPath: "test"},
+		{ID: "s1a", Title: "child1a", GroupPath: "test", ParentSessionID: "p1"},
+		{ID: "s1b", Title: "child1b", GroupPath: "test", ParentSessionID: "p1"},
+		{ID: "p2", Title: "parent2", GroupPath: "test"},
+	}
+	tree := NewGroupTree(instances)
+	group := tree.Groups["test"]
+
+	var s1a *Instance
+	for _, s := range group.Sessions {
+		if s.ID == "s1a" {
+			s1a = s
+			break
+		}
+	}
+
+	tree.PromoteSession(s1a)
+
+	if s1a.ParentSessionID != "" {
+		t.Errorf("s1a.ParentSessionID after promote = %q, want empty", s1a.ParentSessionID)
+	}
+	gotKids := childrenOf(group, "p1")
+	wantKids := []string{"s1b"}
+	if len(gotKids) != len(wantKids) || gotKids[0] != wantKids[0] {
+		t.Errorf("p1's children after promoting s1a = %v, want %v", gotKids, wantKids)
+	}
+	gotTop := childrenOf(group, "")
+	wantTop := []string{"p1", "s1a", "p2"}
+	if len(gotTop) != len(wantTop) {
+		t.Fatalf("top-level after promote = %v, want %v", gotTop, wantTop)
+	}
+	for i := range wantTop {
+		if gotTop[i] != wantTop[i] {
+			t.Errorf("top-level[%d] = %q, want %q", i, gotTop[i], wantTop[i])
+		}
+	}
+}
+
+// TestPromoteSession_TopLevelNoOp: PromoteSession on an already-top-level
+// session is a no-op.
+func TestPromoteSession_TopLevelNoOp(t *testing.T) {
+	instances := []*Instance{
+		{ID: "p1", Title: "parent1", GroupPath: "test"},
+		{ID: "p2", Title: "parent2", GroupPath: "test"},
+	}
+	tree := NewGroupTree(instances)
+	group := tree.Groups["test"]
+
+	var p2 *Instance
+	for _, s := range group.Sessions {
+		if s.ID == "p2" {
+			p2 = s
+			break
+		}
+	}
+
+	before := []string{}
+	for _, s := range group.Sessions {
+		before = append(before, s.ID)
+	}
+	tree.PromoteSession(p2)
+	after := []string{}
+	for _, s := range group.Sessions {
+		after = append(after, s.ID)
+	}
+	for i := range before {
+		if before[i] != after[i] {
+			t.Errorf("PromoteSession on top-level should be no-op; got %v -> %v", before, after)
+			break
+		}
+	}
+}
+
+// TestDemoteSession_TopLevelBecomesLastChild: explicit Shift+Right demote
+// makes the cursor's session a sub-session of the previous top-level peer,
+// inserted as that peer's last child.
+func TestDemoteSession_TopLevelBecomesLastChild(t *testing.T) {
+	instances := []*Instance{
+		{ID: "p1", Title: "parent1", GroupPath: "test"},
+		{ID: "s1a", Title: "child1a", GroupPath: "test", ParentSessionID: "p1"},
+		{ID: "p2", Title: "parent2", GroupPath: "test"},
+	}
+	tree := NewGroupTree(instances)
+	group := tree.Groups["test"]
+
+	var p2 *Instance
+	for _, s := range group.Sessions {
+		if s.ID == "p2" {
+			p2 = s
+			break
+		}
+	}
+
+	tree.DemoteSession(p2)
+
+	if p2.ParentSessionID != "p1" {
+		t.Errorf("p2.ParentSessionID after demote = %q, want %q", p2.ParentSessionID, "p1")
+	}
+	gotKids := childrenOf(group, "p1")
+	wantKids := []string{"s1a", "p2"}
+	if len(gotKids) != len(wantKids) {
+		t.Fatalf("p1's children after demoting p2 = %v, want %v", gotKids, wantKids)
+	}
+	for i := range wantKids {
+		if gotKids[i] != wantKids[i] {
+			t.Errorf("p1's children[%d] = %q, want %q", i, gotKids[i], wantKids[i])
+		}
+	}
+	gotTop := childrenOf(group, "")
+	wantTop := []string{"p1"}
+	if len(gotTop) != len(wantTop) || gotTop[0] != wantTop[0] {
+		t.Errorf("top-level after demote = %v, want %v", gotTop, wantTop)
+	}
+}
+
+// TestDemoteSession_FirstTopLevelNoOp: DemoteSession on the first top-level
+// in a group is a no-op (no previous peer to nest under). Cross-group moves
+// stay on the M shortcut.
+func TestDemoteSession_FirstTopLevelNoOp(t *testing.T) {
+	instances := []*Instance{
+		{ID: "p1", Title: "parent1", GroupPath: "test"},
+		{ID: "p2", Title: "parent2", GroupPath: "test"},
+	}
+	tree := NewGroupTree(instances)
+	group := tree.Groups["test"]
+
+	var p1 *Instance
+	for _, s := range group.Sessions {
+		if s.ID == "p1" {
+			p1 = s
+			break
+		}
+	}
+
+	tree.DemoteSession(p1)
+
+	if p1.ParentSessionID != "" {
+		t.Errorf("p1 should remain top-level; got ParentSessionID = %q", p1.ParentSessionID)
+	}
+}
+
+// TestDemoteSession_SubSessionNoOp: demote on an already-sub-session is a
+// no-op (single-level nesting only).
+func TestDemoteSession_SubSessionNoOp(t *testing.T) {
+	instances := []*Instance{
+		{ID: "p1", Title: "parent1", GroupPath: "test"},
+		{ID: "s1", Title: "child1", GroupPath: "test", ParentSessionID: "p1"},
+		{ID: "p2", Title: "parent2", GroupPath: "test"},
+	}
+	tree := NewGroupTree(instances)
+	group := tree.Groups["test"]
+
+	var s1 *Instance
+	for _, s := range group.Sessions {
+		if s.ID == "s1" {
+			s1 = s
+			break
+		}
+	}
+
+	tree.DemoteSession(s1)
+
+	if s1.ParentSessionID != "p1" {
+		t.Errorf("sub-session should not change parent on demote; got %q", s1.ParentSessionID)
+	}
+}
+
+// TestDemoteSession_WithChildrenNoOp: a top-level session that already has
+// children of its own cannot be demoted (single-level nesting invariant,
+// matches `session set-parent` validation).
+func TestDemoteSession_WithChildrenNoOp(t *testing.T) {
+	instances := []*Instance{
+		{ID: "p1", Title: "parent1", GroupPath: "test"},
+		{ID: "p2", Title: "parent2", GroupPath: "test"},
+		{ID: "s2", Title: "child2", GroupPath: "test", ParentSessionID: "p2"},
+	}
+	tree := NewGroupTree(instances)
+	group := tree.Groups["test"]
+
+	var p2 *Instance
+	for _, s := range group.Sessions {
+		if s.ID == "p2" {
+			p2 = s
+			break
+		}
+	}
+
+	tree.DemoteSession(p2)
+
+	if p2.ParentSessionID != "" {
+		t.Errorf("p2 with children should not be demoted; got ParentSessionID = %q", p2.ParentSessionID)
+	}
+	gotKids := childrenOf(group, "p2")
+	wantKids := []string{"s2"}
+	if len(gotKids) != len(wantKids) || gotKids[0] != wantKids[0] {
+		t.Errorf("p2's children should be unchanged; got %v, want %v", gotKids, wantKids)
+	}
 }

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -19,6 +20,7 @@ import (
 	"github.com/asheshgoplani/agent-deck/internal/session"
 	"github.com/asheshgoplani/agent-deck/internal/tmux"
 	"github.com/asheshgoplani/agent-deck/internal/ui"
+	"github.com/asheshgoplani/agent-deck/internal/vcs"
 )
 
 // handleSession dispatches session subcommands
@@ -51,6 +53,11 @@ func handleSession(profile string, args []string) {
 		handleSessionSetParent(profile, args[1:])
 	case "unset-parent":
 		handleSessionUnsetParent(profile, args[1:])
+	case "update":
+		// Issue #974: users expect `session update <id> --no-parent` and
+		// `session update <id> --parent <p>` to mirror typical CRUD verbs.
+		// Route to the existing canonical handlers.
+		handleSessionUpdate(profile, args[1:])
 	case "set-transition-notify":
 		handleSessionSetTransitionNotify(profile, args[1:])
 	case "set-title-lock":
@@ -61,6 +68,8 @@ func handleSession(profile string, args []string) {
 		handleSessionMove(profile, args[1:])
 	case "send":
 		handleSessionSend(profile, args[1:])
+	case "send-keys":
+		handleSessionSendKeys(profile, args[1:])
 	case "output":
 		handleSessionOutput(profile, args[1:])
 	case "search":
@@ -97,6 +106,8 @@ func printSessionHelp() {
 	fmt.Println("  search <query>          Search message content across Claude sessions")
 	fmt.Println("  set-parent <id> <parent>  Link session as sub-session of parent")
 	fmt.Println("  unset-parent <id>       Remove sub-session link")
+	fmt.Println("  update <id> --no-parent          Alias for unset-parent <id>")
+	fmt.Println("  update <id> --parent <pid>       Alias for set-parent <id> <pid>")
 	fmt.Println("  set-transition-notify <id> <on|off>  Enable/disable transition notifications")
 	fmt.Println("  set-title-lock <id> <on|off>         Lock/unlock title from Claude session-name sync (#697)")
 	fmt.Println()
@@ -203,6 +214,32 @@ func handleSessionStart(profile string, args []string) {
 		os.Exit(1)
 	}
 
+	// v1.9.1 group concurrency cap: if the target group is at its
+	// max_concurrent cap, mark this session queued instead of starting.
+	// The queue drains in handleSessionStop. Groups with max_concurrent<=0
+	// (legacy default) skip this check entirely.
+	tree := session.NewGroupTreeWithGroups(instances, groups)
+	max := session.GroupMaxConcurrent(tree, inst.GroupPath)
+	if session.ShouldQueue(instances, inst.GroupPath, max) {
+		inst.Status = session.StatusQueued
+		if err := saveSessionData(storage, instances, groups); err != nil {
+			out.Error(fmt.Sprintf("failed to save queued state: %v", err), ErrCodeInvalidOperation)
+			os.Exit(1)
+		}
+		out.Success(
+			fmt.Sprintf("Queued session: %s (group at cap %d)", inst.Title, max),
+			map[string]interface{}{
+				"success":        true,
+				"id":             inst.ID,
+				"title":          inst.Title,
+				"status":         "queued",
+				"group":          inst.GroupPath,
+				"max_concurrent": max,
+			},
+		)
+		return
+	}
+
 	// Start the session (with or without initial message)
 	if initialMessage != "" {
 		if err := inst.StartWithMessage(initialMessage); err != nil {
@@ -307,6 +344,12 @@ func handleSessionStop(profile string, args []string) {
 		os.Exit(1)
 	}
 
+	// v1.9.1 queue drain: a slot freed up. If the group has a cap and a
+	// queued sibling is waiting, start the oldest one. Only one drain per
+	// stop: if max_concurrent>=2 and multiple slots are now free, the next
+	// stop drains the next entry.
+	drained := drainGroupQueue(inst.GroupPath, instances, groups)
+
 	// Save updated state
 	if err := saveSessionData(storage, instances, groups); err != nil {
 		out.Error(fmt.Sprintf("failed to save session state: %v", err), ErrCodeInvalidOperation)
@@ -314,11 +357,38 @@ func handleSessionStop(profile string, args []string) {
 	}
 
 	// Output success
-	out.Success(fmt.Sprintf("Stopped session: %s", inst.Title), map[string]interface{}{
+	result := map[string]interface{}{
 		"success": true,
 		"id":      inst.ID,
 		"title":   inst.Title,
-	})
+	}
+	if drained != nil {
+		result["drained"] = drained.ID
+		result["drained_title"] = drained.Title
+	}
+	out.Success(fmt.Sprintf("Stopped session: %s", inst.Title), result)
+}
+
+// drainGroupQueue starts the oldest queued instance in groupPath when a slot
+// is available. Returns the drained instance (or nil if nothing to drain).
+// The caller is responsible for persisting state afterward.
+func drainGroupQueue(groupPath string, instances []*session.Instance, groups []*session.GroupData) *session.Instance {
+	tree := session.NewGroupTreeWithGroups(instances, groups)
+	max := session.GroupMaxConcurrent(tree, groupPath)
+	if session.IsAtCap(session.CountRunningInGroup(instances, groupPath), max) {
+		return nil
+	}
+	next := session.FindNextQueued(instances, groupPath)
+	if next == nil {
+		return nil
+	}
+	if err := next.Start(); err != nil {
+		// Drain is best-effort. Surface as queued + log; don't fail the stop.
+		next.Status = session.StatusError
+		fmt.Fprintf(os.Stderr, "queue drain failed to start %s: %v\n", next.Title, err)
+		return nil
+	}
+	return next
 }
 
 // handleSessionRestart restarts a session (or all active sessions with --all)
@@ -539,6 +609,8 @@ func handleSessionFork(profile string, args []string) {
 	worktreeBranchLong := fs.String("worktree", "", "Create fork in git worktree for branch")
 	newBranch := fs.Bool("b", false, "Create new branch (use with --worktree)")
 	newBranchLong := fs.Bool("new-branch", false, "Create new branch")
+	withState := fs.Bool("with-state", false, "Copy parent's staged+unstaged+untracked files into the new worktree (#1029, requires -w)")
+	withStateGitignored := fs.Bool("with-state-and-gitignored", false, "Like --with-state, plus gitignored files (e.g. .env). Implies --with-state. Requires -w.")
 	sandbox := fs.Bool("sandbox", false, "Run forked session in Docker sandbox")
 	sandboxImage := fs.String("sandbox-image", "", "Docker image for sandbox (overrides config default)")
 
@@ -556,6 +628,8 @@ func handleSessionFork(profile string, args []string) {
 		fmt.Println("  agent-deck session fork my-project -t \"my-fork\" -g \"experiments\"")
 		fmt.Println("  agent-deck session fork my-project -w fork/experiment")
 		fmt.Println("  agent-deck session fork my-project -w fork/new-idea -b")
+		fmt.Println("  agent-deck session fork my-project -w fork/wip -b --with-state")
+		fmt.Println("  agent-deck session fork my-project -w fork/wip -b --with-state-and-gitignored")
 	}
 
 	if err := fs.Parse(normalizeArgs(fs, args)); err != nil {
@@ -628,38 +702,43 @@ func handleSessionFork(profile string, args []string) {
 	}
 	createNewBranch := *newBranch || *newBranchLong
 
+	// #1029: --with-state-and-gitignored implies --with-state.
+	wantState := *withState || *withStateGitignored
+	if wantState && wtBranch == "" {
+		out.Error("--with-state requires an explicit worktree branch (-w/--worktree)", ErrCodeInvalidOperation)
+		os.Exit(1)
+	}
+
 	// Handle worktree creation
 	var opts *session.ClaudeOptions
+	var worktreeType string
 	if wtBranch != "" {
-		if !git.IsGitRepoOrBareProjectRoot(inst.ProjectPath) {
-			out.Error("session path is not a git repository", ErrCodeInvalidOperation)
-			os.Exit(1)
-		}
-		repoRoot, err := git.GetWorktreeBaseRoot(inst.ProjectPath)
+		backend, err := detectAndCreateBackend(inst.ProjectPath)
 		if err != nil {
-			out.Error(fmt.Sprintf("failed to get repo root: %v", err), ErrCodeInvalidOperation)
+			out.Error(fmt.Sprintf("%v", err), ErrCodeInvalidOperation)
 			os.Exit(1)
 		}
+		worktreeType = string(backend.Type())
+		repoRoot := backend.RepoDir()
 
 		// Apply configured branch prefix before validation/existence checks
 		wtSettings := session.GetWorktreeSettings()
 		wtBranch = wtSettings.ApplyBranchPrefix(wtBranch)
 
-		if !createNewBranch && !git.BranchExists(repoRoot, wtBranch) {
+		if !createNewBranch && !backend.BranchExists(wtBranch) {
 			out.Error(fmt.Sprintf("branch '%s' does not exist (use -b to create)", wtBranch), ErrCodeInvalidOperation)
 			os.Exit(1)
 		}
 
-		worktreePath := git.WorktreePath(git.WorktreePathOptions{
+		worktreePath := backend.WorktreePath(vcs.WorktreePathOptions{
 			Branch:    wtBranch,
 			Location:  wtSettings.DefaultLocation,
-			RepoDir:   repoRoot,
 			SessionID: git.GeneratePathID(),
 			Template:  wtSettings.Template(),
 		})
 
 		// Check for an existing worktree for this branch before creating a new one
-		if existingPath, err := git.GetWorktreeForBranch(repoRoot, wtBranch); err == nil && existingPath != "" {
+		if existingPath, err := backend.GetWorktreeForBranch(wtBranch); err == nil && existingPath != "" {
 			fmt.Fprintf(os.Stderr, "Reusing existing worktree at %s for branch %s\n", existingPath, wtBranch)
 			worktreePath = existingPath
 		} else {
@@ -673,13 +752,28 @@ func handleSessionFork(profile string, args []string) {
 				os.Exit(1)
 			}
 
-			setupErr, err := git.CreateWorktreeWithSetup(repoRoot, worktreePath, wtBranch, os.Stdout, os.Stderr, session.GetWorktreeSettings().SetupTimeout())
-			if err != nil {
-				out.Error(fmt.Sprintf("worktree creation failed: %v", err), ErrCodeInvalidOperation)
-				os.Exit(1)
-			}
-			if setupErr != nil {
-				fmt.Fprintf(os.Stderr, "Warning: worktree setup script failed: %v\n", setupErr)
+			// --with-state* is git-specific (uses index/stash). Reject for jujutsu.
+			if backend.Type() == vcs.TypeGit {
+				setupErr, err := git.CreateWorktreeWithStateAndSetup(
+					repoRoot, worktreePath, wtBranch,
+					git.WorktreeStateOptions{WithState: wantState, WithIgnored: *withStateGitignored},
+					os.Stdout, os.Stderr, session.GetWorktreeSettings().SetupTimeout())
+				if err != nil {
+					out.Error(fmt.Sprintf("worktree creation failed: %v", err), ErrCodeInvalidOperation)
+					os.Exit(1)
+				}
+				if setupErr != nil {
+					fmt.Fprintf(os.Stderr, "Warning: worktree setup script failed: %v\n", setupErr)
+				}
+			} else {
+				if wantState {
+					out.Error("--with-state is only supported for git repositories", ErrCodeInvalidOperation)
+					os.Exit(1)
+				}
+				if err := backend.CreateWorktree(worktreePath, wtBranch); err != nil {
+					out.Error(fmt.Sprintf("worktree creation failed: %v", err), ErrCodeInvalidOperation)
+					os.Exit(1)
+				}
 			}
 		}
 
@@ -696,6 +790,10 @@ func handleSessionFork(profile string, args []string) {
 	if err != nil {
 		out.Error(fmt.Sprintf("failed to create fork: %v", err), ErrCodeInvalidOperation)
 		os.Exit(1)
+	}
+
+	if worktreeType != "" {
+		forkedInst.WorktreeType = worktreeType
 	}
 
 	// Apply sandbox config if requested.
@@ -888,6 +986,8 @@ func handleSessionShow(profile string, args []string) {
 		"tool":                 inst.Tool,
 		"created_at":           inst.CreatedAt.Format(time.RFC3339),
 	}
+	modelInfo := inst.LaunchModelInfo()
+	addModelInfoJSON(jsonData, modelInfo)
 
 	if inst.Command != "" {
 		jsonData["command"] = inst.Command
@@ -907,6 +1007,24 @@ func handleSessionShow(profile string, args []string) {
 		// the `list --json` emitter which surfaces this field unconditionally.
 		if len(inst.Channels) > 0 {
 			jsonData["channels"] = inst.Channels
+		}
+
+		// Plugins (RFC docs/rfc/PLUGIN_ATTACH.md §10.5) — surface when
+		// non-empty so downstream tooling can introspect per-session
+		// enabledPlugins state without parsing the scratch settings.json.
+		if len(inst.Plugins) > 0 {
+			jsonData["plugins"] = inst.Plugins
+		}
+		// Surface the auto-link opt-out (RFC §4.7) when set, so tooling
+		// can distinguish "user disabled auto-link" from "no plugins".
+		if inst.PluginChannelLinkDisabled {
+			jsonData["plugin_channel_link_disabled"] = true
+		}
+		// AutoLinkedChannels (RFC §4.7, G4/C2 fix) — internal-ish state
+		// for ownership tracking, but exposing in JSON helps downstream
+		// tooling distinguish auto-linked vs user-managed channels.
+		if len(inst.AutoLinkedChannels) > 0 {
+			jsonData["auto_linked_channels"] = inst.AutoLinkedChannels
 		}
 	}
 
@@ -928,6 +1046,17 @@ func handleSessionShow(profile string, args []string) {
 	}
 
 	sb.WriteString(fmt.Sprintf("Tool:    %s\n", inst.Tool))
+	if modelInfo.ModelID != "" {
+		if modelInfo.Model != "" {
+			sb.WriteString(fmt.Sprintf("Model:   %s\n", modelInfo.Model))
+		}
+		if modelInfo.Version != "" {
+			sb.WriteString(fmt.Sprintf("Version: %s\n", modelInfo.Version))
+		}
+		sb.WriteString(fmt.Sprintf("ModelID: %s\n", modelInfo.ModelID))
+	} else if session.SupportsLaunchModel(inst.Tool) {
+		sb.WriteString("Model:   tool default\n")
+	}
 
 	if inst.Command != "" {
 		sb.WriteString(fmt.Sprintf("Command: %s\n", inst.Command))
@@ -960,6 +1089,19 @@ func handleSessionShow(profile string, args []string) {
 				mcpParts = append(mcpParts, name+" (project)")
 			}
 			sb.WriteString(fmt.Sprintf("MCPs:    %s\n", strings.Join(mcpParts, ", ")))
+		}
+
+		// Channels and Plugins (RFC docs/rfc/PLUGIN_ATTACH.md). Surfaced
+		// for claude sessions so users can verify per-session topology
+		// without parsing state.db or the scratch settings.json.
+		if len(inst.Channels) > 0 {
+			sb.WriteString(fmt.Sprintf("Channels:%s\n", " "+strings.Join(inst.Channels, ", ")))
+		}
+		if len(inst.Plugins) > 0 {
+			sb.WriteString(fmt.Sprintf("Plugins: %s\n", strings.Join(inst.Plugins, ", ")))
+			if inst.PluginChannelLinkDisabled {
+				sb.WriteString("         (auto-channel-link disabled — RFC §4.7)\n")
+			}
 		}
 	}
 
@@ -1012,10 +1154,13 @@ func handleSessionSet(profile string, args []string) {
 		fmt.Println("  tool               Tool type (claude, gemini, shell, etc.)")
 		fmt.Println("  wrapper            Wrapper command (use {command} to include tool command)")
 		fmt.Println("  channels           Comma-separated plugin channel ids (claude only)")
+		fmt.Println("  plugins            Comma-separated plugin catalog names (claude only) — see [plugins.<name>] in ~/.agent-deck/config.toml")
 		fmt.Println("  extra-args         Extra claude CLI tokens (claude only; use `-- --flag value` for tokens starting with -; persisted plaintext — no secrets)")
 		fmt.Println("  color              Optional TUI row tint: '#RRGGBB' or ANSI '0'..'255' or '' (issue #391)")
 		fmt.Println("  claude-session-id  Claude conversation ID")
 		fmt.Println("  gemini-session-id  Gemini conversation ID")
+		fmt.Println("  account            Named account slot (#924) — resolves via [profiles.<account>.claude].config_dir; restart required")
+		fmt.Println("  idle-timeout       Auto-stop after no tmux output for this duration (#1143; Go duration: 30m, 1h, 24h; 0 disables)")
 		fmt.Println()
 		fmt.Println("Options:")
 		fs.PrintDefaults()
@@ -1050,31 +1195,6 @@ func handleSessionSet(profile string, args []string) {
 	quietMode := *quiet || *quietShort
 	out := NewCLIOutput(*jsonOutput, quietMode)
 
-	// Validate field name
-	validFields := map[string]bool{
-		"title":             true,
-		"path":              true,
-		"command":           true,
-		"tool":              true,
-		"wrapper":           true,
-		"channels":          true,
-		"extra-args":        true,
-		"color":             true,
-		"claude-session-id": true,
-		"gemini-session-id": true,
-	}
-
-	if !validFields[field] {
-		out.Error(
-			fmt.Sprintf(
-				"invalid field: %s\nValid fields: title, path, command, tool, wrapper, channels, extra-args, color, claude-session-id, gemini-session-id",
-				field,
-			),
-			ErrCodeInvalidOperation,
-		)
-		os.Exit(1)
-	}
-
 	// Load sessions
 	storage, instances, groupsData, err := loadSessionData(profile)
 	if err != nil {
@@ -1093,103 +1213,19 @@ func handleSessionSet(profile string, args []string) {
 		return // unreachable, satisfies staticcheck SA5011
 	}
 
-	// Store old value for output
-	var oldValue string
-
-	// Apply the update
-	switch field {
-	case "title":
-		oldValue = inst.Title
-		inst.Title = value
-		inst.SyncTmuxDisplayName()
-	case "path":
-		oldValue = inst.ProjectPath
-		inst.ProjectPath = value
-	case "command":
-		oldValue = inst.Command
-		inst.Command = value
-	case "tool":
-		oldValue = inst.Tool
-		inst.Tool = value
-	case "wrapper":
-		oldValue = inst.Wrapper
-		inst.Wrapper = value
-	case "channels":
-		// channels is a Claude Code CLI flag; only meaningful for claude sessions.
-		if inst.Tool != "claude" {
-			out.Error(
-				fmt.Sprintf("channels only supported for claude sessions (this session's tool is %q); requires --channels on the claude binary", inst.Tool),
-				ErrCodeInvalidOperation,
-			)
-			os.Exit(1)
-		}
-		oldValue = strings.Join(inst.Channels, ",")
-		// Parse CSV value: trim whitespace, drop empties.
-		parsed := []string{}
-		for _, raw := range strings.Split(value, ",") {
-			if s := strings.TrimSpace(raw); s != "" {
-				parsed = append(parsed, s)
-			}
-		}
-		inst.Channels = parsed
-	case "color":
-		// Per-session color tint (issue #391). Opt-in; empty clears.
-		oldValue = inst.Color
-		trimmed := strings.TrimSpace(value)
-		if !isValidSessionColor(trimmed) {
-			out.Error(
-				fmt.Sprintf("invalid color %q — expected '#RRGGBB', ANSI '0'..'255', or '' to clear", trimmed),
-				ErrCodeInvalidOperation,
-			)
-			os.Exit(1)
-		}
-		inst.Color = trimmed
-	case "extra-args":
-		// extra-args are passed to the claude binary by buildClaudeExtraFlags;
-		// only meaningful for claude sessions. Every positional arg after the
-		// field name is treated as one already-tokenised extra arg. Use `--`
-		// so Go's flag package leaves tokens starting with `-` alone:
-		//   agent-deck session set <id> extra-args -- --model opus
-		// Empty string clears all extra args. Empty tokens mixed with real
-		// ones are dropped (avoid emitting literal `''` to claude).
-		//
-		// Note: extra-args persist in state.db as plaintext. Do NOT pass
-		// secrets like API keys via --extra-arg.
-		if inst.Tool != "claude" {
-			out.Error(
-				fmt.Sprintf("extra-args only supported for claude sessions (this session's tool is %q); claude is the only tool whose builder appends user extra args", inst.Tool),
-				ErrCodeInvalidOperation,
-			)
-			os.Exit(1)
-		}
-		oldValue = strings.Join(inst.ExtraArgs, " ")
-		cleaned := make([]string, 0, len(extraArgTokens))
-		for _, tok := range extraArgTokens {
-			if tok != "" {
-				cleaned = append(cleaned, tok)
-			}
-		}
-		if len(cleaned) == 0 {
-			inst.ExtraArgs = nil
-		} else {
-			inst.ExtraArgs = cleaned
-		}
-	case "claude-session-id":
-		oldValue = inst.ClaudeSessionID
-		inst.ClaudeSessionID = value
-		inst.ClaudeDetectedAt = time.Now()
-		// Also update tmux environment if session is running
-		if tmuxSess := inst.GetTmuxSession(); tmuxSess != nil && tmuxSess.Exists() {
-			_ = tmux.Exec(inst.TmuxSocketName, "set-environment", "-t", tmuxSess.Name, "CLAUDE_SESSION_ID", value).Run()
-		}
-	case "gemini-session-id":
-		oldValue = inst.GeminiSessionID
-		inst.GeminiSessionID = value
-		inst.GeminiDetectedAt = time.Now()
-		// Also update tmux environment if session is running
-		if tmuxSess := inst.GetTmuxSession(); tmuxSess != nil && tmuxSess.Exists() {
-			_ = tmux.Exec(inst.TmuxSocketName, "set-environment", "-t", tmuxSess.Name, "GEMINI_SESSION_ID", value).Run()
-		}
+	// Delegate to session.SetField so CLI and TUI share validation. The
+	// extraArgTokens slice carries pre-tokenized argv for extra-args (CLI
+	// preserves values with spaces); SetField ignores it for other fields.
+	oldValue, postCommit, setErr := session.SetField(inst, field, value, extraArgTokens)
+	if setErr != nil {
+		out.Error(setErr.Error(), ErrCodeInvalidOperation)
+		os.Exit(1)
+		return // unreachable, satisfies staticcheck SA5011
+	}
+	// CLI holds no lock — run tmux side effects inline. TUI defers them
+	// until after instancesMu.Unlock.
+	if postCommit != nil {
+		postCommit()
 	}
 
 	// Save
@@ -1209,18 +1245,23 @@ func handleSessionSet(profile string, args []string) {
 		"new_value": value,
 	})
 
-	// v1.7.22: emit telegram topology warnings whenever the signals the
-	// validator cares about change (wrapper or channels). The silent-path
-	// case writes nothing — see ValidateTelegramTopology (#658).
-	if field == "wrapper" || field == "channels" {
-		cfgDir := session.GetClaudeConfigDirForGroup(inst.GroupPath)
-		globalTelegramEnabled, _ := readTelegramGloballyEnabled(cfgDir)
-		emitTelegramWarnings(os.Stderr, session.TelegramValidatorInput{
-			GlobalEnabled:   globalTelegramEnabled,
-			SessionChannels: inst.Channels,
-			SessionWrapper:  inst.Wrapper,
-		})
+	maybeEmitSessionSetTelegramWarnings(os.Stderr, session.GetClaudeConfigDirForGroup(inst.GroupPath), inst, field)
+}
+
+// maybeEmitSessionSetTelegramWarnings is the post-mutation telegram-topology
+// hook for `agent-deck session set` (v1.7.22 / #658). Gated to wrapper and
+// channels — other fields are silent. claudeCfgDir lets tests inject a temp
+// dir without touching the real ~/.claude lookup.
+func maybeEmitSessionSetTelegramWarnings(out io.Writer, claudeCfgDir string, inst *session.Instance, field string) {
+	if field != "wrapper" && field != "channels" {
+		return
 	}
+	globalTelegramEnabled, _ := readTelegramGloballyEnabled(claudeCfgDir)
+	emitTelegramWarnings(out, session.TelegramValidatorInput{
+		GlobalEnabled:   globalTelegramEnabled,
+		SessionChannels: inst.Channels,
+		SessionWrapper:  inst.Wrapper,
+	})
 }
 
 // loadSessionData loads storage and session data for a profile
@@ -1395,12 +1436,17 @@ func handleSessionSetParent(profile string, args []string) {
 	jsonOutput := fs.Bool("json", false, "Output as JSON")
 	quiet := fs.Bool("quiet", false, "Minimal output")
 	quietShort := fs.Bool("q", false, "Minimal output (short)")
+	// #786: post-hoc set-parent must not silently rewrite the child's
+	// group. Inheritance is opt-in via this flag.
+	inheritGroup := fs.Bool("inherit-group", false,
+		"Also rewrite child's group to match parent's (off by default; #786)")
 
 	fs.Usage = func() {
-		fmt.Println("Usage: agent-deck session set-parent <session> <parent>")
+		fmt.Println("Usage: agent-deck session set-parent <session> <parent> [--inherit-group]")
 		fmt.Println()
 		fmt.Println("Link a session as a sub-session of another session.")
-		fmt.Println("The session will inherit the parent's group.")
+		fmt.Println("The session's group is preserved by default; pass --inherit-group")
+		fmt.Println("to also adopt the parent's group.")
 		fmt.Println("This works for any session, including those created with --no-parent.")
 		fmt.Println()
 		fmt.Println("Options:")
@@ -1467,9 +1513,12 @@ func handleSessionSetParent(profile string, args []string) {
 		}
 	}
 
-	// Set parent (with project path for --add-dir access) and inherit group
+	// Set parent (with project path for --add-dir access). Group is only
+	// rewritten on explicit --inherit-group opt-in; see #786.
 	inst.SetParentWithPath(parentInst.ID, parentInst.ProjectPath)
-	inst.GroupPath = parentInst.GroupPath
+	if *inheritGroup {
+		inst.GroupPath = parentInst.GroupPath
+	}
 
 	// Save
 	groupTree := session.NewGroupTreeWithGroups(instances, groupsData)
@@ -1484,8 +1533,77 @@ func handleSessionSetParent(profile string, args []string) {
 		"session_title":   inst.Title,
 		"parent_id":       parentInst.ID,
 		"parent_title":    parentInst.Title,
-		"inherited_group": inst.GroupPath,
+		"group":           inst.GroupPath,
+		"group_inherited": *inheritGroup,
 	})
+}
+
+// resolveSessionUpdateAlias maps `session update <id>` invocations with
+// CRUD-style flags onto the existing canonical handlers. Returns the
+// canonical verb (`unset-parent` or `set-parent`) and the rewritten args
+// that handler expects.
+//
+// Issue #974: `session update <id> --no-parent` should behave the same as
+// `session unset-parent <id>`; `session update <id> --parent <pid>` should
+// behave the same as `session set-parent <id> <pid>`. If neither flag is
+// present we route to the generic `set` handler so the verb stays useful
+// for other field updates.
+//
+// Pure function — no I/O, safe to unit test.
+func resolveSessionUpdateAlias(args []string) (canonical string, newArgs []string) {
+	hasNoParent := false
+	hasParent := false
+	parentVal := ""
+	filtered := make([]string, 0, len(args))
+
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		switch {
+		case a == "--no-parent" || a == "-no-parent":
+			hasNoParent = true
+		case a == "--parent" || a == "-parent":
+			if i+1 < len(args) {
+				parentVal = args[i+1]
+				i++
+			}
+			hasParent = true
+		case strings.HasPrefix(a, "--parent="):
+			parentVal = strings.TrimPrefix(a, "--parent=")
+			hasParent = true
+		case strings.HasPrefix(a, "-parent="):
+			parentVal = strings.TrimPrefix(a, "-parent=")
+			hasParent = true
+		default:
+			filtered = append(filtered, a)
+		}
+	}
+
+	switch {
+	case hasNoParent:
+		// `set-parent` and `--no-parent` together is contradictory; prefer
+		// the explicit detach (`--no-parent`) — matches the user's stated
+		// intent in the issue reproducer.
+		return "unset-parent", filtered
+	case hasParent:
+		return "set-parent", append(filtered, parentVal)
+	default:
+		return "set", filtered
+	}
+}
+
+// handleSessionUpdate dispatches `session update <id> [flags]` to the
+// appropriate canonical handler. See resolveSessionUpdateAlias for the
+// mapping rationale.
+func handleSessionUpdate(profile string, args []string) {
+	canonical, rewritten := resolveSessionUpdateAlias(args)
+	switch canonical {
+	case "unset-parent":
+		handleSessionUnsetParent(profile, rewritten)
+	case "set-parent":
+		handleSessionSetParent(profile, rewritten)
+	default:
+		handleSessionSet(profile, rewritten)
+	}
 }
 
 // handleSessionUnsetParent removes the sub-session link
@@ -1744,7 +1862,8 @@ func handleSessionSend(profile string, args []string) {
 	noWait := fs.Bool("no-wait", false, "Don't wait for agent to be ready (send immediately)")
 	wait := fs.Bool("wait", false, "Block until agent finishes processing, then print output")
 	stream := fs.Bool("stream", false, "Stream JSONL events (Claude only) to stdout instead of returning a snapshot")
-	timeout := fs.Duration("timeout", 10*time.Minute, "Max time to wait for completion (used with --wait)")
+	draft := fs.Bool("draft", false, "Pre-fill the prompt without submitting (incompatible with --wait/--stream/--no-wait)")
+	timeout := fs.Duration("timeout", 10*time.Minute, "Max time to wait for the agent to become ready and (with --wait) to finish processing")
 	streamIdle := fs.Duration("stream-idle", 10*time.Second, "Max idle time before --stream aborts with error")
 	streamCharBudget := fs.Int("stream-char-budget", 4000, "Char budget for text flush in --stream mode")
 	streamToolBudget := fs.Int("stream-tool-budget", 3, "Tool-event budget for text flush in --stream mode")
@@ -1762,6 +1881,7 @@ func handleSessionSend(profile string, args []string) {
 		fmt.Println("  agent-deck session send my-project \"run tests\" --wait")
 		fmt.Println("  agent-deck session send my-project \"quick ping\" --no-wait")
 		fmt.Println("  agent-deck session send my-project \"trace progress\" --stream")
+		fmt.Println("  agent-deck session send my-project \"cwd: /path/to/dir\" --draft")
 	}
 
 	if err := fs.Parse(normalizeArgs(fs, args)); err != nil {
@@ -1779,6 +1899,11 @@ func handleSessionSend(profile string, args []string) {
 
 	if *stream && *wait {
 		out.Error("--stream and --wait are mutually exclusive", ErrCodeInvalidOperation)
+		os.Exit(1)
+	}
+
+	if *draft && (*wait || *stream || *noWait) {
+		out.Error("--draft is incompatible with --wait, --stream, and --no-wait", ErrCodeInvalidOperation)
 		os.Exit(1)
 	}
 
@@ -1818,6 +1943,17 @@ func handleSessionSend(profile string, args []string) {
 		os.Exit(1)
 	}
 
+	if shouldSkipConductorHeartbeatSend(inst, message) {
+		out.Success(fmt.Sprintf("Skipped heartbeat for '%s'", inst.Title), map[string]interface{}{
+			"success":       true,
+			"skipped":       true,
+			"session_id":    inst.ID,
+			"session_title": inst.Title,
+			"message":       message,
+		})
+		return
+	}
+
 	// Get tmux session
 	tmuxSess := inst.GetTmuxSession()
 	if tmuxSess == nil {
@@ -1825,17 +1961,49 @@ func handleSessionSend(profile string, args []string) {
 		os.Exit(1)
 	}
 
-	// Wait for agent to be ready (unless --no-wait is specified)
+	// Wait for agent to be ready (unless --no-wait is specified).
+	// Issue #957: honor --timeout for the readiness phase too, not just the
+	// post-ready completion wait. Otherwise --timeout 5m against a busy
+	// recipient silently fails at ~80s.
 	if !*noWait && shouldWaitForAgentReady(inst.Tool) {
-		if err := waitForAgentReady(tmuxSess, inst.Tool); err != nil {
+		if err := waitForAgentReady(tmuxSess, inst.Tool, *timeout); err != nil {
 			out.Error(fmt.Sprintf("timeout waiting for agent: %v", err), ErrCodeInvalidOperation)
 			os.Exit(1)
+		}
+		// Issue #966: after a restart, Claude reaches "waiting" + composer
+		// visible before its slash-command parser registers. Bare `/foo`
+		// in that window is silently dropped. Hold back only when needed.
+		if shouldGateSlashRegistration(inst.Tool, message) {
+			slashTimeout := *timeout
+			if slashTimeout <= 0 || slashTimeout > 10*time.Second {
+				slashTimeout = 10 * time.Second
+			}
+			if err := waitForSlashCommandReady(tmuxSess, inst.Tool, slashTimeout); err != nil {
+				out.Error(fmt.Sprintf("timeout waiting for slash-command registration: %v", err), ErrCodeInvalidOperation)
+				os.Exit(1)
+			}
 		}
 	}
 
 	// Record send time before the actual send so we can verify output freshness.
 	// Captured early to avoid false negatives from clock skew.
 	sentAt := time.Now()
+
+	// --draft: type text into the prompt without pressing Enter, letting the
+	// user review and submit manually.
+	if *draft {
+		if err := executeDraft(tmuxSess, message); err != nil {
+			out.Error(fmt.Sprintf("failed to pre-fill prompt: %v", err), ErrCodeInvalidOperation)
+			os.Exit(1)
+		}
+		out.Success(fmt.Sprintf("Pre-filled prompt in '%s'", inst.Title), map[string]interface{}{
+			"success":       true,
+			"session_id":    inst.ID,
+			"session_title": inst.Title,
+			"message":       message,
+		})
+		return
+	}
 
 	// Send message atomically (text + Enter in single tmux invocation).
 	// --no-wait: skip full readiness waiting, but run a capped preflight
@@ -1924,13 +2092,58 @@ func handleSessionSend(profile string, args []string) {
 	}
 }
 
+// defaultSendOptions returns the verification-loop options used by the default
+// (non-`--no-wait`) CLI send path. verifyDelivery is enabled so the CLI
+// surfaces silent drops as errors rather than returning false success — see
+// issue #876.
+func defaultSendOptions() sendRetryOptions {
+	return sendRetryOptions{
+		maxRetries:     50,
+		checkDelay:     300 * time.Millisecond,
+		verifyDelivery: true,
+	}
+}
+
+func shouldSkipConductorHeartbeatSend(inst *session.Instance, message string) bool {
+	if inst == nil || !session.IsConductorHeartbeatMessage(message) {
+		return false
+	}
+	name := strings.TrimPrefix(inst.Title, session.ConductorSessionTitlePrefix)
+	if name == inst.Title || name == "" {
+		return false
+	}
+	meta, err := session.LoadConductorMeta(name)
+	if err != nil {
+		return false
+	}
+	idleMinutes := meta.GetHeartbeatIdleMinutes()
+	if idleMinutes <= 0 {
+		return false
+	}
+	lastActivity, err := session.GetConductorLastActivity(name, meta.Profile)
+	if err != nil {
+		return false
+	}
+	if lastActivity.IsZero() {
+		return false
+	}
+	return time.Since(lastActivity) >= time.Duration(idleMinutes)*time.Minute
+}
+
 // sendWithRetry sends a message atomically and retries Enter if the agent
 // doesn't start processing within a reasonable time.
 func sendWithRetry(tmuxSess *tmux.Session, message string, skipVerify bool) error {
-	return sendWithRetryTarget(tmuxSess, message, skipVerify, sendRetryOptions{
-		maxRetries: 50,
-		checkDelay: 300 * time.Millisecond,
-	})
+	return sendWithRetryTarget(tmuxSess, message, skipVerify, defaultSendOptions())
+}
+
+// draftSender is implemented by *tmux.Session for the --draft path.
+type draftSender interface {
+	SendKeysChunked(string) error
+}
+
+// executeDraft pre-fills the prompt without pressing Enter.
+func executeDraft(target draftSender, message string) error {
+	return target.SendKeysChunked(message)
 }
 
 func shouldWaitForAgentReady(tool string) bool {
@@ -1962,6 +2175,11 @@ func noWaitSendOptions() sendRetryOptions {
 		maxRetries:     30,
 		checkDelay:     200 * time.Millisecond,
 		maxFullResends: -1,
+		// Issue #876: even on the --no-wait path, callers expect that a
+		// `Sent` exit means the message reached the agent. Without this,
+		// the verification loop would still fall through to nil on a
+		// silent drop.
+		verifyDelivery: true,
 	}
 }
 
@@ -2042,6 +2260,15 @@ type sendRetryOptions struct {
 	maxRetries     int
 	checkDelay     time.Duration
 	maxFullResends int // >0 overrides default (3); <0 disables Ctrl+C-then-resend; 0 uses default
+
+	// verifyDelivery, when true, requires the verification loop to observe at
+	// least one positive signal that the message reached the inner agent (an
+	// "active" status transition, an unsent-prompt composer marker, a full
+	// resend, or the message body appearing in the captured pane). If the
+	// budget is exhausted without any such signal, the function returns an
+	// error instead of the prior best-effort `nil`. Closes the silent-drop
+	// path reported in issue #876.
+	verifyDelivery bool
 }
 
 func sendWithRetryTarget(target sendRetryTarget, message string, skipVerify bool, opts sendRetryOptions) error {
@@ -2088,6 +2315,19 @@ func sendWithRetryTarget(target sendRetryTarget, message string, skipVerify bool
 	activeChecks := 0
 	sawActiveAfterSend := false
 	fullResendCount := 0
+	// sawDeliveryEvidence flips true on any positive signal that the message
+	// reached the agent: an "active" status transition, an unsent-prompt
+	// composer marker, the message body appearing verbatim in the pane, or a
+	// successful full resend. When opts.verifyDelivery is set and this stays
+	// false for the entire budget, the function returns an error instead of
+	// silently succeeding (issue #876).
+	sawDeliveryEvidence := false
+	// Snippet of the message body to look for in captured pane content. Some
+	// TUI frameworks (and non-Claude tools) won't render a "[Pasted text …]"
+	// or "❯ <msg>" marker, so direct verbatim content is the only signal.
+	// Take the first run of non-whitespace content, capped, to avoid false
+	// positives from matching common short strings.
+	deliveryToken := messageDeliveryToken(message)
 	for retry := 0; retry < opts.maxRetries; retry++ {
 		time.Sleep(opts.checkDelay)
 
@@ -2095,10 +2335,14 @@ func sendWithRetryTarget(target sendRetryTarget, message string, skipVerify bool
 		if rawContent, captureErr := target.CapturePaneFresh(); captureErr == nil {
 			content := tmux.StripANSI(rawContent)
 			unsentPromptDetected = send.HasUnsentPastedPrompt(content) || send.HasUnsentComposerPrompt(content, message)
+			if !sawDeliveryEvidence && deliveryToken != "" && strings.Contains(content, deliveryToken) {
+				sawDeliveryEvidence = true
+			}
 		}
 		status, err := target.GetStatus()
 
 		if unsentPromptDetected {
+			sawDeliveryEvidence = true
 			waitingNoMarkerChecks = 0
 			waitingNoActivityChecks = 0
 			activeChecks = 0
@@ -2108,6 +2352,7 @@ func sendWithRetryTarget(target sendRetryTarget, message string, skipVerify bool
 
 		if err == nil && status == "active" {
 			sawActiveAfterSend = true
+			sawDeliveryEvidence = true
 			waitingNoMarkerChecks = 0
 			waitingNoActivityChecks = 0
 			activeChecks++
@@ -2137,6 +2382,12 @@ func sendWithRetryTarget(target sendRetryTarget, message string, skipVerify bool
 					waitingNoActivityChecks = 0
 					_ = target.SendCtrlC()
 					time.Sleep(200 * time.Millisecond)
+					// A successful resend is not yet evidence of receipt — the
+					// next iteration must still observe a positive signal — so
+					// we intentionally do NOT set sawDeliveryEvidence here, even
+					// when SendKeysAndEnter returns nil. The send attempt is
+					// recorded only so verifyDelivery can distinguish "pipe ever
+					// fired" from "never even acked".
 					_ = target.SendKeysAndEnter(message)
 					continue
 				}
@@ -2162,21 +2413,68 @@ func sendWithRetryTarget(target sendRetryTarget, message string, skipVerify bool
 		}
 	}
 
-	// Best effort: don't fail even if verification is inconclusive.
+	// Issue #876: with verifyDelivery, refuse to claim success when no
+	// positive signal was ever observed — the message was very likely
+	// dropped silently. Without it, preserve the legacy best-effort
+	// contract used by paths that gate verification elsewhere.
+	if opts.verifyDelivery && !sawDeliveryEvidence {
+		return fmt.Errorf("send dropped silently: no evidence of delivery after %d checks (issue #876). "+
+			"The agent never transitioned to 'active', no composer/unsent-paste marker appeared, "+
+			"and the message body was not visible in the pane. Verify the inner agent is reading from "+
+			"its TTY before retrying", opts.maxRetries)
+	}
 	return nil
 }
 
+// messageDeliveryToken returns a short, content-bearing slice of the message
+// suitable for "did this body appear in the pane?" verification. Returns "" if
+// the message contains no usefully-distinctive token (e.g. all whitespace, or
+// only short common words).
+func messageDeliveryToken(message string) string {
+	const minTokenLen = 12
+	const maxTokenLen = 64
+	trimmed := strings.TrimSpace(message)
+	if len(trimmed) < minTokenLen {
+		return ""
+	}
+	if len(trimmed) > maxTokenLen {
+		trimmed = trimmed[:maxTokenLen]
+	}
+	return trimmed
+}
+
+// agentReadyChecker abstracts the tmux surface that waitForAgentReady needs.
+// Lets tests exercise the readiness/timeout loop without a real tmux session.
+// *tmux.Session satisfies this interface naturally.
+type agentReadyChecker interface {
+	GetStatus() (string, error)
+	CapturePaneFresh() (string, error)
+}
+
 // waitForAgentReady waits for Claude/Gemini/other agents to be ready for input
-// Uses status detection: waits for "active" → "waiting" transition
-func waitForAgentReady(tmuxSess *tmux.Session, tool string) error {
+// Uses status detection: waits for "active" → "waiting" transition.
+//
+// Issue #957: before v1.9.x this loop was hardcoded to 80s and silently
+// overrode the caller's --timeout. `--timeout` now bounds the agent-ready
+// phase too, so `session send --timeout 5m` against a busy recipient actually
+// waits up to 5m for readiness before giving up.
+func waitForAgentReady(target agentReadyChecker, tool string, timeout time.Duration) error {
+	const pollInterval = 200 * time.Millisecond
+	if timeout <= 0 {
+		timeout = 80 * time.Second // preserve historical default if caller passes zero
+	}
+	maxAttempts := int(timeout / pollInterval)
+	if maxAttempts < 1 {
+		maxAttempts = 1
+	}
+
 	sawActive := false
 	readyCount := 0
-	maxAttempts := 400 // 80 seconds max (400 * 200ms)
 
 	for attempt := 0; attempt < maxAttempts; attempt++ {
-		time.Sleep(200 * time.Millisecond)
+		time.Sleep(pollInterval)
 
-		status, err := tmuxSess.GetStatus()
+		status, err := target.GetStatus()
 		if err != nil {
 			readyCount = 0
 			continue
@@ -2200,7 +2498,7 @@ func waitForAgentReady(tmuxSess *tmux.Session, tool string) error {
 		alreadyReady := readyCount >= 10 && attempt >= 15 // At least 3s elapsed
 		if (sawActive && (status == "waiting" || status == "idle")) || alreadyReady {
 			if tool == "claude" {
-				if rawContent, captureErr := tmuxSess.CapturePaneFresh(); captureErr == nil && !send.HasCurrentComposerPrompt(tmux.StripANSI(rawContent)) {
+				if rawContent, captureErr := target.CapturePaneFresh(); captureErr == nil && !send.HasCurrentComposerPrompt(tmux.StripANSI(rawContent)) {
 					// Claude can report waiting before the interactive prompt is visible.
 					// Keep polling until the prompt line is present.
 					continue
@@ -2209,7 +2507,7 @@ func waitForAgentReady(tmuxSess *tmux.Session, tool string) error {
 			// Gate Codex sends on prompt readiness: wait for "codex>" or
 			// "Continue?" to be visible before considering the agent ready.
 			if tool == "codex" {
-				if rawContent, captureErr := tmuxSess.CapturePaneFresh(); captureErr == nil {
+				if rawContent, captureErr := target.CapturePaneFresh(); captureErr == nil {
 					content := tmux.StripANSI(rawContent)
 					detector := tmux.NewPromptDetector("codex")
 					if !detector.HasPrompt(content) {
@@ -2223,7 +2521,71 @@ func waitForAgentReady(tmuxSess *tmux.Session, tool string) error {
 		}
 	}
 
-	return fmt.Errorf("agent not ready after 80 seconds")
+	return fmt.Errorf("agent not ready after %s", timeout)
+}
+
+// shouldGateSlashRegistration reports whether a send needs to wait for
+// Claude's slash-command parser to finish registering before relaying.
+//
+// Issue #966: after `session restart`, Claude reaches "waiting" with the
+// composer prompt visible *before* its slash-command router is armed. A
+// bare `/foo` sent in that window is silently dropped. The gate fires only
+// for the trigger condition — Claude tool plus a bare slash payload — so
+// conversational text and non-Claude tools don't pay the latency.
+func shouldGateSlashRegistration(tool, message string) bool {
+	if tool != "claude" {
+		return false
+	}
+	trimmed := strings.TrimLeft(message, " \t")
+	if trimmed == "" {
+		return false
+	}
+	return strings.HasPrefix(trimmed, "/")
+}
+
+// waitForSlashCommandReady polls the pane until the composer prompt has been
+// continuously visible for the slash-registration settle window, then returns.
+// Callers must have already passed waitForAgentReady; this is an additional
+// hold-back specifically for the #966 race.
+//
+// The function probes (rather than blind-sleeps) so a long-already-ready
+// Claude returns near-immediately on retries, while a freshly restarted
+// Claude pays the full settle window.
+func waitForSlashCommandReady(target agentReadyChecker, tool string, timeout time.Duration) error {
+	const pollInterval = 100 * time.Millisecond
+	// Eight stable composer observations (~800ms) is the empirical floor
+	// for Claude to finish registering its slash-command parser after the
+	// composer first renders. Bumping this is a no-op for healthy sessions
+	// (we early-return as soon as stability is met); it only delays the
+	// first send after a restart.
+	const minStableHits = 8
+
+	if timeout <= 0 {
+		timeout = 5 * time.Second
+	}
+	deadline := time.Now().Add(timeout)
+
+	stable := 0
+	for time.Now().Before(deadline) {
+		time.Sleep(pollInterval)
+
+		rawContent, err := target.CapturePaneFresh()
+		if err != nil {
+			stable = 0
+			continue
+		}
+		content := tmux.StripANSI(rawContent)
+		if !send.HasCurrentComposerPrompt(content) {
+			stable = 0
+			continue
+		}
+		stable++
+		if stable >= minStableHits {
+			return nil
+		}
+	}
+
+	return fmt.Errorf("slash-command registration not ready after %s (tool=%s)", timeout, tool)
 }
 
 // statusChecker abstracts tmux status polling so waitForCompletion is testable.
@@ -2437,6 +2799,11 @@ func handleSessionOutput(profile string, args []string) {
 	quiet := fs.Bool("quiet", false, "Minimal output")
 	quietShort := fs.Bool("q", false, "Minimal output (short)")
 	copyFlag := fs.Bool("copy", false, "Copy output to system clipboard")
+	// #1101: --pane returns the raw tmux capture-pane content (with ANSI escapes
+	// and the tool's full UI chrome) instead of the parsed transcript "last
+	// response". The local TUI preview uses capture-pane; remote sessions
+	// fetched via SSH need this same content to render claude-formatted output.
+	paneFlag := fs.Bool("pane", false, "Return tmux capture-pane content (full UI with ANSI)")
 
 	fs.Usage = func() {
 		fmt.Println("Usage: agent-deck session output [id|title] [options]")
@@ -2481,6 +2848,32 @@ func handleSessionOutput(profile string, args []string) {
 			inst.ClaudeSessionID = freshID
 			inst.ClaudeDetectedAt = time.Now()
 		}
+	}
+
+	// #1101: --pane short-circuits the transcript path and returns the live
+	// tmux pane capture so remote previews can render the same claude-formatted
+	// content the local preview shows. We still emit a ResponseOutput-shaped
+	// JSON so the wire format is unchanged.
+	if *paneFlag {
+		paneContent, paneErr := inst.PreviewFull()
+		if paneErr != nil {
+			out.Error(fmt.Sprintf("failed to capture pane: %v", paneErr), ErrCodeInvalidOperation)
+			os.Exit(1)
+		}
+		jsonData := map[string]interface{}{
+			"success":       true,
+			"session_id":    inst.ID,
+			"session_title": inst.Title,
+			"tool":          inst.Tool,
+			"role":          "pane",
+			"content":       paneContent,
+		}
+		if quietMode {
+			fmt.Println(paneContent)
+			return
+		}
+		out.Print(paneContent, jsonData)
+		return
 	}
 
 	// Get the last response (best-effort fallback for smoother CLI reads)
@@ -2715,44 +3108,13 @@ func matchInstanceDataByTmuxName(instances []*session.InstanceData, tmuxSessionN
 	return nil
 }
 
-// isValidSessionColor validates a per-session color tint (issue #391).
-// Accepts:
-//   - "" (empty / opt-out)
-//   - "#RRGGBB" or "#rrggbb" (24-bit truecolor hex, exactly 6 hex digits)
-//   - "0".."255" (ANSI 256-palette index, decimal)
-//
-// Rejects everything else so typos like "red" or "#12" don't quietly persist
-// into the TUI render layer where they'd fall through to lipgloss defaults
-// with surprising results. Kept as a pure function so the test table stays
-// CLI-free (see TestIsValidSessionColor).
+// isValidSessionColor is a thin delegator to session.IsValidSessionColor
+// (issue #391). The validator now lives in the session package so the TUI
+// EditSessionDialog and CLI session_set share one source of truth; this
+// wrapper stays so cmd-package callers and the existing
+// TestIsValidSessionColor table in session_color_test.go keep working.
 func isValidSessionColor(v string) bool {
-	if v == "" {
-		return true
-	}
-	// Truecolor hex: '#' + 6 hex digits exactly.
-	if len(v) == 7 && v[0] == '#' {
-		for i := 1; i < 7; i++ {
-			c := v[i]
-			ok := (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F')
-			if !ok {
-				return false
-			}
-		}
-		return true
-	}
-	// ANSI 256-palette index: 0..255 as decimal.
-	n := 0
-	if len(v) == 0 || len(v) > 3 {
-		return false
-	}
-	for i := 0; i < len(v); i++ {
-		c := v[i]
-		if c < '0' || c > '9' {
-			return false
-		}
-		n = n*10 + int(c-'0')
-	}
-	return n >= 0 && n <= 255
+	return session.IsValidSessionColor(v)
 }
 
 // handleSessionSearch implements issue #483 — search across Claude session

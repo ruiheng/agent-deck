@@ -1,51 +1,132 @@
-// AppShell.js -- Full-page responsive layout shell
-// Replaces the vanilla JS .app div with Preact-rendered three-tier responsive layout.
-// Phone (<768px): fixed overlay sidebar with backdrop
-// Tablet (768-1023px): static sidebar, collapsible via toggle
-// Desktop (1024px+): sidebar always visible
+// AppShell.js -- Five-zone layout shell for the redesigned WebUI.
+//
+// .app grid: [topbar / sidebar . main . rightrail / footer]. Panes switch
+// inside .main via activeTabSignal. Overlays (CommandPalette, TweaksPanel,
+// CreateSession/Confirm/GroupName dialogs, toasts) mount as siblings.
+//
+// Preserves existing dialog + toast components (still Tailwind-classed) so
+// no functional regression. Restyling those is a follow-up.
 import { html } from 'htm/preact'
 import { useEffect } from 'preact/hooks'
-import { sidebarOpenSignal, selectedIdSignal, createSessionDialogSignal, confirmDialogSignal, groupNameDialogSignal, activeTabSignal, infoDrawerOpenSignal, mutationsEnabledSignal } from './state.js'
-import { Sidebar } from './Sidebar.js'
 import { Topbar } from './Topbar.js'
+import { Sidebar } from './Sidebar.js'
+import { Footer } from './Footer.js'
+import { RightRail } from './RightRail.js'
+import { MobileTabs } from './MobileTabs.js'
+import { CommandPalette } from './CommandPalette.js'
+import { TweaksPanel } from './TweaksPanel.js'
+import { TerminalPane } from './panes/TerminalPane.js'
+import { CostsPane } from './panes/CostsPane.js'
+import { FleetPane } from './panes/FleetPane.js'
+import { StubPane } from './panes/StubPane.js'
+import { SearchPane } from './panes/SearchPane.js'
+import { McpPane } from './panes/McpPane.js'
+import { Icon, ICONS } from './icons.js'
+import { menuModelSignal } from './dataModel.js'
+import {
+  selectedIdSignal, createSessionDialogSignal, confirmDialogSignal,
+  groupNameDialogSignal, mutationsEnabledSignal, infoDrawerOpenSignal,
+  profilesSignal, systemStatsSignal,
+} from './state.js'
+import {
+  activeTabSignal, paletteOpenSignal, tweaksOpenSignal,
+  railSignal, profileSignal,
+} from './uiState.js'
 import { CreateSessionDialog } from './CreateSessionDialog.js'
 import { ConfirmDialog } from './ConfirmDialog.js'
 import { GroupNameDialog } from './GroupNameDialog.js'
-import { TerminalPanel } from './TerminalPanel.js'
-import { CostDashboard } from './CostDashboard.js'
-import { SettingsPanel } from './SettingsPanel.js'
-import { ToastContainer } from './Toast.js'
+import { ToastContainer, addToast } from './Toast.js'
 import { ToastHistoryDrawer } from './ToastHistoryDrawer.js'
+import { SettingsPanel } from './SettingsPanel.js'
+import { KeyboardShortcuts } from './KeyboardShortcuts.js'
+import { apiFetch } from './api.js'
+import { shortcutsOverlaySignal } from './state.js'
+
+function WorkHead() {
+  const { sessions } = menuModelSignal.value
+  const selected = selectedIdSignal.value
+  const session = sessions.find(s => s.id === selected) || sessions[0]
+  if (!session) return null
+
+  const kindLabel = (session.kind || 'agent').toUpperCase()
+  const profile = profileSignal.value || ''
+  const canMutate = mutationsEnabledSignal.value
+  const modelLabel = session.model
+    ? `${session.model}${session.modelVersion ? ` ${session.modelVersion}` : ''}`
+    : ''
+
+  const action = (verb) => {
+    if (!canMutate) return
+    if (verb === 'fork') return apiFetch('POST', `/api/sessions/${session.id}/fork`, { title: session.title + '-fork' }).catch(() => {})
+    return apiFetch('POST', `/api/sessions/${session.id}/${verb}`).catch(() => {})
+  }
+
+  return html`
+    <div class="work-head">
+      <div class="path">
+        <span class=${`kind ${session.kind || ''}`}>${kindLabel}</span>
+        ${profile && html`<span class="seg">${profile} /</span>`}
+        <span class="seg">${session.group || 'default'} /</span>
+        <span class="cur">${session.title}</span>
+      </div>
+      <span class=${`status-chip ${session.status}`}><span class="d"/>${session.status}</span>
+      ${modelLabel && html`<span class="status-chip model" title=${session.modelId || modelLabel}>${modelLabel}</span>`}
+      <span class="spacer"/>
+      ${canMutate && html`
+        <div class="actions">
+          ${(session.status === 'running' || session.status === 'waiting')
+            ? html`<button class="btn ghost" onClick=${() => action('stop')}><${Icon} d=${ICONS.stop} size=${12}/>Stop</button>`
+            : html`<button class="btn ghost" onClick=${() => action('start')}><${Icon} d=${ICONS.play} size=${12}/>Start</button>`}
+          <button class="btn ghost" onClick=${() => action('restart')}><${Icon} d=${ICONS.restart} size=${12}/>Restart</button>
+          ${session.tool === 'claude' && html`<button class="btn" onClick=${() => action('fork')}><${Icon} d=${ICONS.fork} size=${12}/>Fork</button>`}
+          <button class="btn primary" onClick=${() => (createSessionDialogSignal.value = true)}>
+            <${Icon} d=${ICONS.plus} size=${12}/>New <span class="kbd">n</span>
+          </button>
+        </div>
+      `}
+    </div>
+  `
+}
+
+// Pane switcher — TerminalPane is ALWAYS rendered and only hidden via CSS
+// when another tab is active. This preserves the xterm.js + WebSocket lifecycle
+// across tab switches; unmounting would trigger a reconnect storm and lose
+// scrollback. Other panes are cheap enough to mount/unmount on demand.
+function Panes({ tab }) {
+  return html`
+    <div style=${{ display: tab === 'terminal' ? 'flex' : 'none', flex: 1, minHeight: 0, flexDirection: 'column' }}>
+      <${TerminalPane}/>
+    </div>
+    ${tab === 'fleet'     && html`<${FleetPane}/>`}
+    ${tab === 'costs'     && html`<${CostsPane}/>`}
+    ${tab === 'search'    && html`<${SearchPane}/>`}
+    ${tab === 'mcp'       && html`<${McpPane}/>`}
+    ${tab === 'skills'    && html`<${StubPane} title="Skills"
+                              message="Skill attachments are managed in the TUI today. The web API does not expose skill management yet."
+                              hotkey="s"/>`}
+    ${tab === 'conductor' && html`<${StubPane} title="Conductor"
+                              message="Conductor orchestration view is TUI-only. The web API does not expose child topology, bridges, or NEED escalation."/>`}
+    ${tab === 'watchers'  && html`<${StubPane} title="Watchers"
+                              message="Watcher framework events are routed in the backend; the web API does not surface event streams or routing config."/>`}
+  `
+}
 
 export function AppShell() {
-  const sidebarOpen = sidebarOpenSignal.value
+  const activeTab = activeTabSignal.value
   const showCreateSession = createSessionDialogSignal.value
   const confirmData = confirmDialogSignal.value
   const groupNameData = groupNameDialogSignal.value
-  const activeTab = activeTabSignal.value
   const drawerOpen = infoDrawerOpenSignal.value
 
-  function toggleSidebar() {
-    const next = !sidebarOpenSignal.value
-    sidebarOpenSignal.value = next
-    localStorage.setItem('agentdeck.sidebarOpen', String(next))
-  }
-
-  // Hide the vanilla .app div once AppShell mounts
+  // Hide the vanilla .app div from the legacy boot path (kept for back-compat
+  // until we delete it).
   useEffect(() => {
-    const vanillaApp = document.querySelector('.app')
-    if (vanillaApp) vanillaApp.style.display = 'none'
-    return () => {
-      if (vanillaApp) vanillaApp.style.display = ''
-    }
+    const vanillaApp = document.querySelector('body > .app')
+    if (vanillaApp && vanillaApp.id !== 'app-root-grid') vanillaApp.style.display = 'none'
+    return () => { if (vanillaApp) vanillaApp.style.display = '' }
   }, [])
 
-  // WEB-P0-4 prevention layer: read webMutations from /api/settings on mount.
-  // Defaults to true (optimistic); flips to false if the server is in
-  // read-only mutations mode. When false, SessionRow hides its write
-  // toolbar and CreateSessionDialog early-returns null, so users cannot
-  // click write buttons and generate 403 error spam that would flood the
-  // toast stack (06-04's mitigation layer handles any leaks).
+  // WEB-P0-4 prevention layer: hydrate webMutations gate from /api/settings.
   useEffect(() => {
     fetch('/api/settings')
       .then(r => r.ok ? r.json() : null)
@@ -54,133 +135,215 @@ export function AppShell() {
           mutationsEnabledSignal.value = data.webMutations
         }
       })
-      .catch(() => {
-        // Network failure — keep optimistic default (true) so the UI
-        // does not lock out legitimate users on transient failures.
-      })
+      .catch(() => {})
   }, [])
 
-  // Close info drawer on Escape key
+  // Hydrate profilesSignal once. The Topbar reads this for the profile
+  // dropdown options and uses the `current` field to seed profileSignal
+  // (UI-side selection) on first load.
+  useEffect(() => {
+    fetch('/api/profiles')
+      .then(r => r.ok ? r.json() : null)
+      .then(data => {
+        if (data && Array.isArray(data.profiles)) {
+          profilesSignal.value = data
+          if (data.current) profileSignal.value = data.current
+        }
+      })
+      .catch(() => {})
+  }, [])
+
+  // Poll /api/system/stats every 5s for the Footer indicators. Stops on
+  // unmount; the Footer treats absent fields as "unavailable" so the user
+  // sees nothing rather than zeros when a collector is offline.
+  useEffect(() => {
+    let cancelled = false
+    const fetchStats = () => {
+      fetch('/api/system/stats')
+        .then(r => r.ok ? r.json() : null)
+        .then(data => { if (!cancelled && data) systemStatsSignal.value = data })
+        .catch(() => {})
+    }
+    fetchStats()
+    const id = setInterval(fetchStats, 5000)
+    return () => { cancelled = true; clearInterval(id) }
+  }, [])
+
+  // Global keyboard shortcuts — TUI parity, issue #780.
+  // Top-10 bindings combined with the existing Web-only ones (Ctrl+K, ]).
+  // Guard: any key that isn't a modal-bound modifier combo must NOT fire
+  // while the user is typing in an input/textarea/select/contenteditable.
+  useEffect(() => {
+    // Navigate selectedIdSignal by `delta` (+1 or -1) through the flat
+    // session list from menuModelSignal. Stable across SSE updates because
+    // we resolve by ID, not by array index in a possibly-stale snapshot.
+    const moveFocus = (delta) => {
+      const sessions = (menuModelSignal.value?.sessions) || []
+      if (sessions.length === 0) return
+      const curId = selectedIdSignal.value
+      let idx = sessions.findIndex(s => s.id === curId)
+      if (idx === -1) idx = delta > 0 ? -1 : sessions.length
+      const next = sessions[Math.max(0, Math.min(sessions.length - 1, idx + delta))]
+      if (next) {
+        // Only change the selected id; do NOT switch to the terminal tab on
+        // j/k navigation. Activating the terminal hands focus to xterm.js,
+        // which swallows subsequent keypresses (issue #780 review).
+        // The TUI's `enter` key is what opens; j/k just moves focus.
+        selectedIdSignal.value = next.id
+      }
+    }
+    const focusedSession = () => {
+      const sessions = (menuModelSignal.value?.sessions) || []
+      const id = selectedIdSignal.value
+      return sessions.find(s => s.id === id) || sessions[0] || null
+    }
+    const closeAllModals = () => {
+      paletteOpenSignal.value = false
+      tweaksOpenSignal.value = false
+      shortcutsOverlaySignal.value = false
+      createSessionDialogSignal.value = false
+      confirmDialogSignal.value = null
+      groupNameDialogSignal.value = null
+      infoDrawerOpenSignal.value = false
+    }
+    const onKey = (e) => {
+      const t = e.target
+      const inField = t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT' || t.isContentEditable)
+      // Cmd+K / Ctrl+K opens palette anywhere (also works inside inputs).
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') {
+        e.preventDefault()
+        paletteOpenSignal.value = true
+        return
+      }
+      // Esc unfocuses inputs and closes overlays — fires even while typing.
+      if (e.key === 'Escape') {
+        if (inField && typeof t.blur === 'function') t.blur()
+        closeAllModals()
+        return
+      }
+      if (inField) return
+
+      // Shift+Enter: open focused session in new browser tab (web equivalent
+      // of the TUI's iTerm "new tab" affordance, issue #1077). Check this
+      // BEFORE bare Enter so the shift modifier is honored.
+      if (e.key === 'Enter' && e.shiftKey) {
+        const s = focusedSession()
+        if (s) {
+          e.preventDefault()
+          const url = `${window.location.pathname}#session=${encodeURIComponent(s.id)}`
+          window.open(url, '_blank', 'noopener')
+        }
+        return
+      }
+      if (e.key === '?') {
+        e.preventDefault()
+        shortcutsOverlaySignal.value = !shortcutsOverlaySignal.value
+      } else if (e.key === '/') {
+        e.preventDefault()
+        document.querySelector('.side-filter input')?.focus()
+      } else if (e.key === 'j') {
+        e.preventDefault(); moveFocus(+1)
+      } else if (e.key === 'k') {
+        e.preventDefault(); moveFocus(-1)
+      } else if (e.key === 'Enter') {
+        const s = focusedSession()
+        if (s) {
+          e.preventDefault()
+          selectedIdSignal.value = s.id
+          activeTabSignal.value = 'terminal'
+        }
+      } else if (e.key === 'n' && mutationsEnabledSignal.value) {
+        createSessionDialogSignal.value = true
+      } else if (e.key === 'r') {
+        // Web has no session-rename API yet (matrix gap); surface the gap
+        // honestly instead of silently no-op'ing.
+        const s = focusedSession()
+        if (s) addToast(`Rename "${s.title}": use the TUI (web rename API not implemented yet)`, 'info')
+      } else if (e.key === 'D') {
+        // Shift+D — non-destructive close of focused session. Mirrors
+        // TUI's `D` (closeSession): kills the tmux process but keeps the
+        // session record so a later start/restart can resurrect it.
+        if (!mutationsEnabledSignal.value) return
+        const s = focusedSession()
+        if (!s) return
+        confirmDialogSignal.value = {
+          message: `Close session "${s.title}"? The tmux process will be killed; metadata is preserved.`,
+          onConfirm: () => apiFetch('POST', `/api/sessions/${s.id}/close`).catch(() => {}),
+        }
+      } else if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'z') {
+        // Ctrl/Cmd+Z — Chrome-style undo of the most recent delete.
+        // Mirrors TUI's ctrl+z (Home.undoStack). The server enforces the
+        // configurable undo window (default 30s) and returns 404 once
+        // the entry expires; surface the result as a toast either way.
+        if (!mutationsEnabledSignal.value) return
+        e.preventDefault()
+        apiFetch('POST', '/api/sessions/undelete')
+          .then(resp => {
+            if (resp && resp.sessionId) addToast(`Restored session ${resp.sessionId}`, 'success')
+            else addToast('Restored last deleted session', 'success')
+          })
+          .catch(() => addToast('Nothing to undo', 'info'))
+      } else if (e.key === 'q') {
+        // Mirrors TUI's `q`: dismiss the current modal/overlay. Only fires
+        // when no input is focused (guarded above), so it never blocks
+        // typing the letter `q` in the search box.
+        closeAllModals()
+      } else if (e.key === ']') {
+        railSignal.value = railSignal.value === 'visible' ? 'hidden' : 'visible'
+      }
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [])
+
+  // Esc closes info drawer (preserved from old AppShell).
   useEffect(() => {
     if (!drawerOpen) return
-    function onKey(e) {
-      if (e.key === 'Escape') { infoDrawerOpenSignal.value = false }
-    }
+    const onKey = (e) => { if (e.key === 'Escape') (infoDrawerOpenSignal.value = false) }
     document.addEventListener('keydown', onKey)
     return () => document.removeEventListener('keydown', onKey)
   }, [drawerOpen])
 
-  // Auto-close mobile drawer when a session is selected
-  useEffect(() => {
-    if (selectedIdSignal.value && window.innerWidth < 768) {
-      sidebarOpenSignal.value = false
-    }
-  }, [selectedIdSignal.value])
-
   return html`
-    <div class="flex flex-col h-screen dark:bg-tn-bg bg-tn-light-bg">
-      <${Topbar} onToggleSidebar=${toggleSidebar} sidebarOpen=${sidebarOpen} />
-      <div class="flex flex-1 min-h-0 relative">
-
-        <!-- Overlay backdrop: phone only, hidden on md+ -->
-        ${sidebarOpen && html`
-          <div
-            class="fixed inset-0 z-30 bg-black/50 md:hidden cursor-pointer"
-            onClick=${toggleSidebar}
-            aria-hidden="true"
-          />`}
-
-        <!-- Sidebar:
-             phone:   fixed overlay, slides from left
-             tablet:  static, collapsible via sidebarOpen
-             desktop: always visible via lg:translate-x-0 -->
-        <aside class="
-          fixed inset-y-0 left-0 z-40 w-72 flex flex-col
-          dark:bg-tn-panel bg-white
-          border-r dark:border-tn-muted/20 border-gray-200
-          transform transition-transform duration-200
-          ${sidebarOpen ? 'translate-x-0' : '-translate-x-full'}
-          md:relative md:z-auto md:sidebar-fluid
-          lg:translate-x-0
-        ">
-          <div class="flex items-center justify-between px-sp-12 py-sp-8 border-b dark:border-tn-muted/20 border-gray-200">
-            <span class="text-xs font-semibold uppercase tracking-wide dark:text-tn-muted text-gray-500">Sessions</span>
-            <span class="flex items-center gap-1">
-              <button type="button"
-                onClick=${() => (groupNameDialogSignal.value = { mode: 'create', groupPath: '', currentName: '', onSubmit: null })}
-                class="p-2 min-w-[44px] min-h-[44px] flex items-center justify-center rounded dark:text-tn-muted text-gray-400
-                       hover:dark:text-tn-fg hover:text-gray-700
-                       hover:dark:bg-tn-muted/10 hover:bg-gray-100 transition-colors"
-                title="New group"
-                aria-label="New group">
-                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
-                        d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z"/>
-                </svg>
-              </button>
-              <button type="button"
-                onClick=${() => (createSessionDialogSignal.value = true)}
-                class="p-2 min-w-[44px] min-h-[44px] flex items-center justify-center rounded dark:text-tn-muted text-gray-400
-                       hover:dark:text-tn-fg hover:text-gray-700
-                       hover:dark:bg-tn-muted/10 hover:bg-gray-100 transition-colors"
-                title="New session (n)"
-                aria-label="New session">
-                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/>
-                </svg>
-              </button>
-            </span>
-          </div>
-          <${Sidebar} />
-        </aside>
-
-        <!-- Main content: terminal and costs tabs -->
-        <!-- TerminalPanel is always rendered (CSS hidden when costs active) to preserve xterm.js + WebSocket -->
-        <!-- WEB-P1-1: main element needs flex flex-col + min-h-0 so inner h-full resolves and
-             flex-1 children can shrink below intrinsic content height. Inner wrapper gets
-             h-full + min-h-0 + flex flex-col so TerminalPanels own h-full chain works. -->
-        <main class="flex flex-col flex-1 min-w-0 min-h-0 overflow-hidden dark:bg-tn-bg bg-tn-light-bg relative">
-          <div class="${activeTab === 'terminal' ? 'h-full min-h-0 flex flex-col' : 'hidden'}">
-            <${TerminalPanel} />
-          </div>
-          ${activeTab === 'costs' && html`<${CostDashboard} />`}
-        </main>
+    <div id="app-root-grid" class="app">
+      <${Topbar}/>
+      <${Sidebar}/>
+      <div class="main">
+        <${WorkHead}/>
+        <div class="work-body">
+          <${Panes} tab=${activeTab}/>
+        </div>
       </div>
+      <${RightRail}/>
+      <${Footer}/>
+      <${MobileTabs}/>
 
-      ${showCreateSession && html`<${CreateSessionDialog} />`}
-      ${confirmData && html`<${ConfirmDialog} ...${confirmData} />`}
-      ${groupNameData && html`<${GroupNameDialog} ...${groupNameData} />`}
+      ${showCreateSession && html`<${CreateSessionDialog}/>`}
+      ${confirmData && html`<${ConfirmDialog} ...${confirmData}/>`}
+      ${groupNameData && html`<${GroupNameDialog} ...${groupNameData}/>`}
 
       ${drawerOpen && html`
-        <div
-          class="fixed inset-0 z-40 bg-black/40"
-          onClick=${() => { infoDrawerOpenSignal.value = false }}
-          onKeyDown=${(e) => { if (e.key === 'Escape') infoDrawerOpenSignal.value = false }}
-          aria-hidden="true"
-        />
-        <div class="fixed top-0 right-0 bottom-0 z-50 w-72 max-w-[90vw]
-                    dark:bg-tn-panel bg-white
-                    border-l dark:border-tn-muted/20 border-gray-200
-                    shadow-xl flex flex-col"
-             role="dialog"
-             aria-label="Info panel">
-          <div class="flex items-center justify-between px-sp-12 py-sp-8
-                      border-b dark:border-tn-muted/20 border-gray-200">
-            <span class="text-sm font-semibold dark:text-tn-fg text-gray-900">Info</span>
-            <button
-              type="button"
-              onClick=${() => { infoDrawerOpenSignal.value = false }}
-              class="dark:text-tn-muted text-gray-400 hover:dark:text-tn-fg hover:text-gray-700 transition-colors p-1 rounded hover:dark:bg-tn-muted/10 hover:bg-gray-100"
-              aria-label="Close info panel"
-            >\u2715</button>
-          </div>
-          <div class="flex-1 overflow-y-auto px-sp-12 py-sp-12">
-            <${SettingsPanel} />
+        <div class="overlay" onClick=${() => (infoDrawerOpenSignal.value = false)}>
+          <div class="dialog" onClick=${e => e.stopPropagation()}>
+            <div class="dh">
+              <span class="kicker">SETTINGS</span>
+              <div class="t">Settings</div>
+              <button class="icon-btn" onClick=${() => (infoDrawerOpenSignal.value = false)} aria-label="Close settings">
+                <${Icon} d=${ICONS.x}/>
+              </button>
+            </div>
+            <div class="db">
+              <${SettingsPanel}/>
+            </div>
           </div>
         </div>
       `}
-      <${ToastContainer} />
-      <${ToastHistoryDrawer} />
+
+      <${CommandPalette}/>
+      <${TweaksPanel}/>
+      <${KeyboardShortcuts}/>
+      <${ToastContainer}/>
+      <${ToastHistoryDrawer}/>
     </div>
   `
 }

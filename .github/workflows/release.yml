@@ -9,6 +9,14 @@ on:
     tags:
       - 'v*'
 
+# Serialize publish per tag. If a duplicate run is queued for the same tag
+# (e.g. local worker accidentally re-publishes), goreleaser would race with
+# itself and the second uploader would 422 already_exists on each of the 5
+# assets (the v1.9.0-v1.9.5 race).
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
 permissions:
   contents: write
 
@@ -17,12 +25,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           fetch-depth: 0
 
       - name: Set up Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
 
@@ -46,7 +54,7 @@ jobs:
           zoxide --version
 
       - name: Run tests
-        run: go test -race ./...
+        run: go test -race -timeout 20m ./...
 
       # Evaluator harness full tier. Blocking — a release that fails eval
       # does not get a tag. See docs/rfc/EVALUATOR_HARNESS.md (#37).
@@ -55,7 +63,7 @@ jobs:
       # too, not just on PRs.
       - name: Run eval harness (full tier)
         env:
-          GOTOOLCHAIN: go1.24.0
+          GOTOOLCHAIN: go1.25.10
         run: |
           go test -tags 'eval_smoke eval_full' -race -count=1 -timeout 6m ./tests/eval/... ./internal/ui/...
 

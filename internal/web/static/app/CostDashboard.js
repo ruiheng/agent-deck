@@ -4,6 +4,35 @@ import { html } from 'htm/preact'
 import { useEffect, useRef, useState } from 'preact/hooks'
 import { apiFetch } from './api.js'
 
+// Lazy-loader for Chart.js UMD bundle (issue #1022 part 2). Chart.js is
+// ~206 KB and only the Costs route consumes it, so it must not ship in
+// the initial payload. The first call injects a <script> tag pointing at
+// the same /static/chart.umd.min.js asset the eager <script> used to
+// load; subsequent calls return the cached promise so concurrent mounts
+// don't race or re-fetch. Resolves with window.Chart once the global is
+// set, or rejects if the script tag errors.
+let chartLoaderPromise = null
+function loadChartJs() {
+  if (typeof window === 'undefined') return Promise.reject(new Error('no window'))
+  if (window.Chart) return Promise.resolve(window.Chart)
+  if (chartLoaderPromise) return chartLoaderPromise
+  chartLoaderPromise = new Promise((resolve, reject) => {
+    const s = document.createElement('script')
+    s.src = '/static/chart.umd.min.js'
+    s.async = true
+    s.onload = () => {
+      if (window.Chart) resolve(window.Chart)
+      else reject(new Error('chart.umd.min.js loaded but window.Chart missing'))
+    }
+    s.onerror = () => {
+      chartLoaderPromise = null
+      reject(new Error('failed to load chart.umd.min.js'))
+    }
+    document.head.appendChild(s)
+  })
+  return chartLoaderPromise
+}
+
 // POL-5 (Phase 9, plan 02): locale-aware currency formatting. Constructed
 // once at module load — Intl.NumberFormat is non-trivial to build (reads
 // ICU data) and the user's locale does not change during a session. Both
@@ -81,7 +110,8 @@ export function CostDashboard() {
 
     async function buildCharts() {
       try {
-        const [dailyData, modelsData] = await Promise.all([
+        const [Chart, dailyData, modelsData] = await Promise.all([
+          loadChartJs(),
           apiFetch('GET', '/api/costs/daily?days=30'),
           apiFetch('GET', '/api/costs/models'),
         ])
@@ -110,7 +140,7 @@ export function CostDashboard() {
         const labels = dates.map(d => d.date.slice(5))
         const costs = dates.map(d => d.cost_usd)
 
-        dailyChartRef.current = new window.Chart(dailyCanvasRef.current, {
+        dailyChartRef.current = new Chart(dailyCanvasRef.current, {
           type: 'line',
           data: {
             labels,
@@ -140,7 +170,7 @@ export function CostDashboard() {
         const mLabels = Object.keys(models)
         const mData = Object.values(models)
 
-        modelChartRef.current = new window.Chart(modelCanvasRef.current, {
+        modelChartRef.current = new Chart(modelCanvasRef.current, {
           type: 'doughnut',
           data: {
             labels: mLabels,
@@ -198,61 +228,58 @@ export function CostDashboard() {
 
   if (loading) {
     return html`
-      <div class="p-4 md:p-6 overflow-y-auto h-full dark:text-tn-fg text-gray-700">
-        <p class="text-sm dark:text-tn-muted text-gray-500">Loading cost data...</p>
+      <div style="padding: 18px; font-family: var(--mono); font-size: 12px; color: var(--muted);">
+        Loading cost data…
       </div>
     `
   }
 
   if (error) {
     return html`
-      <div class="p-4 md:p-6 overflow-y-auto h-full dark:text-tn-fg text-gray-700">
-        <p class="text-sm dark:text-tn-muted text-gray-500">
-          Cost tracking is not enabled. Start agent-deck with cost tracking to see data here.
-        </p>
+      <div class="chart-card" style="margin: 14px;">
+        <div class="title">Cost tracking unavailable</div>
+        <div style="font-family: var(--mono); font-size: 12px; color: var(--text-dim); line-height: 1.6;">
+          Start agent-deck with the cost tracker enabled to see spend, daily history, and per-model
+          breakdowns here. The fixture binary intentionally runs without it.
+        </div>
       </div>
     `
   }
 
   return html`
-    <div class="p-sp-16 md:p-sp-24 overflow-y-auto h-full dark:text-tn-fg text-gray-700">
-
-      <!-- Summary cards -->
-      <div class="grid grid-cols-2 lg:grid-cols-4 gap-sp-16 mb-sp-24">
-        <div class="dark:bg-tn-card bg-white rounded-lg p-4">
-          <div class="text-xs dark:text-tn-muted text-gray-500 uppercase">Today</div>
-          <div class="text-2xl font-bold dark:text-[#7dcfff] text-teal-600 mt-1">${fmt(summary.today_usd)}</div>
-          <div class="text-xs dark:text-tn-muted text-gray-600 mt-1">${summary.today_events} events</div>
+    <div style="display: flex; flex-direction: column; gap: 12px; flex: 1; min-height: 0; overflow: auto;">
+      <div class="stat-grid">
+        <div class="stat">
+          <div class="lab">TODAY</div>
+          <div class="val">${fmt(summary.today_usd)}</div>
+          <div class="delta">${summary.today_events} events</div>
         </div>
-        <div class="dark:bg-tn-card bg-white rounded-lg p-4">
-          <div class="text-xs dark:text-tn-muted text-gray-500 uppercase">This Week</div>
-          <div class="text-2xl font-bold dark:text-[#7dcfff] text-teal-600 mt-1">${fmt(summary.week_usd)}</div>
-          <div class="text-xs dark:text-tn-muted text-gray-600 mt-1">${summary.week_events} events</div>
+        <div class="stat">
+          <div class="lab">THIS WEEK</div>
+          <div class="val">${fmt(summary.week_usd)}</div>
+          <div class="delta">${summary.week_events} events</div>
         </div>
-        <div class="dark:bg-tn-card bg-white rounded-lg p-4">
-          <div class="text-xs dark:text-tn-muted text-gray-500 uppercase">This Month</div>
-          <div class="text-2xl font-bold dark:text-[#7dcfff] text-teal-600 mt-1">${fmt(summary.month_usd)}</div>
-          <div class="text-xs dark:text-tn-muted text-gray-600 mt-1">${summary.month_events} events</div>
+        <div class="stat">
+          <div class="lab">THIS MONTH</div>
+          <div class="val">${fmt(summary.month_usd)}</div>
+          <div class="delta">${summary.month_events} events</div>
         </div>
-        <div class="dark:bg-tn-card bg-white rounded-lg p-4">
-          <div class="text-xs dark:text-tn-muted text-gray-500 uppercase">Projected</div>
-          <div class="text-2xl font-bold dark:text-[#7dcfff] text-teal-600 mt-1">${fmt(summary.projected_usd)}</div>
-          <div class="text-xs dark:text-tn-muted text-gray-600 mt-1">based on 7-day avg</div>
+        <div class="stat">
+          <div class="lab">PROJECTED</div>
+          <div class="val">${fmt(summary.projected_usd)}</div>
+          <div class="delta">based on 7-day avg</div>
         </div>
       </div>
-
-      <!-- Charts -->
-      <div class="grid grid-cols-1 lg:grid-cols-3 gap-sp-16 mb-sp-24">
-        <div class="lg:col-span-2 dark:bg-tn-card bg-white rounded-lg p-4">
-          <div class="text-sm dark:text-tn-muted text-gray-500 uppercase mb-3">Daily Spend (Last 30 Days)</div>
+      <div style="display: grid; grid-template-columns: 2fr 1fr; gap: 12px;">
+        <div class="chart-card">
+          <div class="title">Daily spend · last 30 days</div>
           <canvas ref=${dailyCanvasRef}></canvas>
         </div>
-        <div class="dark:bg-tn-card bg-white rounded-lg p-4">
-          <div class="text-sm dark:text-tn-muted text-gray-500 uppercase mb-3">Cost by Model</div>
+        <div class="chart-card">
+          <div class="title">Cost by model</div>
           <canvas ref=${modelCanvasRef}></canvas>
         </div>
       </div>
-
     </div>
   `
 }

@@ -5,6 +5,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"strings"
 
 	"github.com/asheshgoplani/agent-deck/internal/session"
 	"github.com/asheshgoplani/agent-deck/internal/web"
@@ -12,7 +13,12 @@ import (
 
 // buildWebServer parses web-specific flags and returns a ready-to-start server.
 // The caller is responsible for calling server.Start() and server.Shutdown().
-func buildWebServer(profile string, args []string, menuData web.MenuDataLoader) (*web.Server, error) {
+//
+// mutator is wired via Server.SetMutator. Pass nil only in tests that don't
+// exercise mutation handlers — production callers MUST pass a real mutator
+// or every POST/PATCH/DELETE will 503 with NOT_IMPLEMENTED. See
+// TestBuildWebServer_WiresMutator for the regression guard on this contract.
+func buildWebServer(profile string, args []string, menuData web.MenuDataLoader, mutator web.SessionMutator) (*web.Server, error) {
 	fs := flag.NewFlagSet("web", flag.ContinueOnError)
 	listenAddr := fs.String("listen", "127.0.0.1:8420", "Listen address for web server")
 	readOnly := fs.Bool("read-only", false, "Run in read-only mode (input disabled)")
@@ -29,6 +35,10 @@ func buildWebServer(profile string, args []string, menuData web.MenuDataLoader) 
 		fmt.Println()
 		fmt.Println("Options:")
 		fs.PrintDefaults()
+		fmt.Println("  --no-tui")
+		fmt.Println("    \tRun in headless mode (HTTP server only, no bubbletea TUI).")
+		fmt.Println("    \tSkips ~60 MB of TUI RSS overhead. Sessions remain manageable")
+		fmt.Println("    \tvia the web UI; storage is the source of truth.")
 		fmt.Println()
 		fmt.Println("Examples:")
 		fmt.Println("  agent-deck web")
@@ -36,6 +46,8 @@ func buildWebServer(profile string, args []string, menuData web.MenuDataLoader) 
 		fmt.Println("  agent-deck web --read-only")
 		fmt.Println("  agent-deck web --push")
 		fmt.Println("  agent-deck web --push --push-test-every 10s")
+		fmt.Println("  agent-deck web --no-tui                 # headless, perf win")
+		fmt.Println("  agent-deck web --no-tui --listen 127.0.0.1:9000")
 	}
 
 	if err := fs.Parse(normalizeArgs(fs, args)); err != nil {
@@ -77,6 +89,7 @@ func buildWebServer(profile string, args []string, menuData web.MenuDataLoader) 
 		ListenAddr:          *listenAddr,
 		Profile:             effectiveProfile,
 		ReadOnly:            *readOnly,
+		WebMutations:        resolveMutationsEnabled(*readOnly),
 		Token:               *token,
 		MenuData:            menuData,
 		PushVAPIDPublicKey:  resolvedPushPublic,
@@ -85,5 +98,43 @@ func buildWebServer(profile string, args []string, menuData web.MenuDataLoader) 
 		PushTestInterval:    *pushTestEvery,
 	})
 
+	if mutator != nil {
+		server.SetMutator(mutator)
+	}
+
 	return server, nil
+}
+
+// resolveMutationsEnabled applies precedence: --read-only forces mutations off;
+// otherwise the value comes from config.toml `[web].mutations_enabled`, which
+// defaults to true when unset.
+func resolveMutationsEnabled(readOnly bool) bool {
+	if readOnly {
+		return false
+	}
+	return session.GetWebMutationsEnabled()
+}
+
+// extractNoTuiFlag pulls --no-tui out of args before buildWebServer's flag
+// set sees it. The TUI-vs-headless decision is made at the bootstrap layer
+// in main.go (it controls whether bubbletea ever boots), so it lives outside
+// the per-server flag set.
+//
+// Supports: --no-tui, --no-tui=true, --no-tui=false. Returns the parsed
+// boolean and args with all --no-tui tokens removed (always a non-nil slice).
+func extractNoTuiFlag(args []string) (bool, []string) {
+	noTui := false
+	remaining := make([]string, 0, len(args))
+	for _, a := range args {
+		switch {
+		case a == "--no-tui":
+			noTui = true
+		case strings.HasPrefix(a, "--no-tui="):
+			v := strings.TrimPrefix(a, "--no-tui=")
+			noTui = v == "true" || v == "1"
+		default:
+			remaining = append(remaining, a)
+		}
+	}
+	return noTui, remaining
 }

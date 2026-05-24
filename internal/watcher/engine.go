@@ -111,6 +111,11 @@ type Engine struct {
 	cancel context.CancelFunc
 	wg     sync.WaitGroup
 	log    *slog.Logger
+
+	// stopOnce ensures Stop() is idempotent — exported channels are closed
+	// at most once even when Stop is called multiple times (V1.9 T5,
+	// critical-hunt #9).
+	stopOnce sync.Once
 }
 
 // NewEngine creates a new Engine with the provided configuration.
@@ -202,6 +207,10 @@ func (e *Engine) Start() error {
 			continue
 		}
 
+		// #nosec G118 -- adapterCancel is preserved on entry.cancel; the parent
+		// context e.ctx is canceled by Stop() (see line 594), which propagates
+		// to all derived adapter contexts. Explicit per-entry cancel is reserved
+		// for selective restart in future hot-reload work.
 		adapterCtx, adapterCancel := context.WithCancel(e.ctx)
 		entry.cancel = adapterCancel
 
@@ -427,6 +436,7 @@ func (e *Engine) writerLoop() {
 				}
 
 				// Non-blocking send to routedEventCh for TUI consumption.
+				env.event.RoutedTo = routedTo
 				select {
 				case e.routedEventCh <- env.event:
 				default:
@@ -578,24 +588,34 @@ func (e *Engine) healthLoop() {
 }
 
 // Stop cancels all adapter contexts, calls Teardown on each adapter,
-// and waits for all goroutines to exit. Safe to call multiple times.
+// waits for all goroutines to exit, and closes the exported channels
+// (EventCh, HealthCh) so consumers receive (_, false) instead of
+// blocking forever (V1.9 T5, critical-hunt #9). Safe to call multiple
+// times — the close happens at most once via stopOnce.
 func (e *Engine) Stop() {
-	// Cancel root context, which propagates to all derived adapter contexts.
-	e.cancel()
+	e.stopOnce.Do(func() {
+		// Cancel root context, which propagates to all derived adapter contexts.
+		e.cancel()
 
-	// Best-effort teardown of all adapters.
-	for i := range e.adapters {
-		entry := &e.adapters[i]
-		if err := entry.adapter.Teardown(); err != nil {
-			e.log.Warn("adapter_teardown_error",
-				slog.String("watcher", entry.config.Name),
-				slog.String("error", err.Error()),
-			)
+		// Best-effort teardown of all adapters.
+		for i := range e.adapters {
+			entry := &e.adapters[i]
+			if err := entry.adapter.Teardown(); err != nil {
+				e.log.Warn("adapter_teardown_error",
+					slog.String("watcher", entry.config.Name),
+					slog.String("error", err.Error()),
+				)
+			}
 		}
-	}
 
-	// Wait for all goroutines (adapters + writer + health + triage) to exit.
-	e.wg.Wait()
+		// Wait for all goroutines (adapters + writer + health + triage) to exit.
+		// After Wait, no goroutine can send on routedEventCh / healthCh, so it
+		// is safe to close them.
+		e.wg.Wait()
+
+		close(e.routedEventCh)
+		close(e.healthCh)
+	})
 }
 
 // EventCh returns a read-only channel of routed events for TUI consumption (D-20).

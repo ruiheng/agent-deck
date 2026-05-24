@@ -52,11 +52,224 @@ func TestDialogSetSize(t *testing.T) {
 	}
 }
 
+func TestNewDialog_SetSize_syncsPathInputWidth(t *testing.T) {
+	d := NewNewDialog()
+
+	d.SetSize(120, 40)
+	// Preferred outer width 84 → text fields 84 − 12 = 72.
+	if got := d.pathInput.Width; got != 72 {
+		t.Fatalf("wide terminal: pathInput.Width = %d, want 72", got)
+	}
+
+	d.SetSize(55, 40)
+	// Outer shrinks to terminal−10 (45), above min 44 → inputs 45 − 12 = 33.
+	if got := d.pathInput.Width; got != 33 {
+		t.Fatalf("narrow terminal: pathInput.Width = %d, want 33", got)
+	}
+}
+
+func TestNewDialog_ModelInputForCodex(t *testing.T) {
+	d := NewNewDialog()
+	d.SetDefaultTool("codex")
+	d.SetSize(100, 50)
+	d.Show()
+
+	if !d.selectedToolSupportsModel() {
+		t.Fatal("codex should support model selection")
+	}
+	if idx := d.indexOf(focusModel); idx < 0 {
+		t.Fatal("model input should be focusable for codex")
+	}
+	view := d.View()
+	if !strings.Contains(view, "Model ID") {
+		t.Fatal("codex new-session dialog should render a model input")
+	}
+	if !strings.Contains(view, "gpt-5.5") || !strings.Contains(view, "gpt-5.4") {
+		t.Fatalf("codex model hints should include current ChatGPT versions: %q", view)
+	}
+
+	d.modelInput.SetValue("gpt-5.5")
+	if got := d.GetLaunchModelID(); got != "gpt-5.5" {
+		t.Fatalf("GetLaunchModelID() = %q, want gpt-5.5", got)
+	}
+}
+
+func TestNewDialog_ModelSuggestions_FilterAndSelectCodex(t *testing.T) {
+	d := NewNewDialog()
+	d.SetDefaultTool("codex")
+	d.SetSize(100, 50)
+	d.Show()
+	d.focusIndex = d.indexOf(focusModel)
+	d.updateFocus()
+
+	d.modelInput.SetValue("5.5")
+	d.filterModelSuggestions()
+
+	if len(d.modelSuggestions) == 0 || d.modelSuggestions[0] != "gpt-5.5" {
+		t.Fatalf("filtered model suggestions = %v, want gpt-5.5 first", d.modelSuggestions)
+	}
+	d, _ = d.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if !d.IsModelSuggestionsActive() {
+		t.Fatal("enter on model input should activate the model suggestions dropdown")
+	}
+	if view := d.View(); !strings.Contains(view, "Type custom model ID") || !strings.Contains(view, "gpt-5.5") {
+		t.Fatalf("model dropdown should show custom entry and known model IDs after enter: %q", view)
+	}
+	d, _ = d.Update(tea.KeyMsg{Type: tea.KeyDown})
+	if !d.IsModelSuggestionsActive() {
+		t.Fatal("down inside model dropdown should keep suggestions active")
+	}
+	if d.modelSuggestionCursor != 1 {
+		t.Fatalf("modelSuggestionCursor = %d, want 1", d.modelSuggestionCursor)
+	}
+	d, _ = d.Update(tea.KeyMsg{Type: tea.KeyEnter})
+
+	if got := d.GetLaunchModelID(); got != "gpt-5.5" {
+		t.Fatalf("GetLaunchModelID() = %q, want gpt-5.5", got)
+	}
+	if d.currentTarget() != focusWorktree {
+		t.Fatalf("currentTarget after accepting model = %v, want focusWorktree", d.currentTarget())
+	}
+}
+
+func TestNewDialog_ModelDropdownVisibleOnFocus(t *testing.T) {
+	d := NewNewDialog()
+	d.SetDefaultTool("codex")
+	d.SetSize(100, 50)
+	d.Show()
+	d.focusIndex = d.indexOf(focusModel)
+	d.updateFocus()
+
+	if d.IsModelSuggestionsActive() {
+		t.Fatal("model dropdown should be visible on focus without taking active dropdown control")
+	}
+	view := d.View()
+	if !strings.Contains(view, "Type custom model ID") || !strings.Contains(view, "gpt-5.5") {
+		t.Fatalf("model dropdown should show custom entry and known model IDs on focus: %q", view)
+	}
+
+	d, _ = d.Update(tea.KeyMsg{Type: tea.KeyDown})
+	if !d.IsModelSuggestionsActive() {
+		t.Fatal("down on focused model input should activate model dropdown navigation")
+	}
+	if d.modelSuggestionCursor != 1 {
+		t.Fatalf("modelSuggestionCursor = %d, want 1", d.modelSuggestionCursor)
+	}
+}
+
+func TestNewDialog_ModelDropdown_TabAndShiftTabMoveFocus(t *testing.T) {
+	d := NewNewDialog()
+	d.SetDefaultTool("codex")
+	d.SetSize(100, 50)
+	d.Show()
+	d.focusIndex = d.indexOf(focusModel)
+	d.updateFocus()
+
+	d, _ = d.Update(tea.KeyMsg{Type: tea.KeyShiftTab})
+	if d.currentTarget() != focusCommand {
+		t.Fatalf("currentTarget after shift+tab from model field = %v, want focusCommand", d.currentTarget())
+	}
+
+	d.focusIndex = d.indexOf(focusModel)
+	d.updateFocus()
+	d, _ = d.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if !d.IsModelSuggestionsActive() {
+		t.Fatal("enter on model input should activate model suggestions")
+	}
+
+	d, _ = d.Update(tea.KeyMsg{Type: tea.KeyShiftTab})
+	if d.IsModelSuggestionsActive() {
+		t.Fatal("shift+tab should close the model dropdown")
+	}
+	if d.currentTarget() != focusCommand {
+		t.Fatalf("currentTarget after shift+tab from model dropdown = %v, want focusCommand", d.currentTarget())
+	}
+
+	for d.currentTarget() != focusName {
+		d, _ = d.Update(tea.KeyMsg{Type: tea.KeyShiftTab})
+	}
+	if d.currentTarget() != focusName {
+		t.Fatalf("currentTarget = %v, want focusName", d.currentTarget())
+	}
+
+	d.focusIndex = d.indexOf(focusModel)
+	d.updateFocus()
+	d, _ = d.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	d, _ = d.Update(tea.KeyMsg{Type: tea.KeyTab})
+	if d.IsModelSuggestionsActive() {
+		t.Fatal("tab should close the model dropdown")
+	}
+	if d.currentTarget() != focusWorktree {
+		t.Fatalf("currentTarget after tab from model dropdown = %v, want focusWorktree", d.currentTarget())
+	}
+}
+
+func TestNewDialog_TabFromLastFieldCyclesToTop(t *testing.T) {
+	d := NewNewDialog()
+	d.SetDefaultTool("codex")
+	d.SetSize(100, 50)
+	d.Show()
+	d.focusIndex = d.indexOf(focusOptions)
+	if d.focusIndex < 0 {
+		t.Fatal("focusOptions should be present for codex")
+	}
+	d.updateFocus()
+
+	d, _ = d.Update(tea.KeyMsg{Type: tea.KeyTab})
+	if d.currentTarget() != focusName {
+		t.Fatalf("currentTarget after tab from last field = %v, want focusName", d.currentTarget())
+	}
+}
+
+func TestNewDialog_ModelInputHiddenForShell(t *testing.T) {
+	d := NewNewDialog()
+	d.SetDefaultTool("")
+	d.SetSize(100, 50)
+	d.Show()
+	d.modelInput.SetValue("gpt-5.5")
+
+	if got := d.GetLaunchModelID(); got != "" {
+		t.Fatalf("GetLaunchModelID() for shell = %q, want empty", got)
+	}
+	if strings.Contains(d.View(), "Model ID") {
+		t.Fatal("shell new-session dialog should not render a model input")
+	}
+}
+
+func TestRenderLaunchModelInfoLines_ShowsModelAndVersion(t *testing.T) {
+	inst := &session.Instance{Tool: "codex"}
+	if err := inst.ApplyLaunchModel("gpt-5.5"); err != nil {
+		t.Fatalf("ApplyLaunchModel: %v", err)
+	}
+
+	var b strings.Builder
+	renderLaunchModelInfoLines(&b, inst)
+	out := b.String()
+
+	for _, want := range []string{"Model:", "GPT", "Version:", "5.5", "Model ID:", "gpt-5.5"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("model status output missing %q: %q", want, out)
+		}
+	}
+}
+
+func TestDisplayCommandPreset(t *testing.T) {
+	if got := displayCommandPreset("cursor"); got != "cursor agent" {
+		t.Errorf("cursor → %q, want cursor agent", got)
+	}
+	if got := displayCommandPreset("claude"); got != "claude" {
+		t.Errorf("claude passthrough: got %q", got)
+	}
+	if got := displayCommandPreset(""); got != "" {
+		t.Errorf("empty passthrough: got %q", got)
+	}
+}
+
 func TestDialogPresetCommands(t *testing.T) {
 	d := NewNewDialog()
 
-	// Should have shell (empty), claude, gemini, opencode, codex, pi
-	expectedCommands := []string{"", "claude", "gemini", "opencode", "codex", "pi"}
+	// Should have shell (empty), claude, gemini, opencode, codex, pi, copilot, crush, cursor, hermes
+	expectedCommands := []string{"", "claude", "gemini", "opencode", "codex", "pi", "copilot", "crush", "cursor", "hermes"}
 
 	if len(d.presetCommands) != len(expectedCommands) {
 		t.Errorf("Expected %d preset commands, got %d", len(expectedCommands), len(d.presetCommands))
@@ -251,10 +464,14 @@ func TestNewDialog_TabDoesNotOverwriteCustomPath(t *testing.T) {
 	d.focusIndex = 2
 	d.updateFocus()
 
-	// User types a completely NEW path that doesn't match any suggestion
-	customPath := "/Users/test/brand-new-project"
+	// User types a completely NEW path that doesn't match any suggestion.
+	// Use a real existing directory so the issue #896 "stay on invalid path"
+	// guard doesn't kick in — this test is specifically about #22 (suggestion
+	// overwrite), not #896 (focus advancement on invalid paths).
+	customPath := t.TempDir()
 	d.pathInput.SetValue(customPath)
 
+	startIdx := d.focusIndex
 	// User presses Tab to move to command selection
 	d, _ = d.Update(tea.KeyMsg{Type: tea.KeyTab})
 
@@ -265,9 +482,9 @@ func TestNewDialog_TabDoesNotOverwriteCustomPath(t *testing.T) {
 		t.Errorf("Tab overwrote custom path!\nGot: %q\nWant: %q\nThis is the bug from Issue #22", path, customPath)
 	}
 
-	// Focus should have moved to command field
-	if d.focusIndex != 3 {
-		t.Errorf("focusIndex = %d, want 3 (command field)", d.focusIndex)
+	// Focus should have advanced (path is valid).
+	if d.focusIndex == startIdx {
+		t.Errorf("Tab on valid custom path did not advance focus from %d", startIdx)
 	}
 }
 
@@ -287,16 +504,19 @@ func TestNewDialog_TabAppliesSuggestionWhenNavigated(t *testing.T) {
 	d.focusIndex = 2
 	d.updateFocus()
 
-	// User types something, then navigates to suggestion with Ctrl+N
+	// User types something, then navigates to suggestion with Ctrl+N.
+	// Cursor convention: 0 = "Type custom path…" (synthetic), 1 = first
+	// real suggestion, 2 = second. Two presses lands on the second.
 	d.pathInput.SetValue("/some/partial")
 	d, _ = d.Update(tea.KeyMsg{Type: tea.KeyCtrlN})
+	d, _ = d.Update(tea.KeyMsg{Type: tea.KeyCtrlN})
 
-	// Now Tab should apply the suggestion
+	// Now Tab should apply the selected suggestion
 	d, _ = d.Update(tea.KeyMsg{Type: tea.KeyTab})
 
 	_, path, _ := d.GetValues()
 
-	// Should be the second suggestion (Ctrl+N moved from 0 to 1)
+	// Should be the second suggestion (cursor 0 → 1 → 2 = suggestions[1])
 	if path != "/Users/test/project-2" {
 		t.Errorf(
 			"Tab should apply suggestion after Ctrl+N navigation\nGot: %q\nWant: %q",
@@ -1269,8 +1489,9 @@ func TestNewDialog_SoftSelect_ReactivatesOnRefocus(t *testing.T) {
 		t.Fatal("should not be soft-selected after typing")
 	}
 
-	// Set a value back and Tab away
-	d.pathInput.SetValue("/some/path")
+	// Set a real value back and Tab away (real dir so the issue #896 invalid-path
+	// guard doesn't keep focus on the field).
+	d.pathInput.SetValue(t.TempDir())
 	d, _ = d.Update(tea.KeyMsg{Type: tea.KeyTab}) // move to command
 
 	// Shift+Tab back to path
@@ -1571,5 +1792,334 @@ func TestNewDialog_GetClaudeStartQuery_ReturnsInputValue(t *testing.T) {
 			"GetClaudeStartQuery() = %q, want %q (exact string, no space-split)",
 			got, "explain the codebase",
 		)
+	}
+}
+
+func TestNewDialog_ShowInGroup_LoadsConfiguredClaudeExtraArgs(t *testing.T) {
+	origHome := os.Getenv("HOME")
+	tmpHome := t.TempDir()
+	os.Setenv("HOME", tmpHome)
+	session.ClearUserConfigCache()
+	defer func() {
+		os.Setenv("HOME", origHome)
+		session.ClearUserConfigCache()
+	}()
+
+	if err := session.SaveUserConfig(&session.UserConfig{
+		Claude: session.ClaudeSettings{
+			ExtraArgs:       []string{"--agent", "reviewer", "--model", "opus"},
+			UseChrome:       true,
+			UseTeammateMode: true,
+		},
+	}); err != nil {
+		t.Fatalf("SaveUserConfig: %v", err)
+	}
+
+	dialog := NewNewDialog()
+	dialog.SetDefaultTool("claude")
+	dialog.ShowInGroup("default", "default", "", nil, "")
+
+	got := dialog.GetClaudeExtraArgs()
+	want := []string{"--agent", "reviewer", "--model", "opus"}
+	if len(got) != len(want) {
+		t.Fatalf("GetClaudeExtraArgs() = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("GetClaudeExtraArgs()[%d] = %q, want %q", i, got[i], want[i])
+		}
+	}
+	opts := dialog.GetClaudeOptions()
+	if opts == nil {
+		t.Fatal("GetClaudeOptions() = nil")
+	}
+	if !opts.UseChrome {
+		t.Fatal("GetClaudeOptions().UseChrome = false, want true")
+	}
+	if !opts.UseTeammateMode {
+		t.Fatal("GetClaudeOptions().UseTeammateMode = false, want true")
+	}
+}
+
+// TestNewDialog_StartQuery_ClearsBetweenOpenings is the RED regression for
+// #741 (@Clindbergh). Filed against v1.7.67 after #725 shipped the dedicated
+// "Start query" field: opening the new-session dialog a second time showed
+// the previous invocation's query instead of an empty field. The backend is
+// correct (Instance.StartupQuery is `json:"-"` so SQLite doesn't persist it);
+// the leak is purely at the TUI layer — ShowInGroup clears nameInput,
+// pathInput, branchInput, etc. but never resets claudeOptions.startQueryInput.
+// This test opens the dialog, sets a query, closes, re-opens, and asserts
+// the field is empty.
+func TestNewDialog_CtrlN_CtrlP_FieldNavigation(t *testing.T) {
+	// ctrl+n / ctrl+p must move between form fields when not on a path field
+	// with active suggestions — same semantics as down / shift+tab+up.
+	dialog := NewNewDialog()
+	dialog.Show()
+	dialog.worktreeEnabled = false
+	dialog.sandboxEnabled = false
+	dialog.inheritedSettings = nil
+	dialog.rebuildFocusTargets()
+
+	if dialog.focusIndex != 0 {
+		t.Fatalf("precondition: focusIndex = %d, want 0", dialog.focusIndex)
+	}
+
+	dialog, _ = dialog.Update(tea.KeyMsg{Type: tea.KeyCtrlN})
+	if dialog.focusIndex != 1 {
+		t.Fatalf("ctrl+n: focusIndex = %d, want 1", dialog.focusIndex)
+	}
+
+	dialog, _ = dialog.Update(tea.KeyMsg{Type: tea.KeyCtrlN})
+	if dialog.focusIndex != 2 {
+		t.Fatalf("ctrl+n x2: focusIndex = %d, want 2", dialog.focusIndex)
+	}
+
+	dialog, _ = dialog.Update(tea.KeyMsg{Type: tea.KeyCtrlP})
+	if dialog.focusIndex != 1 {
+		t.Fatalf("ctrl+p: focusIndex = %d, want 1", dialog.focusIndex)
+	}
+
+	dialog, _ = dialog.Update(tea.KeyMsg{Type: tea.KeyCtrlP})
+	if dialog.focusIndex != 0 {
+		t.Fatalf("ctrl+p x2: focusIndex = %d, want 0", dialog.focusIndex)
+	}
+}
+
+func TestNewDialog_CtrlP_WrapsToLastField(t *testing.T) {
+	dialog := NewNewDialog()
+	dialog.Show()
+	dialog.worktreeEnabled = false
+	dialog.sandboxEnabled = false
+	dialog.inheritedSettings = nil
+	dialog.rebuildFocusTargets()
+	maxIdx := len(dialog.focusTargets) - 1
+
+	// ctrl+p from first field should wrap to last.
+	dialog, _ = dialog.Update(tea.KeyMsg{Type: tea.KeyCtrlP})
+	if dialog.focusIndex != maxIdx {
+		t.Fatalf("ctrl+p at top: focusIndex = %d, want %d (last)", dialog.focusIndex, maxIdx)
+	}
+}
+
+func TestNewDialog_SuggestionsDropdown_CtrlN_CtrlP(t *testing.T) {
+	// ctrl+n / ctrl+p must navigate the path-suggestions dropdown when it is
+	// active, consistent with j / k.
+	dialog := NewNewDialog()
+	dialog.Show()
+	dialog.SetPathSuggestions([]string{"/a", "/b", "/c"})
+
+	// Force path field focus and open the dropdown.
+	dialog.focusIndex = dialog.indexOf(focusPath)
+	dialog.updateFocus()
+	dialog.suggestionsActive = true
+	dialog.pathSuggestionCursor = 0
+
+	dialog, _ = dialog.Update(tea.KeyMsg{Type: tea.KeyCtrlN})
+	if dialog.pathSuggestionCursor != 1 {
+		t.Fatalf("ctrl+n: pathSuggestionCursor = %d, want 1", dialog.pathSuggestionCursor)
+	}
+
+	dialog, _ = dialog.Update(tea.KeyMsg{Type: tea.KeyCtrlN})
+	if dialog.pathSuggestionCursor != 2 {
+		t.Fatalf("ctrl+n x2: pathSuggestionCursor = %d, want 2", dialog.pathSuggestionCursor)
+	}
+
+	dialog, _ = dialog.Update(tea.KeyMsg{Type: tea.KeyCtrlP})
+	if dialog.pathSuggestionCursor != 1 {
+		t.Fatalf("ctrl+p: pathSuggestionCursor = %d, want 1", dialog.pathSuggestionCursor)
+	}
+
+	// Dropdown must remain open during navigation.
+	if !dialog.suggestionsActive {
+		t.Fatal("suggestionsActive should remain true during ctrl+n/ctrl+p navigation")
+	}
+}
+
+func TestNewDialog_RecentPicker_JK(t *testing.T) {
+	// j / k must navigate the recent-sessions picker, consistent with
+	// ctrl+n / ctrl+p and down / up.
+	dialog := NewNewDialog()
+	dialog.Show()
+	dialog.recentSessions = []*statedb.RecentSessionRow{
+		{Title: "alpha", ProjectPath: "/a", Tool: "claude"},
+		{Title: "beta", ProjectPath: "/b", Tool: "claude"},
+		{Title: "gamma", ProjectPath: "/c", Tool: "claude"},
+	}
+	dialog.showRecentPicker = true
+	dialog.recentSessionCursor = 0
+
+	dialog, _ = dialog.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("j")})
+	if dialog.recentSessionCursor != 1 {
+		t.Fatalf("j: recentSessionCursor = %d, want 1", dialog.recentSessionCursor)
+	}
+
+	dialog, _ = dialog.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("j")})
+	if dialog.recentSessionCursor != 2 {
+		t.Fatalf("j x2: recentSessionCursor = %d, want 2", dialog.recentSessionCursor)
+	}
+
+	// Wrap around.
+	dialog, _ = dialog.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("j")})
+	if dialog.recentSessionCursor != 0 {
+		t.Fatalf("j wrap: recentSessionCursor = %d, want 0", dialog.recentSessionCursor)
+	}
+
+	dialog, _ = dialog.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("k")})
+	if dialog.recentSessionCursor != 2 {
+		t.Fatalf("k from 0: recentSessionCursor = %d, want 2 (wrap)", dialog.recentSessionCursor)
+	}
+
+	dialog, _ = dialog.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("k")})
+	if dialog.recentSessionCursor != 1 {
+		t.Fatalf("k: recentSessionCursor = %d, want 1", dialog.recentSessionCursor)
+	}
+}
+
+func TestNewDialog_StartQuery_ClearsBetweenOpenings(t *testing.T) {
+	dialog := NewNewDialog()
+	dialog.Show()
+	dialog.commandCursor = 1 // claude
+	dialog.updateToolOptions()
+
+	dialog.claudeOptions.SetStartQuery("explain this repo")
+	if got := dialog.GetClaudeStartQuery(); got != "explain this repo" {
+		t.Fatalf("precondition: GetClaudeStartQuery() = %q, want %q", got, "explain this repo")
+	}
+
+	dialog.Hide()
+	dialog.Show()
+	dialog.commandCursor = 1
+	dialog.updateToolOptions()
+
+	if got := dialog.GetClaudeStartQuery(); got != "" {
+		t.Errorf(
+			"Start query must be empty on re-open; got %q. Per-session "+
+				"startup queries are ephemeral (Instance.StartupQuery is "+
+				"json:\"-\") and must not leak between dialog invocations.",
+			got,
+		)
+	}
+}
+
+// TestNewDialog_Tab_StaysOnInvalidPath verifies that Tab does not advance
+// focus away from the path field when the typed path is non-empty but does
+// not resolve to an existing directory. Issue #896 (problem 1): silently
+// jumping to the agent selector leaves the typed path dangling.
+func TestNewDialog_Tab_StaysOnInvalidPath(t *testing.T) {
+	d := NewNewDialog()
+	d.Show()
+
+	for d.currentTarget() != focusPath {
+		d.focusIndex++
+		if d.focusIndex >= len(d.focusTargets) {
+			t.Fatal("focusPath not reachable")
+		}
+	}
+	d.updateFocus()
+
+	d.pathSoftSelected = false
+	d.pathInput.Focus()
+	// Path that is statistically guaranteed not to exist.
+	d.pathInput.SetValue("/this-path-should-not-exist-zzz-issue-896")
+	d.pathInput.SetCursor(len(d.pathInput.Value()))
+
+	startIdx := d.focusIndex
+	d, _ = d.Update(tea.KeyMsg{Type: tea.KeyTab})
+
+	if d.focusIndex != startIdx {
+		t.Errorf(
+			"Tab on non-existing path advanced focus from %d to %d; expected to stay on path field",
+			startIdx, d.focusIndex,
+		)
+	}
+	if d.currentTarget() != focusPath {
+		t.Errorf("currentTarget = %v, want focusPath", d.currentTarget())
+	}
+}
+
+// TestNewDialog_Tab_AdvancesOnValidPath ensures the invalid-path guard from
+// issue #896 (problem 1) does not regress the happy path: when the user has
+// typed a real directory, Tab still moves to the next field.
+func TestNewDialog_Tab_AdvancesOnValidPath(t *testing.T) {
+	d := NewNewDialog()
+	d.Show()
+
+	for d.currentTarget() != focusPath {
+		d.focusIndex++
+		if d.focusIndex >= len(d.focusTargets) {
+			t.Fatal("focusPath not reachable")
+		}
+	}
+	d.updateFocus()
+
+	tmp := t.TempDir()
+	d.pathSoftSelected = false
+	d.pathInput.Focus()
+	d.pathInput.SetValue(tmp)
+	d.pathInput.SetCursor(len(tmp))
+
+	startIdx := d.focusIndex
+	d, _ = d.Update(tea.KeyMsg{Type: tea.KeyTab})
+
+	if d.focusIndex == startIdx {
+		t.Errorf("Tab on valid path %q did not advance focus (still %d)", tmp, startIdx)
+	}
+}
+
+// TestNewDialog_CtrlW_DeletesPathSegment verifies that ctrl+w on the path
+// input deletes the trailing path segment instead of the whole field. Issue
+// #896 (problem 4): default bubbles textinput treats ctrl+w as delete-word
+// with whitespace boundaries, which wipes spaceless paths like
+// "/Users/dmitry/code/foo".
+func TestNewDialog_CtrlW_DeletesPathSegment(t *testing.T) {
+	d := NewNewDialog()
+	d.Show()
+
+	// Move focus to the path field.
+	for d.currentTarget() != focusPath {
+		d.focusIndex++
+		if d.focusIndex >= len(d.focusTargets) {
+			t.Fatal("focusPath not reachable from default focus targets")
+		}
+	}
+	d.updateFocus()
+
+	d.pathSoftSelected = false
+	d.pathInput.Focus()
+	d.pathInput.SetValue("/Users/dmitry/code/foo")
+	d.pathInput.SetCursor(len("/Users/dmitry/code/foo"))
+
+	d, _ = d.Update(tea.KeyMsg{Type: tea.KeyCtrlW})
+
+	if got, want := d.pathInput.Value(), "/Users/dmitry/code/"; got != want {
+		t.Errorf("pathInput after ctrl+w = %q, want %q", got, want)
+	}
+}
+
+// TestNewDialog_CtrlW_BranchField verifies the same path-aware ctrl+w
+// behaviour applies to the worktree branch input, where slashes are
+// common (e.g. "feature/issue-896").
+func TestNewDialog_CtrlW_BranchField(t *testing.T) {
+	d := NewNewDialog()
+	d.Show()
+	d.worktreeEnabled = true
+	d.rebuildFocusTargets()
+
+	for d.currentTarget() != focusBranch {
+		d.focusIndex++
+		if d.focusIndex >= len(d.focusTargets) {
+			t.Fatal("focusBranch not reachable")
+		}
+	}
+	d.updateFocus()
+
+	d.branchInput.Focus()
+	d.branchInput.SetValue("feature/issue-896")
+	d.branchInput.SetCursor(len("feature/issue-896"))
+
+	d, _ = d.Update(tea.KeyMsg{Type: tea.KeyCtrlW})
+
+	if got, want := d.branchInput.Value(), "feature/"; got != want {
+		t.Errorf("branchInput after ctrl+w = %q, want %q", got, want)
 	}
 }

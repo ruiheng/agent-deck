@@ -10,6 +10,29 @@ import (
 	"github.com/BurntSushi/toml"
 )
 
+func TestGetCodexCommand_DefaultAndConfig(t *testing.T) {
+	tempDir := t.TempDir()
+	originalHome := os.Getenv("HOME")
+	os.Setenv("HOME", tempDir)
+	defer os.Setenv("HOME", originalHome)
+	ClearUserConfigCache()
+	defer ClearUserConfigCache()
+
+	if got := GetCodexCommand(); got != "codex" {
+		t.Fatalf("GetCodexCommand() without config = %q, want codex", got)
+	}
+
+	cfg := &UserConfig{Codex: CodexSettings{Command: "codex-v2"}}
+	if err := SaveUserConfig(cfg); err != nil {
+		t.Fatalf("SaveUserConfig: %v", err)
+	}
+	ClearUserConfigCache()
+
+	if got := GetCodexCommand(); got != "codex-v2" {
+		t.Fatalf("GetCodexCommand() with config = %q, want codex-v2", got)
+	}
+}
+
 // TestLoadUserConfig_PicksUpExternalEdits is a regression test for the
 // stale-cache bug that caused the innotrade conductor to ignore
 // [conductors.<name>.claude].config_dir added to config.toml after the TUI
@@ -140,6 +163,43 @@ config_dir = "~/.claude-personal"
 	}
 	if got, want := config.Claude.ConfigDir, "~/.claude-global"; got != want {
 		t.Errorf("Claude.ConfigDir = %q, want %q", got, want)
+	}
+}
+
+func TestUserConfig_ProfileCodexConfigDir(t *testing.T) {
+	tmpDir := t.TempDir()
+	configContent := `
+[codex]
+config_dir = "~/.codex-global"
+
+[profiles.work.codex]
+config_dir = "~/.codex-work"
+
+[profiles.personal.codex]
+config_dir = "~/.codex-personal"
+`
+	configPath := filepath.Join(tmpDir, "config.toml")
+	if err := os.WriteFile(configPath, []byte(configContent), 0600); err != nil {
+		t.Fatalf("Failed to write config file: %v", err)
+	}
+
+	var config UserConfig
+	if _, err := toml.DecodeFile(configPath, &config); err != nil {
+		t.Fatalf("Failed to decode: %v", err)
+	}
+
+	if got := config.GetProfileCodexConfigDir("work"); got == "" {
+		t.Fatal("GetProfileCodexConfigDir(work) returned empty string")
+	}
+
+	if got, want := config.Profiles["work"].Codex.ConfigDir, "~/.codex-work"; got != want {
+		t.Errorf("Profiles[work].Codex.ConfigDir = %q, want %q", got, want)
+	}
+	if got, want := config.Profiles["personal"].Codex.ConfigDir, "~/.codex-personal"; got != want {
+		t.Errorf("Profiles[personal].Codex.ConfigDir = %q, want %q", got, want)
+	}
+	if got, want := config.Codex.ConfigDir, "~/.codex-global"; got != want {
+		t.Errorf("Codex.ConfigDir = %q, want %q", got, want)
 	}
 }
 
@@ -463,6 +523,46 @@ func TestSaveUserConfig(t *testing.T) {
 	}
 	if loaded.Logs.MaxSizeMB != 20 {
 		t.Errorf("MaxSizeMB: got %d, want %d", loaded.Logs.MaxSizeMB, 20)
+	}
+}
+
+func TestClaudeExtraArgsConfigRoundTrip(t *testing.T) {
+	tempDir := t.TempDir()
+	originalHome := os.Getenv("HOME")
+	os.Setenv("HOME", tempDir)
+	defer os.Setenv("HOME", originalHome)
+	ClearUserConfigCache()
+	defer ClearUserConfigCache()
+
+	config := &UserConfig{
+		Claude: ClaudeSettings{
+			ExtraArgs:       []string{"--agent", "reviewer", "--model", "opus"},
+			UseChrome:       true,
+			UseTeammateMode: true,
+		},
+	}
+	if err := SaveUserConfig(config); err != nil {
+		t.Fatalf("SaveUserConfig failed: %v", err)
+	}
+
+	loaded, err := LoadUserConfig()
+	if err != nil {
+		t.Fatalf("LoadUserConfig failed: %v", err)
+	}
+	want := []string{"--agent", "reviewer", "--model", "opus"}
+	if len(loaded.Claude.ExtraArgs) != len(want) {
+		t.Fatalf("Claude.ExtraArgs = %v, want %v", loaded.Claude.ExtraArgs, want)
+	}
+	for i := range want {
+		if loaded.Claude.ExtraArgs[i] != want[i] {
+			t.Fatalf("Claude.ExtraArgs[%d] = %q, want %q", i, loaded.Claude.ExtraArgs[i], want[i])
+		}
+	}
+	if !loaded.Claude.UseChrome {
+		t.Fatal("Claude.UseChrome = false, want true")
+	}
+	if !loaded.Claude.UseTeammateMode {
+		t.Fatal("Claude.UseTeammateMode = false, want true")
 	}
 }
 
@@ -1309,6 +1409,83 @@ inject_status_line = true
 	}
 }
 
+func TestGetTerminalSettings_ITermBadge_Default(t *testing.T) {
+	// Default (no config) should return false — opt-in. Most users drive
+	// the iTerm2 badge from their shell prompt, so silently overwriting it
+	// every attach is too presumptuous a default.
+	tempDir := t.TempDir()
+	originalHome := os.Getenv("HOME")
+	os.Setenv("HOME", tempDir)
+	defer os.Setenv("HOME", originalHome)
+	ClearUserConfigCache()
+
+	agentDeckDir := filepath.Join(tempDir, ".agent-deck")
+	_ = os.MkdirAll(agentDeckDir, 0700)
+
+	configPath := filepath.Join(agentDeckDir, "config.toml")
+	if err := os.WriteFile(configPath, []byte(""), 0644); err != nil {
+		t.Fatalf("Failed to write config: %v", err)
+	}
+	ClearUserConfigCache()
+
+	settings := GetTerminalSettings()
+	if settings.GetITermBadge() {
+		t.Error("GetITermBadge should default to false (opt-in) when not set")
+	}
+}
+
+func TestGetTerminalSettings_ITermBadge_False(t *testing.T) {
+	tempDir := t.TempDir()
+	originalHome := os.Getenv("HOME")
+	os.Setenv("HOME", tempDir)
+	defer os.Setenv("HOME", originalHome)
+	ClearUserConfigCache()
+
+	agentDeckDir := filepath.Join(tempDir, ".agent-deck")
+	_ = os.MkdirAll(agentDeckDir, 0700)
+
+	configPath := filepath.Join(agentDeckDir, "config.toml")
+	configContent := `
+[terminal]
+iterm_badge = false
+`
+	if err := os.WriteFile(configPath, []byte(configContent), 0644); err != nil {
+		t.Fatalf("Failed to write config: %v", err)
+	}
+	ClearUserConfigCache()
+
+	settings := GetTerminalSettings()
+	if settings.GetITermBadge() {
+		t.Error("GetITermBadge should be false when set to false")
+	}
+}
+
+func TestGetTerminalSettings_ITermBadge_True(t *testing.T) {
+	tempDir := t.TempDir()
+	originalHome := os.Getenv("HOME")
+	os.Setenv("HOME", tempDir)
+	defer os.Setenv("HOME", originalHome)
+	ClearUserConfigCache()
+
+	agentDeckDir := filepath.Join(tempDir, ".agent-deck")
+	_ = os.MkdirAll(agentDeckDir, 0700)
+
+	configPath := filepath.Join(agentDeckDir, "config.toml")
+	configContent := `
+[terminal]
+iterm_badge = true
+`
+	if err := os.WriteFile(configPath, []byte(configContent), 0644); err != nil {
+		t.Fatalf("Failed to write config: %v", err)
+	}
+	ClearUserConfigCache()
+
+	settings := GetTerminalSettings()
+	if !settings.GetITermBadge() {
+		t.Error("GetITermBadge should be true when set to true")
+	}
+}
+
 func TestGetTmuxSettings_Mouse_Default(t *testing.T) {
 	// Default (no config) should return true — preserves pre-#730 behavior
 	tempDir := t.TempDir()
@@ -1781,5 +1958,79 @@ transition_events = false
 	}
 	if config.Notifications.GetTransitionEventsEnabled() {
 		t.Error("GetTransitionEventsEnabled() should return false when explicitly false")
+	}
+}
+
+// TestGetActiveFilterExcludes verifies the % filter's exclude-set resolution:
+// the default ({error, stopped}) matches the original upstream hardcoded
+// behavior so existing users see no behavior change unless they opt in.
+// Setting active_filter_excludes = ["error"] is the documented way to keep
+// stopped/closed sessions visible — the regression fix for users who found
+// the upstream default too aggressive.
+func TestGetActiveFilterExcludes(t *testing.T) {
+	defaultSet := map[Status]bool{StatusError: true, StatusStopped: true}
+
+	tests := []struct {
+		name string
+		in   []string
+		want map[Status]bool
+	}{
+		{"nil falls back to default (error + stopped)", nil, defaultSet},
+		{"empty list falls back to default", []string{}, defaultSet},
+		{"opt-in: error only (keeps stopped visible)",
+			[]string{"error"},
+			map[Status]bool{StatusError: true}},
+		{"all valid: error + stopped (matches default explicitly)",
+			[]string{"error", "stopped"},
+			map[Status]bool{StatusError: true, StatusStopped: true}},
+		{"all valid: aggressive exclude includes idle",
+			[]string{"error", "stopped", "idle"},
+			map[Status]bool{StatusError: true, StatusStopped: true, StatusIdle: true}},
+		{"unknown values dropped silently, valid kept",
+			[]string{"error", "bogus"},
+			map[Status]bool{StatusError: true}},
+		{"all unknown falls back to default",
+			[]string{"bogus", "garbage"},
+			defaultSet},
+		{"duplicates collapse",
+			[]string{"error", "error", "stopped"},
+			map[Status]bool{StatusError: true, StatusStopped: true}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			d := DisplaySettings{ActiveFilterExcludes: tt.in}
+			got := d.GetActiveFilterExcludes()
+			if len(got) != len(tt.want) {
+				t.Fatalf("GetActiveFilterExcludes(%v) size = %d, want %d (got=%v)",
+					tt.in, len(got), len(tt.want), got)
+			}
+			for k, v := range tt.want {
+				if got[k] != v {
+					t.Errorf("GetActiveFilterExcludes(%v)[%q] = %v, want %v",
+						tt.in, k, got[k], v)
+				}
+			}
+		})
+	}
+}
+
+// TestGetActiveFilterExcludes_TomlRoundtrip verifies the TOML tag wires up
+// correctly and survives marshal/unmarshal.
+func TestGetActiveFilterExcludes_TomlRoundtrip(t *testing.T) {
+	const cfg = `
+[display]
+active_filter_excludes = ["error", "stopped"]
+`
+	var c UserConfig
+	if _, err := toml.Decode(cfg, &c); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	got := c.Display.GetActiveFilterExcludes()
+	if !got[StatusError] || !got[StatusStopped] {
+		t.Errorf("expected {error,stopped} excluded, got %v", got)
+	}
+	if got[StatusRunning] {
+		t.Errorf("running should not be excluded, got %v", got)
 	}
 }

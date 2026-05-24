@@ -7,8 +7,13 @@ All options for `~/.agent-deck/config.toml`.
 - [Top-Level](#top-level)
 - [[shell] Section](#shell-section)
 - [[claude] Section](#claude-section)
+- [[gemini] Section](#gemini-section)
+- [[opencode] Section](#opencode-section)
 - [[codex] Section](#codex-section)
+- [[copilot] Section](#copilot-section)
+- [[hermes] Section](#hermes-section)
 - [[docker] Section](#docker-section)
+- [[worktree] Section](#worktree-section)
 - [[logs] Section](#logs-section)
 - [[updates] Section](#updates-section)
 - [[display] Section](#display-section)
@@ -61,6 +66,9 @@ config_dir = "~/.claude"           # Path to Claude config directory
 dangerous_mode = true              # Enable --dangerously-skip-permissions
 auto_mode = false                  # Enable --permission-mode auto (classifier-based)
 allow_dangerous_mode = false       # Enable --allow-dangerously-skip-permissions
+use_chrome = false                 # Enable --chrome
+use_teammate_mode = false          # Enable --teammate-mode tmux
+extra_args = ["--agent", "reviewer"] # Extra Claude CLI flags
 env_file = "~/.claude.env"         # .env file specific to Claude sessions
 
 [profiles.work.claude]
@@ -74,7 +82,11 @@ config_dir = "~/.claude-work"      # Optional override for profile "work"
 | `dangerous_mode` | bool | `false` | Adds `--dangerously-skip-permissions`. Forces bypass on. Takes precedence over `auto_mode` and `allow_dangerous_mode`. |
 | `auto_mode` | bool | `false` | Adds `--permission-mode auto`. A classifier model auto-approves safe operations while blocking risky ones. Ignored when `dangerous_mode` is true. |
 | `allow_dangerous_mode` | bool | `false` | Adds `--allow-dangerously-skip-permissions`. Unlocks bypass as an option without activating it. Ignored when `dangerous_mode` or `auto_mode` is true. |
+| `use_chrome` | bool | `false` | Adds `--chrome` to Claude sessions and is remembered from the New Session dialog. |
+| `use_teammate_mode` | bool | `false` | Adds `--teammate-mode tmux` to Claude sessions and is remembered from the New Session dialog. |
+| `extra_args` | array of strings | `[]` | Extra Claude CLI flags remembered from the New Session dialog and appended to new/restarted Claude sessions. Do not store secrets here. |
 | `env_file` | string | `""` | A .env file sourced for Claude sessions only. Sourced after global `[shell].env_files`. See [Path Resolution](#path-resolution). |
+| `command` | string | `"claude"` | Override the binary/invocation (e.g., `"cdw"` for a wrapper that sets `CLAUDE_CONFIG_DIR`). |
 
 Config resolution order for Claude config dir:
 1. `CLAUDE_CONFIG_DIR` env var
@@ -113,18 +125,98 @@ agent-deck hooks status -p work
 agent-deck hooks status -p clientx
 ```
 
+## [gemini] Section
+
+Gemini CLI integration settings.
+
+```toml
+[gemini]
+yolo_mode = true                    # Enable --yolo (auto-approve all actions)
+default_model = "gemini-2.5-flash"  # Model override
+env_file = "~/.gemini.env"          # .env file for Gemini sessions
+command = "gemini"                   # Binary/invocation override
+```
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `yolo_mode` | bool | `false` | Maps to Gemini `--yolo`. |
+| `default_model` | string | `""` | Model to use (e.g., `"gemini-2.5-flash"`). Empty uses Gemini's default. |
+| `env_file` | string | `""` | A .env file sourced for Gemini sessions only. See [Path Resolution](#path-resolution). |
+| `command` | string | `"gemini"` | Override the binary/invocation. Supports flags. |
+
+## [opencode] Section
+
+OpenCode CLI integration settings.
+
+```toml
+[opencode]
+default_model = "anthropic/claude-sonnet-4-5-20250929"
+default_agent = ""
+env_file = "~/.opencode.env"
+command = "opencode"
+```
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `default_model` | string | `""` | Model in `provider/model` format. |
+| `default_agent` | string | `""` | Agent to use. Empty uses OpenCode's default. |
+| `env_file` | string | `""` | A .env file sourced for OpenCode sessions only. See [Path Resolution](#path-resolution). |
+| `command` | string | `"opencode"` | Override the binary/invocation. |
+
 ## [codex] Section
 
 Codex CLI integration settings.
 
 ```toml
 [codex]
+command = "codex"  # Codex CLI command or alias
 yolo_mode = true   # Enable --yolo (bypass approvals and sandbox)
+env_file = "~/.codex.env"
+command = "codex"
 ```
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
+| `command` | string | `codex` | Codex CLI command or alias to launch built-in Codex sessions. Examples: `codex-v2`, `CODEX_HOME=~/.codex-work codex`. |
 | `yolo_mode` | bool | `false` | Maps to `codex --yolo` (`--dangerously-bypass-approvals-and-sandbox`). Can be overridden per-session. |
+| `env_file` | string | `""` | A .env file sourced for Codex sessions only. See [Path Resolution](#path-resolution). |
+| `command` | string | `"codex"` | Override the binary/invocation. |
+
+## [copilot] Section
+
+GitHub Copilot CLI integration settings.
+
+```toml
+[copilot]
+env_file = "~/.copilot.env"
+command = "copilot"
+```
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `env_file` | string | `""` | A .env file sourced for Copilot sessions only. See [Path Resolution](#path-resolution). |
+| `command` | string | `"copilot"` | Override the binary/invocation. |
+
+## [hermes] Section
+
+Hermes Agent CLI integration settings ([NousResearch/hermes-agent](https://github.com/NousResearch/hermes-agent)).
+
+```toml
+[hermes]
+command = "hermes --model gpt-5.5-pro --provider openai"
+env_file = "~/.hermes.env"
+yolo_mode = false
+```
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `command` | string | `"hermes"` | Override the binary/invocation. Supports flags (e.g., model/provider). |
+| `env_file` | string | `""` | A .env file sourced for Hermes sessions only. See [Path Resolution](#path-resolution). |
+| `yolo_mode` | bool | `false` | Maps to `hermes --yolo` (auto-approve all tool calls). |
+
+Status detection: process-alive/dead only. Content-sniffing planned for future release.
+
+When using a different Codex home, prefer an inline command such as `CODEX_HOME=~/.codex-work codex` or export `CODEX_HOME` before starting agent-deck. Shell aliases are allowed, but agent-deck cannot infer `CODEX_HOME` hidden inside an alias for resume-file discovery.
 
 ## [docker] Section
 
@@ -152,6 +244,55 @@ volume_ignores = []            # Directories to exclude from project mount
 | `auto_cleanup` | bool | `true` | Remove sandbox containers when sessions are killed. |
 | `environment` | array | `[]` | Host environment variable names to forward into containers. |
 | `volume_ignores` | array | `[]` | Directories to exclude from the project bind mount (e.g. `["node_modules", ".git"]`). |
+
+## [worktree] Section
+
+Git worktree settings. Worktrees allow creating isolated working directories for branches, so each session gets its own checkout.
+
+```toml
+[worktree]
+default_enabled = false                              # Pre-check "Create in worktree" in dialogs
+default_location = "sibling"                         # "sibling", "subdirectory", or custom path
+path_template = "~/.agent-deck/worktrees/{repo-name}/{branch}"  # Custom path (overrides default_location)
+branch_prefix = "feature/"                           # Prefix for branch names ("" to disable)
+auto_cleanup = true                                  # Remove worktree when session is deleted
+setup_timeout_seconds = 60                           # Timeout for .agent-deck/worktree-setup.sh
+```
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `default_enabled` | bool | `false` | Pre-check "Create in worktree" in new-session and fork dialogs. |
+| `default_location` | string | `"sibling"` | Where to create worktrees: `"sibling"` (next to repo), `"subdirectory"` (inside `.worktrees/`), or a custom path (e.g., `"~/worktrees"`) creating `<path>/<repo_name>/<branch>`. Ignored when `path_template` is set. |
+| `path_template` | string | none | Custom path template. Overrides `default_location`. Variables: `{repo-name}`, `{repo-root}`, `{session-id}`, `{branch}` (sanitized, human-friendly), `{branch-escaped}` (URL-escaped, collision-resistant). |
+| `branch_prefix` | string | `"feature/"` | Prefix prepended to branch names. Supports environment variable expansion (e.g., `"$USER/"`). Set to `""` to disable. Won't double-prepend if the branch already starts with the prefix. |
+| `auto_cleanup` | bool | `false` | Remove worktree directory when the session is deleted. |
+| `setup_timeout_seconds` | int | `60` | Max seconds for `.agent-deck/worktree-setup.sh` to run. Set to `0` for unlimited. |
+
+### Path template examples
+
+```toml
+# Sibling directories (default behavior)
+path_template = "../worktrees/{repo-name}/{branch}"
+
+# Central location under home
+path_template = "~/.agent-deck/worktrees/{repo-name}/{branch}"
+
+# Collision-resistant (useful with many similar branch names)
+path_template = "~/.agent-deck/worktrees/{repo-name}/{branch-escaped}"
+```
+
+### Branch prefix examples
+
+```toml
+# Default: prefix with "feature/"
+branch_prefix = "feature/"        # "my-session" -> "feature/my-session"
+
+# Username prefix (env var expansion)
+branch_prefix = "$USER/"          # "my-session" -> "dani/my-session"
+
+# No prefix (just the session name)
+branch_prefix = ""                # "my-session" -> "my-session"
+```
 
 ## [logs] Section
 
@@ -197,16 +338,18 @@ Rendering and display settings.
 
 ```toml
 [display]
-full_repaint = false              # Force full screen clear every render (for terminals with grapheme issues)
-default_filter = "active"         # Initial status filter: "", "active", "running", "waiting", "idle", "error"
-active_filter_label = "Open"      # Label for the active filter pill (default: "Open")
+full_repaint = false                              # Force full screen clear every render (for terminals with grapheme issues)
+default_filter = "active"                         # Initial status filter: "", "active", "running", "waiting", "idle", "error"
+active_filter_label = "Open"                      # Label for the active filter pill (default: "Open")
+active_filter_excludes = ["error", "stopped"]     # Statuses the % "Open" filter hides (default: ["error", "stopped"])
 ```
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
 | `full_repaint` | bool | `false` | Force full redraws (fix for Ghostty 1.3+ drift). Also via `AGENTDECK_REPAINT=full`. |
-| `default_filter` | string | `""` | Status filter applied on TUI startup. `"active"` hides error/stopped sessions. Auto-clears if no sessions match. |
+| `default_filter` | string | `""` | Status filter applied on TUI startup. `"active"` engages the configurable Open filter. Auto-clears if no sessions match. |
 | `active_filter_label` | string | `"Open"` | Label shown on the filter pill when active filter is engaged (e.g., "Active", "Live", "Open"). |
+| `active_filter_excludes` | []string | `["error", "stopped"]` | Statuses hidden when the `%` "Open" filter is engaged. Default matches the original hardcoded behavior. Valid values: `running`, `waiting`, `idle`, `error`, `starting`, `stopped`. Unknown entries are dropped silently; if the resulting list is empty the default applies. **Set to `["error"]`** to keep stopped/closed sessions visible while still hiding errors — fixes the over-broad "Open" semantics where closed sessions disappeared from view. Extend with `idle` for an aggressive "show only running/waiting" definition of open. |
 
 ## [global_search] Section
 
@@ -405,7 +548,7 @@ env = { API_KEY = "token", BASE_URL = "https://api.example.com" }
 | `env_file` | string | No | A .env file sourced for this tool only. Sourced after global `[shell].env_files`. See [Path Resolution](#path-resolution). |
 | `env` | map | No | Inline environment variables exported for this tool. These take highest priority, overriding both `[shell].env_files` and `env_file`. Values are single-quoted to prevent shell expansion. |
 
-**Built-in icons:** claude=🤖, gemini=✨, opencode=🌐, codex=💻, cursor=📝, shell=🐚
+**Built-in icons:** claude=🤖, gemini=✨, opencode=🌐, codex=💻, copilot=🐙, hermes=☤, cursor=📝, shell=🐚
 
 ## Path Resolution
 
@@ -439,12 +582,34 @@ env_file = "~/.claude.env"
 [profiles.work.claude]
 config_dir = "~/.claude-work"
 
+[gemini]
+yolo_mode = true
+env_file = "~/.gemini.env"
+
+[opencode]
+env_file = "~/.opencode.env"
+
 [codex]
+command = "codex"
+yolo_mode = false
+env_file = "~/.codex.env"
+
+[copilot]
+env_file = "~/.copilot.env"
+
+[hermes]
+command = "hermes --model gpt-5.5-pro --provider openai"
+env_file = "~/.hermes.env"
 yolo_mode = false
 
 [docker]
 default_enabled = false
 mount_ssh = true
+
+[worktree]
+default_location = "sibling"
+auto_cleanup = true
+branch_prefix = "$USER/"
 
 [logs]
 max_size_mb = 10

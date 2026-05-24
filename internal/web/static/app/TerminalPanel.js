@@ -1,8 +1,9 @@
 // TerminalPanel.js -- Preact component wrapping xterm.js 6.0.0 terminal lifecycle
 // Ports createTerminalUI, connectWS, installTerminalTouchScroll from app.js
 import { html } from 'htm/preact'
-import { useEffect, useRef, useCallback } from 'preact/hooks'
+import { useEffect, useRef, useCallback, useState } from 'preact/hooks'
 import { selectedIdSignal, authTokenSignal, wsStateSignal, readOnlySignal } from './state.js'
+import { apiFetch } from './api.js'
 import { Terminal } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
 import { WebglAddon } from '@xterm/addon-webgl'
@@ -70,6 +71,17 @@ export function TerminalPanel() {
   const containerRef = useRef(null)
   const ctxRef = useRef(null)  // { terminal, fitAddon, ws, resizeObserver, controller, decoder, reconnectTimer, reconnectAttempt, wsReconnectEnabled, terminalAttached }
   const sessionId = selectedIdSignal.value
+  // #782: terminal-fatal errors (e.g. TMUX_SESSION_NOT_FOUND) render as a
+  // banner overlay rather than a `[error:CODE]` line on every WS reconnect.
+  // null when there's no fatal error; an object { code, message, hint }
+  // when one has been signalled by the server.
+  const [fatalError, setFatalError] = useState(null)
+  // #782 (codex review): bumping reconnectKey forces the main useEffect to
+  // tear down the disabled-reconnect ctx and rebuild a fresh terminal +
+  // WebSocket. Without this, after the user clicks "Restart session" the
+  // banner clears but ctx.wsReconnectEnabled is stuck at false from the
+  // earlier TMUX_SESSION_NOT_FOUND, and the terminal never reattaches.
+  const [reconnectKey, setReconnectKey] = useState(0)
 
   // Signal vanilla app.js to suppress its terminal path while TerminalPanel is mounted
   useEffect(() => {
@@ -99,9 +111,18 @@ export function TerminalPanel() {
       return
     }
 
-    // Prevent double-init
-    if (ctxRef.current && ctxRef.current.sessionId === sessionId) return
+    // Prevent double-init. Both sessionId AND reconnectKey are part of
+    // the identity: bumping reconnectKey (after a successful Restart from
+    // the #782 fatal banner) forces a fresh terminal + ws even though
+    // sessionId is unchanged.
+    if (
+      ctxRef.current &&
+      ctxRef.current.sessionId === sessionId &&
+      ctxRef.current.reconnectKey === reconnectKey
+    ) return
     cleanup()
+    // #782: a fresh session connection clears any prior fatal banner.
+    setFatalError(null)
 
     const container = containerRef.current
     const token = authTokenSignal.value
@@ -147,7 +168,9 @@ export function TerminalPanel() {
       }
     }
 
-    fitAddon.fit()
+    if (container.offsetWidth && container.offsetHeight) {
+      fitAddon.fit()
+    }
 
     // PERF-E: single AbortController for every listener registered in this
     // effect. Calling controller.abort() in the cleanup detaches all 8
@@ -180,6 +203,7 @@ export function TerminalPanel() {
     // Context object for this session
     const ctx = {
       sessionId,
+      reconnectKey, // #782: stamp the key so the double-init guard can detect a forced reconnect
       terminal,
       fitAddon,
       ws: null,
@@ -198,9 +222,10 @@ export function TerminalPanel() {
     function scheduleFitAndResize(delayMs) {
       clearTimeout(resizeTimer)
       resizeTimer = setTimeout(() => {
+        if (!container.offsetWidth || !container.offsetHeight) return
         fitAddon.fit()
         const { cols, rows } = terminal
-        if (cols > 1 && rows > 0 && ctx.ws && ctx.ws.readyState === WebSocket.OPEN && ctx.terminalAttached) {
+        if (cols >= 10 && rows >= 3 && ctx.ws && ctx.ws.readyState === WebSocket.OPEN && ctx.terminalAttached) {
           ctx.ws.send(JSON.stringify({ type: 'resize', cols, rows }))
         }
       }, delayMs)
@@ -312,6 +337,21 @@ export function TerminalPanel() {
               if (payload.code === 'TERMINAL_ATTACH_FAILED' || payload.code === 'TMUX_SESSION_NOT_FOUND') {
                 ctx.terminalAttached = false
               }
+              // #782: TMUX_SESSION_NOT_FOUND is terminal-fatal — the
+              // session is gone, so reconnecting will just emit the same
+              // error in a tight loop and spam the terminal. Stop the
+              // reconnect cycle and surface a banner with the actionable
+              // hint from the server.
+              if (payload.code === 'TMUX_SESSION_NOT_FOUND') {
+                ctx.wsReconnectEnabled = false
+                setFatalError({
+                  code: payload.code,
+                  message: payload.message || 'tmux session is not available',
+                  hint: payload.hint || '',
+                })
+                wsStateSignal.value = 'disconnected'
+                return
+              }
               terminal.write('\r\n[error:' + (payload.code || 'unknown') + '] ' + (payload.message || 'unknown error') + '\r\n')
             }
           } catch (_e) { /* ignore non-JSON control messages */ }
@@ -352,17 +392,70 @@ export function TerminalPanel() {
       clearTimeout(resizeTimer)
       cleanup()
     }
-  }, [sessionId, cleanup])
+  }, [sessionId, reconnectKey, cleanup])
 
   if (!sessionId) {
     return html`<${EmptyStateDashboard} />`
   }
 
+  // #782: actionable banner for terminal-fatal errors (currently only
+  // TMUX_SESSION_NOT_FOUND). The xterm canvas stays mounted underneath so
+  // the banner can be dismissed without losing terminal state, and the
+  // user gets a one-click Restart action that calls the same endpoint as
+  // the sidebar Restart icon.
+  async function handleFatalRestart() {
+    try {
+      await apiFetch('POST', '/api/sessions/' + sessionId + '/restart')
+      setFatalError(null)
+      // #782 (codex review): bumping reconnectKey forces the main effect
+      // to tear down the disabled-reconnect ctx and rebuild a fresh
+      // terminal + WebSocket. Without this, ctx.wsReconnectEnabled stays
+      // false from the prior TMUX_SESSION_NOT_FOUND and the terminal
+      // never reattaches to the freshly-restarted tmux session.
+      setReconnectKey((k) => k + 1)
+    } catch (_e) {
+      // Errors surface via the global toast layer; leave the banner up.
+    }
+  }
+
+  // PR-B: outer chrome uses the bundle's `.term-frame` look.
+  // The `.term-wrap` parent (provided by panes/TerminalPane.js) supplies
+  // outer padding and flex sizing, so this component only renders the
+  // inner frame + xterm canvas.
   return html`
-    <div class="flex flex-col h-full">
-      <div class="flex-1 min-h-0 min-w-0 p-sp-16 overflow-hidden">
-        <div ref=${containerRef} class="h-full w-full overflow-hidden" />
+    <div class="term-frame" style="position: relative;">
+      <div class="term-strip">
+        <span class="tdots"><i/><i/><i/></span>
+        <span class="tpath">session · ${sessionId}</span>
+        <span style="flex: 1;"/>
       </div>
+      <div style="flex: 1; min-height: 0; min-width: 0; overflow: hidden; padding: 14px 16px;">
+        <div ref=${containerRef} style="height: 100%; width: 100%; overflow: hidden;"/>
+      </div>
+      ${fatalError && html`
+        <div role="alert"
+             style=${{
+               position: 'absolute', inset: '12px 12px auto 12px',
+               border: '1px solid rgba(247,118,142,0.4)',
+               background: 'rgba(22,22,30,0.95)',
+               borderRadius: 'var(--radius-lg)',
+               boxShadow: '0 30px 60px -20px rgba(0,0,0,0.55)',
+               padding: '14px 16px',
+             }}>
+          <div style="display: flex; align-items: flex-start; gap: 12px;">
+            <span style="color: var(--tn-red); font-size: 18px; line-height: 1;">⚠</span>
+            <div style="flex: 1; min-width: 0;">
+              <div style="font-weight: 600; color: var(--text-hi);">Terminal disconnected</div>
+              <div style="font-size: 12.5px; color: var(--text); margin-top: 4px;">${fatalError.message}</div>
+              ${fatalError.hint && html`<div style="font-size: 11.5px; color: var(--muted); margin-top: 6px;">${fatalError.hint}</div>`}
+              <div style="display: flex; gap: 8px; margin-top: 10px;">
+                <button type="button" class="btn primary" onClick=${handleFatalRestart}>Restart session</button>
+                <button type="button" class="btn ghost" onClick=${() => setFatalError(null)}>Dismiss</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      `}
     </div>
   `
 }

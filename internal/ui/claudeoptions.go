@@ -93,6 +93,9 @@ func (p *ClaudeOptionsPanel) SetDefaults(config *session.UserConfig) {
 		p.skipPermissions = config.Claude.GetDangerousMode()
 		p.allowSkipPermissions = config.Claude.AllowDangerousMode
 		p.autoMode = config.Claude.AutoMode
+		p.SetExtraArgs(config.Claude.ExtraArgs)
+		p.useChrome = config.Claude.UseChrome
+		p.useTeammateMode = config.Claude.UseTeammateMode
 	}
 }
 
@@ -165,6 +168,13 @@ func (p *ClaudeOptionsPanel) GetStartQuery() string {
 // persisted, so there is no production "restore" path).
 func (p *ClaudeOptionsPanel) SetStartQuery(query string) {
 	p.startQueryInput.SetValue(query)
+}
+
+// ResetStartQuery clears the start-query input. Called by NewDialog on each
+// open so the per-session StartupQuery (Instance.StartupQuery, json:"-") does
+// not leak across dialog invocations (#741).
+func (p *ClaudeOptionsPanel) ResetStartQuery() {
+	p.startQueryInput.SetValue("")
 }
 
 // IsFocused returns true if any element in the panel has focus

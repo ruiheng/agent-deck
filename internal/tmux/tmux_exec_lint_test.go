@@ -51,6 +51,14 @@ func TestNoRawTmuxExec_OutsideAllowlist(t *testing.T) {
 		// a bypass — and it deliberately does NOT use the factory because
 		// the factory emits -L <name>, not -S <path>.
 		"tests/eval/harness/sandbox.go": "test harness — explicit -S <socket-path> for per-test sandbox server",
+
+		// multiclienttmux is the v1.9 multi-client tmux test harness
+		// (TEST-PLAN.md §6.1 / TUI-TEST-PLAN.md §6.8). Every exec passes
+		// `-S <per-test-tempdir-socket>` for hard test isolation, and the
+		// harness deliberately bypasses the factory because the factory
+		// emits -L <name>, not -S <path>. Same justification class as
+		// tests/eval/harness/sandbox.go above.
+		"internal/testutil/multiclienttmux/multiclienttmux.go": "test harness — explicit -S <socket-path> for per-test multi-client tmux server",
 	}
 
 	// Specific (file, call-argv) combos that are legitimate bypasses in
@@ -61,6 +69,11 @@ func TestNoRawTmuxExec_OutsideAllowlist(t *testing.T) {
 		// `tmux -V` is a binary-existence check. It never touches a tmux
 		// server, so the socket name is irrelevant. Keep plain.
 		"internal/tmux/tmux.go": {
+			{"tmux", "-V"},
+		},
+		// `tmux -V` again: the startup vulnerable-version warning
+		// (S14 / issue #737) reads the binary's version. No server contact.
+		"internal/tmux/version_warning.go": {
 			{"tmux", "-V"},
 		},
 

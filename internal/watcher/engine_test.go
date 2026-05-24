@@ -619,3 +619,73 @@ func TestWatcherEngine_StopCancelsAdapters(t *testing.T) {
 		t.Error("adapter2.Teardown() was not called")
 	}
 }
+
+// TestWatcherEngine_Stop_ClosesExportedChannels asserts that after Stop()
+// returns, the exported EventCh and HealthCh are closed so consumers receive
+// (_, false) instead of leaking forever (critical-hunt #9, V1.9 T5).
+func TestWatcherEngine_Stop_ClosesExportedChannels(t *testing.T) {
+	engine, _, _, _, _ := newTestEngineWithTriage(t, nil)
+
+	if err := engine.Start(); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	engine.Stop()
+
+	select {
+	case _, ok := <-engine.EventCh():
+		if ok {
+			t.Errorf("EventCh: expected closed (ok=false), got ok=true")
+		}
+	case <-time.After(time.Second):
+		t.Errorf("EventCh: expected closed channel, got blocking read")
+	}
+
+	select {
+	case _, ok := <-engine.HealthCh():
+		if ok {
+			t.Errorf("HealthCh: expected closed (ok=false), got ok=true")
+		}
+	case <-time.After(time.Second):
+		t.Errorf("HealthCh: expected closed channel, got blocking read")
+	}
+}
+
+// TestWatcherEngine_EventCh_PopulatesRoutedTo verifies that events delivered on the
+// engine's EventCh have RoutedTo set to the matched conductor name. The TUI relies
+// on this to deliver events into the conductor's tmux pane.
+func TestWatcherEngine_EventCh_PopulatesRoutedTo(t *testing.T) {
+	clients := map[string]ClientEntry{
+		"user@company.com": {
+			Conductor: "conductor-a",
+			Group:     "g",
+			Name:      "A",
+		},
+	}
+
+	engine, db := newTestEngine(t, clients)
+	saveTestWatcher(t, db, "w1", "test-watcher", "mock")
+
+	adapter := &MockAdapter{
+		events: []Event{
+			{Source: "mock", Sender: "user@company.com", Subject: "hi", Timestamp: time.Now()},
+		},
+	}
+	engine.RegisterAdapter("w1", adapter, AdapterConfig{Type: "mock", Name: "test-watcher"}, 60)
+
+	if err := engine.Start(); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer engine.Stop()
+
+	select {
+	case evt, ok := <-engine.EventCh():
+		if !ok {
+			t.Fatal("EventCh closed before event arrived")
+		}
+		if evt.RoutedTo != "conductor-a" {
+			t.Errorf("RoutedTo = %q, want %q", evt.RoutedTo, "conductor-a")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timeout waiting for routed event on EventCh")
+	}
+}

@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"os"
@@ -43,6 +44,8 @@ func handleConductor(profile string, args []string) {
 		handleConductorStatus(profile, args[1:])
 	case "list":
 		handleConductorList(profile, args[1:])
+	case "move":
+		handleConductorMove(profile, args[1:])
 	case "help", "--help", "-h":
 		printConductorHelp()
 	default:
@@ -111,10 +114,12 @@ func handleConductorSetup(profile string, args []string) {
 	description := fs.String("description", "", "Description for this conductor")
 	heartbeat := fs.Bool("heartbeat", false, "Enable heartbeat for this conductor (default)")
 	noHeartbeat := fs.Bool("no-heartbeat", false, "Disable heartbeat for this conductor")
+	heartbeatIdleMinutes := fs.Int("heartbeat-idle-minutes", 0, "Minutes of idle time before pausing heartbeats (default 0=disabled, negative also disabled)")
 	instructionsMD := fs.String("instructions-md", "", "Custom instructions file for this conductor (agent-specific, e.g., ~/docs/conductor-ops.md)")
 	sharedInstructionsMD := fs.String("shared-instructions-md", "", "Custom shared instructions file for all conductors of this agent")
 	claudeMD := fs.String("claude-md", "", "Custom CLAUDE.md for this conductor (e.g., ~/docs/conductor-ryan.md)")
 	policyMD := fs.String("policy-md", "", "Custom POLICY.md for this conductor (e.g., ~/docs/my-policy.md)")
+	heartbeatRulesMD := fs.String("heartbeat-rules-md", "", "Custom HEARTBEAT_RULES.md for this conductor (e.g., ~/docs/my-heartbeat-rules.md)")
 	sharedClaudeMD := fs.String("shared-claude-md", "", "Custom path for shared CLAUDE.md (e.g., ~/docs/conductor-shared.md)")
 	sharedPolicyMD := fs.String("shared-policy-md", "", "Custom path for shared POLICY.md (e.g., ~/docs/conductor-policy.md)")
 	envFile := fs.String("env-file", "", "Path to .env file to source before conductor starts (e.g., ~/.conductor.env)")
@@ -140,6 +145,8 @@ func handleConductorSetup(profile string, args []string) {
 		fmt.Println("        Enable heartbeat for this conductor (default)")
 		fmt.Println("  -no-heartbeat")
 		fmt.Println("        Disable heartbeat for this conductor")
+		fmt.Println("  -heartbeat-idle-minutes int")
+		fmt.Println("        Minutes of idle time before pausing heartbeats (default 0=disabled, negative also disabled)")
 		fmt.Println("  -no-clear-on-compact")
 		fmt.Println("        Claude-only: allow normal compaction instead of /clear when context fills up")
 		fmt.Println()
@@ -150,6 +157,8 @@ func handleConductorSetup(profile string, args []string) {
 		fmt.Println("        Deprecated Claude-only alias for -instructions-md")
 		fmt.Println("  -policy-md string")
 		fmt.Println("        Custom POLICY.md for this conductor (e.g., ~/docs/my-policy.md)")
+		fmt.Println("  -heartbeat-rules-md string")
+		fmt.Println("        Custom HEARTBEAT_RULES.md for this conductor (e.g., ~/docs/my-heartbeat-rules.md)")
 		fmt.Println()
 		fmt.Println("Shared files (all conductors):")
 		fmt.Println("  -shared-instructions-md string")
@@ -462,7 +471,7 @@ func handleConductorSetup(profile string, args []string) {
 	if len(envFlags) > 0 {
 		envMap = map[string]string(envFlags)
 	}
-	if err := session.SetupConductorWithAgent(name, resolvedProfile, spec.Agent, heartbeatEnabled, clearOnCompact, *description, resolvedInstructionsMD, *policyMD, envMap, *envFile); err != nil {
+	if err := session.SetupConductorWithAgent(name, resolvedProfile, spec.Agent, heartbeatEnabled, clearOnCompact, *description, resolvedInstructionsMD, *policyMD, *heartbeatRulesMD, envMap, *envFile, *heartbeatIdleMinutes); err != nil {
 		fmt.Fprintf(os.Stderr, "Error setting up conductor %s: %v\n", name, err)
 		os.Exit(1)
 	}
@@ -918,26 +927,35 @@ func handleConductorStatus(_ string, args []string) {
 	}
 
 	type conductorStatus struct {
-		Name        string `json:"name"`
-		Agent       string `json:"agent"`
-		Profile     string `json:"profile"`
-		DirExists   bool   `json:"dir_exists"`
-		SessionID   string `json:"session_id,omitempty"`
-		SessionDone bool   `json:"session_registered"`
-		Running     bool   `json:"running"`
-		Heartbeat   bool   `json:"heartbeat"`
-		Description string `json:"description,omitempty"`
+		Name                 string `json:"name"`
+		Agent                string `json:"agent"`
+		Profile              string `json:"profile"`
+		DirExists            bool   `json:"dir_exists"`
+		SessionID            string `json:"session_id,omitempty"`
+		SessionDone          bool   `json:"session_registered"`
+		Running              bool   `json:"running"`
+		Heartbeat            bool   `json:"heartbeat"`
+		Description          string `json:"description,omitempty"`
+		LastActivityAt       string `json:"last_activity_at,omitempty"`
+		HeartbeatIdleMinutes int    `json:"heartbeat_idle_minutes"`
 	}
 	var statuses []conductorStatus
 
 	for _, meta := range conductors {
 		cs := conductorStatus{
-			Name:        meta.Name,
-			Agent:       meta.GetAgent(),
-			Profile:     meta.Profile,
-			DirExists:   session.IsConductorSetup(meta.Name),
-			Heartbeat:   meta.HeartbeatEnabled,
-			Description: meta.Description,
+			Name:                 meta.Name,
+			Agent:                meta.GetAgent(),
+			Profile:              meta.Profile,
+			DirExists:            session.IsConductorSetup(meta.Name),
+			Heartbeat:            meta.HeartbeatEnabled,
+			Description:          meta.Description,
+			HeartbeatIdleMinutes: meta.GetHeartbeatIdleMinutes(),
+		}
+
+		// Get last activity time across managed sessions (excludes conductor window).
+		// Zero time means no data — omit rather than emit a spurious ancient timestamp.
+		if lastActivity, err := session.GetConductorLastActivity(meta.Name, meta.Profile); err == nil && !lastActivity.IsZero() {
+			cs.LastActivityAt = lastActivity.UTC().Format("2006-01-02T15:04:05Z07:00")
 		}
 
 		// Check session
@@ -1198,4 +1216,77 @@ func printConductorHelp() {
 	fmt.Println("  agent-deck conductor status")
 	fmt.Println("  agent-deck conductor teardown infra --remove")
 	fmt.Println("  agent-deck conductor teardown --all --remove")
+	fmt.Println("  agent-deck conductor move ryan --to-profile march")
+}
+
+// handleConductorMove migrates a conductor (session row + all child sessions
+// + meta.json) to another profile (issue #928).
+func handleConductorMove(sourceProfile string, args []string) {
+	fs := flag.NewFlagSet("conductor move", flag.ExitOnError)
+	toProfile := fs.String("to-profile", "", "Target profile (required)")
+	force := fs.Bool("force", false, "Migrate even if the conductor or a worker is running")
+	jsonOutput := fs.Bool("json", false, "Output as JSON")
+	quiet := fs.Bool("quiet", false, "Minimal output")
+	quietShort := fs.Bool("q", false, "Minimal output (short)")
+
+	fs.Usage = func() {
+		fmt.Println("Usage: agent-deck conductor move <name> --to-profile <profile> [--force]")
+		fmt.Println()
+		fmt.Println("Migrate a conductor session and all its worker sessions to another")
+		fmt.Println("profile's DB, and update ~/.agent-deck/conductor/<name>/meta.json in lockstep.")
+		fmt.Println()
+		fmt.Println("Options:")
+		fs.PrintDefaults()
+	}
+
+	if err := fs.Parse(normalizeArgs(fs, args)); err != nil {
+		os.Exit(1)
+	}
+
+	out := NewCLIOutput(*jsonOutput, *quiet || *quietShort)
+
+	if fs.NArg() < 1 {
+		out.Error("conductor move requires <name>", ErrCodeInvalidOperation)
+		fs.Usage()
+		os.Exit(1)
+	}
+	if *toProfile == "" {
+		out.Error("--to-profile is required", ErrCodeInvalidOperation)
+		fs.Usage()
+		os.Exit(1)
+	}
+
+	name := fs.Arg(0)
+	result, err := session.MigrateConductorToProfile(
+		name, sourceProfile, *toProfile,
+		session.ProfileMigrateOptions{Force: *force},
+	)
+	if err != nil {
+		exitCode := ErrCodeInvalidOperation
+		hint := ""
+		switch {
+		case errors.Is(err, session.ErrProfileMissing):
+			exitCode = ErrCodeNotFound
+		case errors.Is(err, session.ErrSessionRunning):
+			hint = " (stop the conductor/workers first, or re-run with --force)"
+		}
+		out.Error(fmt.Sprintf("%v%s", err, hint), exitCode)
+		os.Exit(1)
+	}
+
+	out.Success(
+		fmt.Sprintf("Migrated conductor %q: profile %s → %s (%d sessions)",
+			name, sourceProfile, *toProfile, len(result.MovedSessionIDs)),
+		map[string]interface{}{
+			"success":        true,
+			"conductor":      name,
+			"from_profile":   sourceProfile,
+			"to_profile":     *toProfile,
+			"sessions_moved": result.MovedSessionIDs,
+			"cost_events":    result.MovedCostEvents,
+			"watcher_events": result.MovedWatcherEvents,
+			"groups_created": result.CreatedGroups,
+			"meta_updated":   result.MetaUpdated,
+		},
+	)
 }

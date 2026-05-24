@@ -22,10 +22,23 @@ import (
 	"bytes"
 	"io"
 	"os"
+	"time"
 
 	"github.com/asheshgoplani/agent-deck/internal/termreply"
 	tea "github.com/charmbracelet/bubbletea"
 )
+
+// shiftEnterMarker is the Unicode Private-Use-Area rune used to relay
+// Shift+Enter from the CSI u / xterm-modifyOtherKeys parser through
+// Bubble Tea v1.3.10 (which has no native Shift+Enter representation) and
+// out to home.go's keybinding switch. It is emitted in UTF-8 form by the
+// csiuReader; Bubble Tea decodes the UTF-8 to a KeyRunes message; and
+// Home.normalizeMainKey rewrites it back to the canonical "shift+enter"
+// string the dispatch switch matches on. See issue #1093.
+// U+E5E5 sits in the Basic Multilingual Plane Private Use Area
+// (U+E000..U+F8FF), which Unicode reserves for application-private use
+// and no standard keyboard or input method can produce.
+const shiftEnterMarker rune = 0xE5E5
 
 // DisableKittyKeyboard writes the escape sequence that pops the Kitty keyboard
 // protocol stack, restoring the previous keyboard mode. If nothing was on the
@@ -63,6 +76,31 @@ func RestoreLegacyKeyboardCmd(w io.Writer) tea.Cmd {
 // return.
 func EnableKittyKeyboard(w io.Writer) {
 	_, _ = io.WriteString(w, "\x1b[>1u")
+}
+
+// EnableModifyOtherKeys writes the xterm escape sequence that requests
+// modifyOtherKeys mode 1: terminals supporting the protocol (iTerm2, xterm,
+// Konsole, …) start sending modified keys — including the previously
+// indistinguishable Shift+Enter — as CSI 27;<modifier>;<codepoint>~
+// sequences rather than the legacy unmodified byte. Unmodified keys still
+// arrive as their normal bytes, so plain Enter is unaffected.
+//
+// This is the upstream half of the #1093 fix: without it, a fresh agent-deck
+// launch in iTerm2 sees plain '\r' for both Enter and Shift+Enter and cannot
+// distinguish them. With it, Shift+Enter arrives as \x1b[27;2;13~ and our
+// csiuReader relays it through to home.go as "shift+enter".
+//
+// Pair with DisableModifyOtherKeys on TUI exit so the user's shell prompt
+// returns to default key-reporting behavior.
+func EnableModifyOtherKeys(w io.Writer) {
+	_, _ = io.WriteString(w, "\x1b[>4;1m")
+}
+
+// DisableModifyOtherKeys writes the xterm escape sequence that returns the
+// terminal to default key reporting (modifyOtherKeys mode 0). Call on TUI
+// exit so the user's shell behaves normally again.
+func DisableModifyOtherKeys(w io.Writer) {
+	_, _ = io.WriteString(w, "\x1b[>4;0m")
 }
 
 // RestoreKittyKeyboard writes the escape sequence that pops the keyboard mode
@@ -132,9 +170,21 @@ func ParseCSIu(data []byte) *tea.KeyMsg {
 	// Map well-known control codepoints to tea key types.
 	switch codepoint {
 	case 13: // CR = Enter
+		if shiftHeld {
+			// Bubble Tea v1.3.10 has no Shift+Enter representation, so we
+			// relay it via a Private-Use-Area rune. home.go's
+			// normalizeMainKey rewrites this back to "shift+enter". See
+			// issue #1093.
+			msg := tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{shiftEnterMarker}}
+			return &msg
+		}
 		msg := tea.KeyMsg{Type: tea.KeyEnter}
 		return &msg
 	case 9: // HT = Tab
+		if shiftHeld {
+			msg := tea.KeyMsg{Type: tea.KeyShiftTab}
+			return &msg
+		}
 		msg := tea.KeyMsg{Type: tea.KeyTab}
 		return &msg
 	case 27: // ESC
@@ -157,7 +207,7 @@ func ParseCSIu(data []byte) *tea.KeyMsg {
 	}
 
 	// Regular rune: apply shift to lowercase letters.
-	r := rune(codepoint)
+	r := rune(codepoint) // #nosec G115 -- codepoint parsed from CSI/xterm sequence, validated >= 0 above
 	if shiftHeld && r >= 'a' && r <= 'z' {
 		r = r - 'a' + 'A'
 	}
@@ -214,9 +264,18 @@ func ParseModifyOtherKeys(data []byte) *tea.KeyMsg {
 
 	switch codepoint {
 	case 13:
+		if shiftHeld {
+			// See ParseCSIu / shiftEnterMarker comment. Issue #1093.
+			msg := tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{shiftEnterMarker}}
+			return &msg
+		}
 		msg := tea.KeyMsg{Type: tea.KeyEnter}
 		return &msg
 	case 9:
+		if shiftHeld {
+			msg := tea.KeyMsg{Type: tea.KeyShiftTab}
+			return &msg
+		}
 		msg := tea.KeyMsg{Type: tea.KeyTab}
 		return &msg
 	case 27:
@@ -236,7 +295,7 @@ func ParseModifyOtherKeys(data []byte) *tea.KeyMsg {
 		return &msg
 	}
 
-	r := rune(codepoint)
+	r := rune(codepoint) // #nosec G115 -- codepoint parsed from CSI/xterm sequence, validated >= 0 above
 	if shiftHeld && r >= 'a' && r <= 'z' {
 		r = r - 'a' + 'A'
 	}
@@ -270,6 +329,8 @@ type csiuReader struct {
 	inBuf       []byte // buffered input bytes not yet processed
 	err         error  // pending source error to return after draining buffers
 	replyFilter termreply.Filter
+	// pollFn checks whether more bytes follow a lone ESC within a timeout.
+	pollFn func(time.Duration) bool
 }
 
 // csiuFileReader wraps a *os.File and overrides Read with CSI u translation.
@@ -303,6 +364,10 @@ func NewCSIuReader(r io.Reader) io.Reader {
 		inBuf: make([]byte, 0, 256),
 	}
 	if f, ok := r.(*os.File); ok {
+		fd := int(f.Fd())
+		inner.pollFn = func(timeout time.Duration) bool {
+			return pollFdReady(fd, timeout)
+		}
 		return &csiuFileReader{File: f, inner: inner}
 	}
 	return inner
@@ -356,6 +421,16 @@ func (c *csiuReader) Read(p []byte) (int, error) {
 			c.err = err
 			return 0, err
 		}
+
+		// Flush lone ESC after 50ms poll timeout (ncurses ESCDELAY convention).
+		if len(c.inBuf) == 1 && c.inBuf[0] == 0x1b && c.pollFn != nil {
+			if !c.pollFn(50 * time.Millisecond) {
+				p[0] = c.inBuf[0]
+				c.inBuf = c.inBuf[:0]
+				return 1, nil
+			}
+			// More bytes incoming — loop to bundle them with the ESC.
+		}
 	}
 }
 
@@ -377,12 +452,50 @@ func (c *csiuReader) translate(final bool) []byte {
 			continue
 		}
 
-		// Preserve a lone ESC as-is to avoid hanging standalone escape.
+		// Lone ESC at buffer end: if mid-stream, buffer it for the next Read so
+		// SS3 (ESC OH / ESC OF) can be detected when the next byte arrives. On
+		// final flush we pass it through to avoid hanging a standalone escape.
 		if i+1 >= len(c.inBuf) {
+			if !final {
+				break
+			}
 			out = append(out, c.inBuf[i])
 			i++
 			continue
 		}
+
+		// SS3 (ESC O) handling: rewrite ESC OH / ESC OF to ESC [H / ESC [F
+		// so Bubble Tea's escSeq table recognizes Home/End. Terminals that
+		// emit application-mode (DECKPAM) SS3 sequences for Home/End include
+		// iTerm2's default macOS profile over direct SSH. Other SS3 sequences
+		// (arrows ESC OA-D, function keys ESC OP-S) are already in Bubble
+		// Tea's escSeq table and must pass through unchanged.
+		if c.inBuf[i+1] == 'O' {
+			if i+2 >= len(c.inBuf) {
+				if !final {
+					break // buffer ESC O, wait for third byte
+				}
+				// final: pass through ESC O as-is.
+				out = append(out, c.inBuf[i:i+2]...)
+				i += 2
+				continue
+			}
+			switch c.inBuf[i+2] {
+			case 'H':
+				out = append(out, 0x1b, '[', 'H')
+				i += 3
+				continue
+			case 'F':
+				out = append(out, 0x1b, '[', 'F')
+				i += 3
+				continue
+			}
+			// Other ESC O* sequence — Bubble Tea handles natively.
+			out = append(out, c.inBuf[i:i+3]...)
+			i += 3
+			continue
+		}
+
 		if c.inBuf[i+1] != '[' {
 			out = append(out, c.inBuf[i])
 			i++
@@ -415,6 +528,8 @@ func (c *csiuReader) translate(final bool) []byte {
 						out = append(out, '\r')
 					case tea.KeyTab:
 						out = append(out, '\t')
+					case tea.KeyShiftTab:
+						out = append(out, []byte("\x1b[Z")...)
 					case tea.KeyEsc:
 						out = append(out, 0x1b)
 					case tea.KeyBackspace:
@@ -453,6 +568,8 @@ func (c *csiuReader) translate(final bool) []byte {
 			out = append(out, '\r')
 		case tea.KeyTab:
 			out = append(out, '\t')
+		case tea.KeyShiftTab:
+			out = append(out, []byte("\x1b[Z")...)
 		case tea.KeyEsc:
 			out = append(out, 0x1b)
 		case tea.KeyBackspace:
