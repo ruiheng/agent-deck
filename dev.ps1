@@ -19,7 +19,7 @@ $TailwindVersionStamp = Join-Path $LocalBin "tailwindcss.version"
 $StylesSrc = Join-Path $RepoRoot "internal\web\static\styles.src.css"
 $StylesOut = Join-Path $RepoRoot "internal\web\static\styles.css"
 $TailwindAllowlist = Join-Path $RepoRoot "internal\web\static\.tailwind-allowlist.txt"
-$GoToolchainVersion = "go1.24.0"
+$GoToolchainVersion = "go1.25.10"
 
 function Assert-Go {
     if (-not $GoExe) {

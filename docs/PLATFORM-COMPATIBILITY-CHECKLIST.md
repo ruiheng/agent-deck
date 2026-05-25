@@ -129,6 +129,11 @@ regressions below passed Unix tests while failing only on native Windows.
   with JavaScript MIME types. Do not rely on host MIME registration for `.mjs`;
   Windows machines can map it to `text/plain`, and browsers will reject
   `<script type="module">` imports before the app boots.
+- If upstream bumps the Go toolchain in `go.mod`, `Makefile`, CI, or release
+  scripts, update the Windows helper path at the same time. In particular,
+  `dev.ps1` must not keep an older hard-coded `$GoToolchainVersion` than
+  `go.mod`/`Makefile`; otherwise `.\dev.cmd build` fails even though Unix
+  `make build` is correct.
 
 ## Shell And Command Semantics
 
@@ -516,6 +521,22 @@ $env:GOMODCACHE = Join-Path $goCacheRoot 'mod'
 
 Do not introduce repo-local `.gocache`, `.tmp-gocache`, or `.tmp-gomodcache`
 directories unless a specific task explicitly requires isolated caches.
+
+Before validating behavior, confirm the Windows build helper follows the same
+toolchain pin as upstream:
+
+```powershell
+Select-String -Path .\go.mod,.\Makefile,.\dev.ps1 -Pattern 'go1\.|go 1\.|GOTOOLCHAIN|GoToolchainVersion'
+```
+
+Failure signature:
+
+```text
+go: go.mod requires go >= 1.25.10 (running go 1.24.0; GOTOOLCHAIN=go1.24.0)
+```
+
+If this appears after an upstream merge, fix the Windows helper pin first. Do
+not downgrade `go.mod`, and do not treat it as a product build failure.
 
 Recommended targeted checks after Windows/session changes:
 
