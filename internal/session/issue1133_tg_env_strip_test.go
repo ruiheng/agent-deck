@@ -46,8 +46,8 @@ func TestIssue1133_Child_StripsTelegramStateDir(t *testing.T) {
 	if !strings.Contains(got, "TELEGRAM_STATE_DIR") {
 		t.Errorf("child must strip TELEGRAM_STATE_DIR\nbuildEnvSourceCommand() = %q", got)
 	}
-	if !strings.Contains(got, "unset ") {
-		t.Errorf("child must emit an unset clause\nbuildEnvSourceCommand() = %q", got)
+	if !strings.Contains(got, "unset ") && !strings.Contains(got, "Remove-Item Env:TELEGRAM_STATE_DIR") {
+		t.Errorf("child must emit an unset/remove clause\nbuildEnvSourceCommand() = %q", got)
 	}
 }
 

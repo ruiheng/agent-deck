@@ -212,13 +212,20 @@ config_dir = "~/.claude-personal"
 	}
 
 	cmdWork := inst.buildClaudeCommand("claude")
-	wantWorkHint := "AGENTDECK_RESOLVED_CONFIG_DIR=" + filepath.Join(tmpHome, ".claude-work")
+	wantWorkDir := filepath.Join(tmpHome, ".claude-work")
+	wantWorkHint := "AGENTDECK_RESOLVED_CONFIG_DIR=" + wantWorkDir
 	if !strings.Contains(cmdWork, wantWorkHint) {
-		t.Errorf("Account=work spawn must contain %q;\ngot: %s", wantWorkHint, cmdWork)
+		wantWorkHintPS := "$env:AGENTDECK_RESOLVED_CONFIG_DIR='" + wantWorkDir + "'"
+		if !strings.Contains(cmdWork, wantWorkHintPS) {
+			t.Errorf("Account=work spawn must contain %q or %q;\ngot: %s", wantWorkHint, wantWorkHintPS, cmdWork)
+		}
 	}
 	wantWorkSource := "AGENTDECK_RESOLVED_SOURCE=account"
 	if !strings.Contains(cmdWork, wantWorkSource) {
-		t.Errorf("Account=work spawn must label source via %q;\ngot: %s", wantWorkSource, cmdWork)
+		wantWorkSourcePS := "$env:AGENTDECK_RESOLVED_SOURCE='account'"
+		if !strings.Contains(cmdWork, wantWorkSourcePS) {
+			t.Errorf("Account=work spawn must label source via %q or %q;\ngot: %s", wantWorkSource, wantWorkSourcePS, cmdWork)
+		}
 	}
 
 	// Switch to the other account — same instance, new spawn env.
@@ -229,9 +236,13 @@ config_dir = "~/.claude-personal"
 	inst.WorkerScratchConfigDir = ""
 
 	cmdPersonal := inst.buildClaudeCommand("claude")
-	wantPersonalHint := "AGENTDECK_RESOLVED_CONFIG_DIR=" + filepath.Join(tmpHome, ".claude-personal")
+	wantPersonalDir := filepath.Join(tmpHome, ".claude-personal")
+	wantPersonalHint := "AGENTDECK_RESOLVED_CONFIG_DIR=" + wantPersonalDir
 	if !strings.Contains(cmdPersonal, wantPersonalHint) {
-		t.Errorf("Account=personal spawn must contain %q;\ngot: %s", wantPersonalHint, cmdPersonal)
+		wantPersonalHintPS := "$env:AGENTDECK_RESOLVED_CONFIG_DIR='" + wantPersonalDir + "'"
+		if !strings.Contains(cmdPersonal, wantPersonalHintPS) {
+			t.Errorf("Account=personal spawn must contain %q or %q;\ngot: %s", wantPersonalHint, wantPersonalHintPS, cmdPersonal)
+		}
 	}
 	if strings.Contains(cmdPersonal, wantWorkHint) {
 		t.Errorf("Account=personal spawn must NOT carry the old work hint;\ngot cmd containing %q: %s", wantWorkHint, cmdPersonal)

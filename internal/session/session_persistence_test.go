@@ -1414,6 +1414,48 @@ func TestPersistence_DiscoverLatestClaudeJSONL_Unit(t *testing.T) {
 			t.Fatalf("no_recency_cap: got %q, want ffffffff-...", got)
 		}
 	})
+
+	t.Run("newest_wins_across_symlink_candidates", func(t *testing.T) {
+		home := isolatedHomeDir(t)
+		t.Setenv("CLAUDE_CONFIG_DIR", "")
+
+		root := t.TempDir()
+		resolvedProject := filepath.Join(root, "resolved-project")
+		linkProject := filepath.Join(root, "link-project")
+		if err := os.MkdirAll(resolvedProject, 0o755); err != nil {
+			t.Fatalf("mkdir resolved project: %v", err)
+		}
+		if err := os.Symlink(resolvedProject, linkProject); err != nil {
+			t.Skipf("symlink creation not available on this host: %v", err)
+		}
+
+		stageForProject := func(projectPath, name string, mtime time.Time) {
+			t.Helper()
+			dir := filepath.Join(home, ".claude", "projects", ConvertToClaudeDirName(projectPath))
+			if err := os.MkdirAll(dir, 0o755); err != nil {
+				t.Fatalf("mkdir %s: %v", dir, err)
+			}
+			p := filepath.Join(dir, name)
+			if err := os.WriteFile(p, []byte(`{"sessionId":"x"}`+"\n"), 0o644); err != nil {
+				t.Fatalf("write %s: %v", p, err)
+			}
+			if err := os.Chtimes(p, mtime, mtime); err != nil {
+				t.Fatalf("chtimes %s: %v", p, err)
+			}
+		}
+
+		now := time.Now()
+		stageForProject(resolvedProject, "11111111-1111-1111-1111-111111111111.jsonl", now.Add(-30*time.Second))
+		stageForProject(linkProject, "22222222-2222-2222-2222-222222222222.jsonl", now)
+
+		got, found := discoverLatestClaudeJSONL(linkProject)
+		if !found {
+			t.Fatalf("newest_wins_across_symlink_candidates: found=false, want true")
+		}
+		if got != "22222222-2222-2222-2222-222222222222" {
+			t.Fatalf("newest_wins_across_symlink_candidates: got %q, want symlink-path newer session", got)
+		}
+	})
 }
 
 // TestEnsureClaudeSessionIDFromDisk_NewSessionSkipsDiscovery verifies that a

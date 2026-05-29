@@ -879,13 +879,23 @@ func (i *Instance) buildBashExportPrefix(includeConfigDir bool) string {
 // instances (including when source resolves to "default") so consumers
 // can rely on the vars being present.
 func (i *Instance) buildResolvedAccountHintExports() string {
+	return strings.Join(i.buildResolvedAccountHintEnvCommands(false), "; ") + "; "
+}
+
+func (i *Instance) buildResolvedAccountHintEnvCommands(powerShell bool) []string {
 	resolved, source := GetClaudeConfigDirSourceForInstance(i)
-	return fmt.Sprintf(
-		"export AGENTDECK_RESOLVED_CONFIG_DIR=%s; export AGENTDECK_RESOLVED_GROUP=%s; export AGENTDECK_RESOLVED_SOURCE=%s; ",
-		shellescape.Quote(resolved),
-		shellescape.Quote(i.GroupPath),
-		shellescape.Quote(source),
-	)
+	if powerShell {
+		return []string{
+			shellSetEnvCommandForPowerShell("AGENTDECK_RESOLVED_CONFIG_DIR", resolved, true),
+			shellSetEnvCommandForPowerShell("AGENTDECK_RESOLVED_GROUP", i.GroupPath, true),
+			shellSetEnvCommandForPowerShell("AGENTDECK_RESOLVED_SOURCE", source, true),
+		}
+	}
+	return []string{
+		fmt.Sprintf("export AGENTDECK_RESOLVED_CONFIG_DIR=%s", shellescape.Quote(resolved)),
+		fmt.Sprintf("export AGENTDECK_RESOLVED_GROUP=%s", shellescape.Quote(i.GroupPath)),
+		fmt.Sprintf("export AGENTDECK_RESOLVED_SOURCE=%s", shellescape.Quote(source)),
+	}
 }
 
 // logClaudeConfigResolution emits the CFG-07 observability line documenting
@@ -917,6 +927,7 @@ func (i *Instance) buildClaudeInlineEnvPrefix(includeConfigDir bool) string {
 		if includeConfigDir {
 			parts = append(parts, shellSetEnvCommand("CLAUDE_CONFIG_DIR", configDir))
 		}
+		parts = append(parts, i.buildResolvedAccountHintEnvCommands(true)...)
 		return strings.Join(parts, shellCommandSeparator()) + shellCommandSeparator()
 	}
 
@@ -935,7 +946,7 @@ func (i *Instance) buildClaudeLaunchPrefix(includeConfigDir bool) string {
 }
 
 func (i *Instance) shouldUsePowerShellClaudeShell() bool {
-	return runtime.GOOS == "windows" && !i.IsSSH() && !i.IsSandboxed() && !i.hasEffectiveWrapper()
+	return runtime.GOOS == "windows" && !i.IsSSH() && !i.IsSandboxed()
 }
 
 // buildClaudeExtraFlags builds extra command-line flags string from ClaudeOptions
@@ -1278,7 +1289,7 @@ func (i *Instance) buildCodexCommand(baseCommand string) string {
 	yoloFlag := i.resolveCodexYoloFlag()
 	modelFlag := i.resolveCodexModelFlag()
 	command := i.resolveCodexCommand(baseCommand)
-	launchFlags := yoloFlag + modelFlag + i.resolveCodexNoAltScreenFlag(command)
+	launchFlags := yoloFlag + modelFlag + i.resolveCodexNoAltScreenFlagForLaunch(baseCommand, command)
 	if i.shouldFoldCodexExtraArgsWrapperIntoLaunchForCommand(command) {
 		if extraArgs := i.codexExtraArgsWrapperSuffix(); extraArgs != "" {
 			launchFlags += " " + extraArgs
@@ -1303,16 +1314,16 @@ func (i *Instance) buildCodexCommand(baseCommand string) string {
 		ClearHookSessionAnchor(i.ID)
 	}
 
-	if i.CodexSessionID != "" && shouldAppendCodexResume(command) {
+	if i.CodexSessionID != "" && i.shouldAppendCodexResumeForLaunch(command) {
 		launchCommand := fmt.Sprintf("%s%s resume %s", command, launchFlags, i.CodexSessionID)
-		if i.shouldUseWindowsCmdCommandShell(command) {
+		if i.shouldUseWindowsCmdCommandShellForCodexLaunch(baseCommand, command) {
 			return shellCmdExeWrap(i.buildWindowsCmdCodexEnv(), launchCommand)
 		}
 		return i.buildCodexEnvPrefix(command) + launchCommand
 	}
 
 	launchCommand := command + launchFlags
-	if i.shouldUseWindowsCmdCommandShell(command) {
+	if i.shouldUseWindowsCmdCommandShellForCodexLaunch(baseCommand, command) {
 		return shellCmdExeWrap(i.buildWindowsCmdCodexEnv(), launchCommand)
 	}
 	return i.buildCodexEnvPrefix(command) + launchCommand
@@ -3118,8 +3129,8 @@ func (i *Instance) Start() error {
 	// Sandbox sessions also get remain-on-exit for dead-pane detection.
 	i.tmuxSession.OptionOverrides = i.buildTmuxOptionOverrides()
 	i.tmuxSession.RunCommandAsInitialProcess = i.shouldRunCommandAsInitialProcess()
-	i.tmuxSession.CommandUsesPowerShell = i.shouldUsePowerShellCommandShellForStart(commandRequiresPOSIXShell)
-	i.tmuxSession.CommandUsesWindowsCmd = i.shouldUseWindowsCmdCommandShell(i.Command)
+	i.tmuxSession.CommandUsesPowerShell = i.shouldUsePowerShellCommandShellForPreparedCommand(command, commandRequiresPOSIXShell)
+	i.tmuxSession.CommandUsesWindowsCmd = i.shouldUseWindowsCmdCommandShellForPreparedCommand(command)
 	i.applyLaunchSettingsFromConfig()
 
 	// Start the tmux session
@@ -3326,8 +3337,8 @@ func (i *Instance) StartWithMessage(message string) error {
 	// Sandbox sessions also get remain-on-exit for dead-pane detection.
 	i.tmuxSession.OptionOverrides = i.buildTmuxOptionOverrides()
 	i.tmuxSession.RunCommandAsInitialProcess = i.shouldRunCommandAsInitialProcess()
-	i.tmuxSession.CommandUsesPowerShell = i.shouldUsePowerShellCommandShellForStart(commandRequiresPOSIXShell)
-	i.tmuxSession.CommandUsesWindowsCmd = i.shouldUseWindowsCmdCommandShell(i.Command)
+	i.tmuxSession.CommandUsesPowerShell = i.shouldUsePowerShellCommandShellForPreparedCommand(command, commandRequiresPOSIXShell)
+	i.tmuxSession.CommandUsesWindowsCmd = i.shouldUseWindowsCmdCommandShellForPreparedCommand(command)
 	i.applyLaunchSettingsFromConfig()
 
 	// Start the tmux session
@@ -5644,7 +5655,7 @@ func (i *Instance) Restart() error {
 	}
 
 	// If Codex session AND tmux session exists, use respawn-pane
-	if IsCodexCompatible(i.Tool) && !i.shouldUseWindowsCmdCommandShell(i.Command) && i.tmuxSession != nil && i.tmuxSession.Exists() {
+	if i.shouldUseCodexRespawnPane() && i.tmuxSession != nil && i.tmuxSession.Exists() {
 		// Try to get session ID from tmux environment if not already set
 		if i.CodexSessionID == "" {
 			if envID, err := i.tmuxSession.GetEnvironment("CODEX_SESSION_ID"); err == nil && envID != "" {
@@ -5664,6 +5675,8 @@ func (i *Instance) Restart() error {
 		if containerName != "" {
 			i.SandboxContainer = containerName
 		}
+		i.tmuxSession.CommandUsesPowerShell = i.shouldUsePowerShellCommandShellForPreparedCommand(resumeCmd, false)
+		i.tmuxSession.CommandUsesWindowsCmd = i.shouldUseWindowsCmdCommandShellForPreparedCommand(resumeCmd)
 		sessionLog.Info("restart_codex_respawn", slog.String("command", resumeCmd))
 
 		if err := i.tmuxSession.RespawnPane(resumeCmd); err != nil {
@@ -5800,8 +5813,8 @@ func (i *Instance) Restart() error {
 	// Sandbox sessions also get remain-on-exit for dead-pane detection.
 	i.tmuxSession.OptionOverrides = i.buildTmuxOptionOverrides()
 	i.tmuxSession.RunCommandAsInitialProcess = i.shouldRunCommandAsInitialProcess()
-	i.tmuxSession.CommandUsesPowerShell = i.shouldUsePowerShellCommandShell()
-	i.tmuxSession.CommandUsesWindowsCmd = i.shouldUseWindowsCmdCommandShell(i.Command)
+	i.tmuxSession.CommandUsesPowerShell = i.shouldUsePowerShellCommandShellForPreparedCommand(command, false)
+	i.tmuxSession.CommandUsesWindowsCmd = i.shouldUseWindowsCmdCommandShellForPreparedCommand(command)
 	i.applyLaunchSettingsFromConfig()
 
 	mcpLog.Debug("restart_starting_new_session", slog.String("command", command))
@@ -7188,7 +7201,7 @@ func (i *Instance) prepareCommand(cmd string) (string, string, error) {
 	// base command from leaking into the outer shell parse, and — critically —
 	// keeps trailing wrapper-suffix flags INSIDE a single quoted argv so they
 	// reach the child process intact.
-	if i.hasEffectiveWrapper() && !i.shouldFoldCodexExtraArgsWrapperIntoLaunchForCommand(i.Command) {
+	if i.shouldWrapEffectiveWrapperInPOSIXShell() {
 		escaped := strings.ReplaceAll(wrapped, "'", "'\"'\"'")
 		wrapped = fmt.Sprintf("bash -c '%s'", escaped)
 	}
@@ -7231,19 +7244,81 @@ func (i *Instance) shouldUsePowerShellCommandShellForCommand(command string) boo
 	return runtime.GOOS == "windows" &&
 		!i.IsSSH() &&
 		!i.IsSandboxed() &&
-		!i.hasEffectiveWrapper() &&
+		!commandRequiresPOSIXShellSyntax(command) &&
 		!i.shouldUseWindowsCmdCommandShell(command) &&
 		i.commandBuilderEmitsPowerShell()
+}
+
+func (i *Instance) shouldUsePowerShellCommandShellForPreparedCommand(command string, commandRequiresPOSIXShell bool) bool {
+	if commandRequiresPOSIXShell {
+		return false
+	}
+	return runtime.GOOS == "windows" &&
+		!i.IsSSH() &&
+		!i.IsSandboxed() &&
+		!commandRequiresPOSIXShellSyntax(command) &&
+		!i.shouldUseWindowsCmdCommandShellForPreparedCommand(command) &&
+		i.commandBuilderEmitsPowerShell()
+}
+
+func (i *Instance) isNativeWindowsLaunch() bool {
+	return runtime.GOOS == "windows" &&
+		!i.IsSSH() &&
+		!i.IsSandboxed()
+}
+
+func (i *Instance) shouldWrapEffectiveWrapperInPOSIXShell() bool {
+	return i.hasEffectiveWrapper() &&
+		!i.shouldFoldCodexExtraArgsWrapperIntoLaunchForCommand(i.Command) &&
+		!i.isNativeWindowsLaunch()
 }
 
 func (i *Instance) shouldUseWindowsCmdCommandShell(command string) bool {
 	trimmed := strings.TrimSpace(command)
 	return runtime.GOOS == "windows" &&
 		i.Tool == "codex" &&
-		isCodexTUICommandInvocation(trimmed) &&
+		i.isCodexTUICommandInvocationForLaunch(trimmed) &&
 		!i.IsSSH() &&
 		!i.IsSandboxed() &&
 		(!i.hasEffectiveWrapper() || i.shouldFoldCodexExtraArgsWrapperIntoLaunchForCommand(command))
+}
+
+func (i *Instance) shouldUseWindowsCmdCommandShellForPreparedCommand(command string) bool {
+	return runtime.GOOS == "windows" &&
+		!i.IsSSH() &&
+		!i.IsSandboxed() &&
+		(isWindowsCmdWrappedLaunch(command) || i.shouldUseWindowsCmdCommandShell(command))
+}
+
+func (i *Instance) shouldUseWindowsCmdCommandShellForCodexLaunch(baseCommand, launchCommand string) bool {
+	return i.shouldUseWindowsCmdCommandShell(launchCommand)
+}
+
+func (i *Instance) shouldUseCodexRespawnPane() bool {
+	if !IsCodexCompatible(i.Tool) {
+		return false
+	}
+	launchCommand := i.resolveCodexCommand(i.Command)
+	return !i.shouldUseWindowsCmdCommandShellForCodexLaunch(i.Command, launchCommand)
+}
+
+func isWindowsCmdWrappedLaunch(command string) bool {
+	fields := strings.Fields(strings.TrimSpace(command))
+	if len(fields) == 0 {
+		return false
+	}
+	cmdToken := strings.Trim(fields[0], `"'`)
+	base := strings.ToLower(filepath.Base(cmdToken))
+	if base != "cmd" && base != "cmd.exe" {
+		return false
+	}
+	for _, field := range fields[1:] {
+		switch strings.ToLower(strings.Trim(field, `"'`)) {
+		case "/c":
+			return true
+		}
+	}
+	return false
 }
 
 func startsWithCommand(command, wantBase string) bool {
@@ -7276,12 +7351,29 @@ func isSimpleCommandInvocation(command, wantBase string) bool {
 	return startsWithCommand(command, wantBase)
 }
 
+func commandRequiresPOSIXShellSyntax(command string) bool {
+	fields := strings.Fields(strings.TrimSpace(command))
+	if len(fields) == 0 {
+		return false
+	}
+	switch fields[0] {
+	case "export", "env", "unset":
+		return true
+	default:
+		return false
+	}
+}
+
 func isCodexTUICommandInvocation(command string) bool {
+	return isCodexTUICommandInvocationForBase(command, "codex")
+}
+
+func isCodexTUICommandInvocationForBase(command, base string) bool {
 	trimmed := strings.TrimSpace(command)
 	if trimmed == "" {
 		return true
 	}
-	if !isSimpleCommandInvocation(trimmed, "codex") {
+	if !isSimpleCommandInvocation(trimmed, base) {
 		return false
 	}
 	fields := strings.Fields(trimmed)
@@ -7290,6 +7382,14 @@ func isCodexTUICommandInvocation(command string) bool {
 		return true
 	}
 	return false
+}
+
+func configuredCodexCommandBase() string {
+	fields := strings.Fields(strings.TrimSpace(GetCodexCommand()))
+	if len(fields) == 0 {
+		return ""
+	}
+	return strings.Trim(fields[0], `"'`)
 }
 
 func firstCodexNonFlagArg(args []string) string {
@@ -7340,6 +7440,104 @@ func shouldAppendCodexResume(command string) bool {
 	return isCodexTUICommandInvocation(command)
 }
 
+func (i *Instance) shouldAppendCodexResumeForLaunch(command string) bool {
+	if i == nil || i.Tool != "codex" {
+		return shouldAppendCodexResume(command)
+	}
+	trimmed := strings.TrimSpace(command)
+	if startsWithCommand(trimmed, "codex") {
+		return isCodexTUICommandInvocation(trimmed)
+	}
+	base := configuredCodexCommandBase()
+	if base != "" && base != "codex" && isSimpleCommandInvocation(trimmed, base) {
+		if isCodexTUICommandInvocationForBase(trimmed, base) {
+			return true
+		}
+		if isConfiguredCodexLauncherInvocation(trimmed, base) {
+			return true
+		}
+		return false
+	}
+	return shouldAppendCodexResume(trimmed)
+}
+
+func (i *Instance) isCodexTUICommandInvocationForLaunch(command string) bool {
+	if isCodexTUICommandInvocation(command) {
+		return true
+	}
+	if i == nil || i.Tool != "codex" {
+		return false
+	}
+	base := configuredCodexCommandBase()
+	if base == "" || base == "codex" {
+		return false
+	}
+	return isCodexTUICommandInvocationForBase(command, base)
+}
+
+func isConfiguredCodexLauncherInvocation(command, configuredBase string) bool {
+	fields := strings.Fields(strings.TrimSpace(command))
+	if len(fields) < 2 || !isSimpleCommandInvocation(command, configuredBase) {
+		return false
+	}
+	skipNext := false
+	for _, field := range fields[1:] {
+		if skipNext {
+			skipNext = false
+			continue
+		}
+		arg := strings.Trim(field, `"'`)
+		if arg == "" {
+			continue
+		}
+		if arg == "--" {
+			return false
+		}
+		if strings.HasPrefix(arg, "-") {
+			skipNext = launcherFlagConsumesValue(arg)
+			continue
+		}
+		return isCodexCommandToken(arg)
+	}
+	return false
+}
+
+func launcherFlagConsumesValue(arg string) bool {
+	arg = strings.Trim(arg, `"'`)
+	if arg == "" || strings.Contains(arg, "=") {
+		return false
+	}
+	switch arg {
+	case "-p",
+		"--package",
+		"--from",
+		"--with",
+		"--python",
+		"--cache",
+		"--registry",
+		"--userconfig",
+		"--index-url",
+		"--extra-index-url",
+		"--find-links":
+		return true
+	default:
+		return false
+	}
+}
+
+func isCodexCommandToken(token string) bool {
+	token = strings.Trim(strings.TrimSpace(token), `"'`)
+	token = strings.TrimSuffix(strings.TrimSuffix(token, ".exe"), ".cmd")
+	if idx := strings.LastIndexAny(token, `/\`); idx >= 0 {
+		token = token[idx+1:]
+	}
+	if at := strings.LastIndex(token, "@"); at > 0 {
+		token = token[:at]
+	}
+	token = strings.ToLower(token)
+	return token == "codex" || token == "codext" || token == "openai-codex"
+}
+
 func (i *Instance) shouldUsePowerShellCommandShellForStart(commandRequiresPOSIXShell bool) bool {
 	if commandRequiresPOSIXShell {
 		return false
@@ -7367,13 +7565,20 @@ func (i *Instance) shouldValidateCodexResumeOnHost(command string) bool {
 func (i *Instance) resolveCodexNoAltScreenFlag(command string) string {
 	if runtime.GOOS != "windows" ||
 		i.Tool != "codex" ||
-		!isCodexTUICommandInvocation(command) ||
+		!i.isCodexTUICommandInvocationForLaunch(command) ||
 		i.IsSSH() ||
 		i.IsSandboxed() ||
 		(i.hasEffectiveWrapper() && !i.hasCodexExtraArgsWrapper()) {
 		return ""
 	}
 	return " --no-alt-screen"
+}
+
+func (i *Instance) resolveCodexNoAltScreenFlagForLaunch(baseCommand, launchCommand string) string {
+	if i.resolveCodexNoAltScreenFlag(launchCommand) != "" {
+		return " --no-alt-screen"
+	}
+	return ""
 }
 
 func (i *Instance) hasCodexExtraArgsWrapper() bool {
@@ -7385,10 +7590,28 @@ func (i *Instance) shouldFoldCodexExtraArgsWrapperIntoLaunchForCommand(command s
 	trimmed := strings.TrimSpace(command)
 	return runtime.GOOS == "windows" &&
 		i.Tool == "codex" &&
-		isCodexTUICommandInvocation(trimmed) &&
+		i.isCodexExtraArgsFoldableLaunch(trimmed) &&
 		!i.IsSSH() &&
 		!i.IsSandboxed() &&
 		i.hasCodexExtraArgsWrapper()
+}
+
+func (i *Instance) isCodexExtraArgsFoldableLaunch(command string) bool {
+	if i.isCodexTUICommandInvocationForLaunch(command) {
+		return true
+	}
+	if i == nil || i.Tool != "codex" {
+		return false
+	}
+	base := configuredCodexCommandBase()
+	// Launcher commands such as `npx codex` are not native Codex binaries: they
+	// must keep the PowerShell launch path and must not receive TUI-only flags
+	// like --no-alt-screen. They still run the Codex TUI, though, so the
+	// `{command} --model ...` wrapper suffix belongs inside the resolved launch
+	// command rather than being dropped by prepareCommand's wrapper handling.
+	return base != "" &&
+		base != "codex" &&
+		isConfiguredCodexLauncherInvocation(command, base)
 }
 
 func (i *Instance) codexExtraArgsWrapperSuffix() string {

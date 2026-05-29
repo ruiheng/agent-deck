@@ -563,7 +563,7 @@ config_dir = "~/.claude-work"
 	}
 }
 
-func TestBuildClaudeCommand_WindowsWrappedSessionKeepsPosixPrefix(t *testing.T) {
+func TestBuildClaudeCommand_WindowsWrappedSessionUsesPowerShellPrefix(t *testing.T) {
 	if runtime.GOOS != "windows" {
 		t.Skip("windows-specific behavior")
 	}
@@ -583,11 +583,11 @@ func TestBuildClaudeCommand_WindowsWrappedSessionKeepsPosixPrefix(t *testing.T) 
 	inst.Wrapper = "{command}"
 	cmd := inst.buildClaudeCommand("claude")
 
-	if !strings.Contains(cmd, "AGENTDECK_INSTANCE_ID=") {
-		t.Fatalf("wrapped Windows Claude command should retain POSIX inline env prefix, got: %s", cmd)
+	if strings.Contains(cmd, "export ") {
+		t.Fatalf("native Windows wrapped Claude command should not use POSIX env prefix, got: %s", cmd)
 	}
-	if strings.Contains(cmd, "$env:AGENTDECK_INSTANCE_ID") {
-		t.Fatalf("wrapped Windows Claude command should not use PowerShell env prefix, got: %s", cmd)
+	if !strings.Contains(cmd, "$env:AGENTDECK_INSTANCE_ID") {
+		t.Fatalf("native Windows wrapped Claude command should use PowerShell env prefix, got: %s", cmd)
 	}
 }
 
@@ -3390,7 +3390,7 @@ func TestCollectDockerEnvVars_ColorFGBGFallback(t *testing.T) {
 	require.NotEmpty(t, result["COLORFGBG"])
 }
 
-func TestPrepareCommand_WindowsGenericWrapperPreservesBash(t *testing.T) {
+func TestPrepareCommand_WindowsGenericWrapperDoesNotForceBash(t *testing.T) {
 	if runtime.GOOS != "windows" {
 		t.Skip("windows-specific wrapper behavior")
 	}
@@ -3404,8 +3404,11 @@ func TestPrepareCommand_WindowsGenericWrapperPreservesBash(t *testing.T) {
 	if err != nil {
 		t.Fatalf("prepareCommand() unexpected error: %v", err)
 	}
-	if !strings.Contains(wrapped, "bash -c") {
-		t.Fatalf("generic wrapper should preserve POSIX bash on Windows, got %q", wrapped)
+	if strings.Contains(wrapped, "bash -c") {
+		t.Fatalf("native Windows generic wrapper should not force POSIX bash, got %q", wrapped)
+	}
+	if wrapped != "echo hi" {
+		t.Fatalf("native Windows generic wrapper should apply directly, got %q", wrapped)
 	}
 }
 
@@ -3474,9 +3477,9 @@ func TestShouldUsePowerShellCommandShell_WindowsExecutionShells(t *testing.T) {
 			want: true,
 		},
 		{
-			name: "claude wrapper remains posix",
+			name: "claude native wrapper uses PowerShell",
 			inst: &Instance{Tool: "claude", Wrapper: "{command} --extra"},
-			want: false,
+			want: true,
 		},
 		{
 			name: "gemini local native",
@@ -3484,9 +3487,9 @@ func TestShouldUsePowerShellCommandShell_WindowsExecutionShells(t *testing.T) {
 			want: true,
 		},
 		{
-			name: "gemini wrapper remains posix",
+			name: "gemini native wrapper uses PowerShell",
 			inst: &Instance{Tool: "gemini", Wrapper: "{command} --extra"},
-			want: false,
+			want: true,
 		},
 		{
 			name: "opencode local native",
@@ -3494,9 +3497,9 @@ func TestShouldUsePowerShellCommandShell_WindowsExecutionShells(t *testing.T) {
 			want: true,
 		},
 		{
-			name: "opencode wrapper remains posix",
+			name: "opencode native wrapper uses PowerShell",
 			inst: &Instance{Tool: "opencode", Wrapper: "{command} --extra"},
-			want: false,
+			want: true,
 		},
 		{
 			name: "shell remains posix",
@@ -3549,6 +3552,197 @@ func TestBuildCodexCommand_WindowsNativeCodexUsesCmd(t *testing.T) {
 	require.Contains(t, cmd, `&& codex --no-alt-screen`)
 	require.NotContains(t, cmd, "$env:")
 	require.NotContains(t, cmd, "pwsh -NoLogo -EncodedCommand")
+}
+
+func TestBuildCodexCommand_WindowsConfiguredBareCodexUsesCmd(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("windows-specific behavior")
+	}
+
+	cfg := &UserConfig{
+		Codex: CodexSettings{Command: "codext"},
+	}
+	restore := resetUserConfigCache(t, cfg)
+	defer restore()
+
+	inst := &Instance{ID: "abc123", Title: "configured-codex", Tool: "codex", Command: "codex"}
+	cmd := inst.buildCodexCommand(inst.Command)
+
+	require.Contains(t, cmd, `cmd.exe /d /s /c "`)
+	require.Contains(t, cmd, `set ""AGENTDECK_INSTANCE_ID=abc123""`)
+	require.Contains(t, cmd, `set ""AGENTDECK_TITLE=configured-codex""`)
+	require.Contains(t, cmd, `set ""AGENTDECK_TOOL=codex""`)
+	require.Contains(t, cmd, `&& codext --no-alt-screen`)
+	require.NotContains(t, cmd, "$env:")
+	require.NotContains(t, cmd, "pwsh -NoLogo -EncodedCommand")
+}
+
+func TestBuildCodexCommand_WindowsConfiguredCodextCommandUsesCmd(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("windows-specific behavior")
+	}
+
+	cfg := &UserConfig{
+		Codex: CodexSettings{Command: "codext"},
+	}
+	restore := resetUserConfigCache(t, cfg)
+	defer restore()
+
+	inst := &Instance{ID: "abc123", Title: "configured-codext", Tool: "codex", Command: "codext"}
+	cmd := inst.buildCodexCommand(inst.Command)
+
+	require.Contains(t, cmd, `cmd.exe /d /s /c "`)
+	require.Contains(t, cmd, `set ""AGENTDECK_INSTANCE_ID=abc123""`)
+	require.Contains(t, cmd, `set ""AGENTDECK_TITLE=configured-codext""`)
+	require.Contains(t, cmd, `set ""AGENTDECK_TOOL=codex""`)
+	require.Contains(t, cmd, `&& codext --no-alt-screen`)
+	require.NotContains(t, cmd, "$env:")
+	require.NotContains(t, cmd, "pwsh -NoLogo -EncodedCommand")
+}
+
+func TestBuildCodexCommand_WindowsConfiguredCodextSubcommandPreserved(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("windows-specific behavior")
+	}
+
+	cfg := &UserConfig{
+		Codex: CodexSettings{Command: "codext"},
+	}
+	restore := resetUserConfigCache(t, cfg)
+	defer restore()
+
+	inst := &Instance{ID: "abc123", Title: "configured-codext-subcommand", Tool: "codex", Command: "codext exec -- echo hi"}
+	inst.CodexSessionID = "019ddde5-d48a-7f13-ae4f-880fe2c5d342"
+	cmd := inst.buildCodexCommand(inst.Command)
+
+	require.Contains(t, cmd, "$env:")
+	require.Contains(t, cmd, "codext exec -- echo hi")
+	require.NotContains(t, cmd, `cmd.exe /d /s /c "`)
+	require.NotContains(t, cmd, "--no-alt-screen")
+	require.NotContains(t, cmd, "resume "+inst.CodexSessionID)
+}
+
+func TestBuildCodexCommand_WindowsConfiguredDefaultCodexSubcommandPreserved(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("windows-specific behavior")
+	}
+
+	cfg := &UserConfig{
+		Codex: CodexSettings{Command: "codex exec -- echo hi"},
+	}
+	restore := resetUserConfigCache(t, cfg)
+	defer restore()
+
+	inst := &Instance{ID: "abc123", Title: "configured-codex-exec", Tool: "codex", Command: "codex"}
+	inst.CodexSessionID = "019ddde5-d48a-7f13-ae4f-880fe2c5d342"
+	cmd := inst.buildCodexCommand(inst.Command)
+
+	require.Contains(t, cmd, "$env:")
+	require.Contains(t, cmd, "codex exec -- echo hi")
+	require.NotContains(t, cmd, `cmd.exe /d /s /c "`)
+	require.NotContains(t, cmd, "--no-alt-screen")
+	require.NotContains(t, cmd, "resume "+inst.CodexSessionID)
+}
+
+func TestBuildCodexCommand_WindowsConfiguredLauncherCodexAppendsResume(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("windows-specific behavior")
+	}
+
+	cfg := &UserConfig{
+		Codex: CodexSettings{Command: "npx codex"},
+	}
+	restore := resetUserConfigCache(t, cfg)
+	defer restore()
+
+	inst := &Instance{ID: "abc123", Title: "configured-npx-codex", Tool: "codex", Command: "codex"}
+	inst.CodexSessionID = "019ddde5-d48a-7f13-ae4f-880fe2c5d342"
+	cmd := inst.buildCodexCommand(inst.Command)
+
+	require.Contains(t, cmd, "$env:")
+	require.Contains(t, cmd, "npx codex resume "+inst.CodexSessionID)
+	require.NotContains(t, cmd, `cmd.exe /d /s /c "`)
+	require.NotContains(t, cmd, "--no-alt-screen")
+}
+
+func TestBuildCodexCommand_WindowsConfiguredLauncherCodexWithFlagValueAppendsResume(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("windows-specific behavior")
+	}
+
+	tests := []struct {
+		name    string
+		command string
+	}{
+		{name: "npx scoped package", command: "npx @openai/codex"},
+		{name: "npx scoped package version", command: "npx @openai/codex@latest"},
+		{name: "uvx package", command: "uvx openai-codex"},
+		{name: "npx package", command: "npx --package @openai/codex codex"},
+		{name: "npx short package", command: "npx -p @openai/codex codex"},
+		{name: "uvx from", command: "uvx --from openai-codex codex"},
+		{name: "npx boolean flag", command: "npx --yes codex"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := &UserConfig{
+				Codex: CodexSettings{Command: tt.command},
+			}
+			restore := resetUserConfigCache(t, cfg)
+			defer restore()
+
+			inst := &Instance{ID: "abc123", Title: "configured-launcher-codex", Tool: "codex", Command: "codex"}
+			inst.CodexSessionID = "019ddde5-d48a-7f13-ae4f-880fe2c5d342"
+			cmd := inst.buildCodexCommand(inst.Command)
+
+			require.Contains(t, cmd, "$env:")
+			require.Contains(t, cmd, tt.command+" resume "+inst.CodexSessionID)
+			require.NotContains(t, cmd, `cmd.exe /d /s /c "`)
+			require.NotContains(t, cmd, "--no-alt-screen")
+		})
+	}
+}
+
+func TestCodexPreparedCommandShellSelectionUsesResolvedLauncher(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("windows-specific behavior")
+	}
+
+	cfg := &UserConfig{
+		Codex: CodexSettings{Command: "npx codex"},
+	}
+	restore := resetUserConfigCache(t, cfg)
+	defer restore()
+
+	inst := &Instance{ID: "abc123", Title: "configured-npx-codex", Tool: "codex", Command: "codex"}
+	inst.CodexSessionID = "019ddde5-d48a-7f13-ae4f-880fe2c5d342"
+	cmd := inst.buildCodexCommand(inst.Command)
+
+	require.Contains(t, cmd, "$env:")
+	require.Contains(t, cmd, "npx codex resume "+inst.CodexSessionID)
+	require.False(t, inst.shouldUseWindowsCmdCommandShellForPreparedCommand(cmd))
+	require.True(t, inst.shouldUsePowerShellCommandShellForPreparedCommand(cmd, false))
+	require.True(t, inst.shouldUseCodexRespawnPane())
+}
+
+func TestCodexPreparedCommandShellSelectionKeepsResolvedCmdWrapper(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("windows-specific behavior")
+	}
+
+	cfg := &UserConfig{
+		Codex: CodexSettings{Command: "codext"},
+	}
+	restore := resetUserConfigCache(t, cfg)
+	defer restore()
+
+	inst := &Instance{ID: "abc123", Title: "configured-codext", Tool: "codex", Command: "codex"}
+	cmd := inst.buildCodexCommand(inst.Command)
+
+	require.Contains(t, cmd, `cmd.exe /d /s /c "`)
+	require.True(t, inst.shouldUseWindowsCmdCommandShellForPreparedCommand(cmd))
+	require.False(t, inst.shouldUsePowerShellCommandShellForPreparedCommand(cmd, false))
+	require.False(t, inst.shouldUseCodexRespawnPane())
 }
 
 func TestBuildCodexCommand_WindowsNativeCodexWithArgsUsesCmd(t *testing.T) {
@@ -3762,7 +3956,7 @@ func TestShouldUsePowerShellCommandShellForStart_WindowsClaudeForkStaysPOSIX(t *
 	}
 }
 
-func TestBuildCodexCommand_WindowsWrapperEmitsPOSIXEnv(t *testing.T) {
+func TestBuildCodexCommand_WindowsWrapperEmitsPowerShellEnv(t *testing.T) {
 	if runtime.GOOS != "windows" {
 		t.Skip("windows-specific shell syntax")
 	}
@@ -3792,14 +3986,14 @@ func TestBuildCodexCommand_WindowsWrapperEmitsPOSIXEnv(t *testing.T) {
 	inst.Wrapper = "{command}"
 
 	cmd := inst.buildCodexCommand(inst.Command)
-	if strings.Contains(cmd, "$env:") {
-		t.Fatalf("wrapped Codex command must not emit PowerShell env syntax, got %q", cmd)
+	if strings.Contains(cmd, "export ") {
+		t.Fatalf("native Windows Codex wrapper must not emit POSIX env syntax, got %q", cmd)
 	}
-	if !strings.Contains(cmd, "export CODEX_HOME='/tmp/codex-wrapped'") {
-		t.Fatalf("wrapped Codex command should emit POSIX tool env, got %q", cmd)
+	if !strings.Contains(cmd, "$env:CODEX_HOME='/tmp/codex-wrapped'") {
+		t.Fatalf("native Windows Codex wrapper should emit PowerShell tool env, got %q", cmd)
 	}
-	if !strings.Contains(cmd, "export AGENTDECK_TOOL='codex'") {
-		t.Fatalf("wrapped Codex command should emit POSIX agent-deck env, got %q", cmd)
+	if !strings.Contains(cmd, "$env:AGENTDECK_TOOL='codex'") {
+		t.Fatalf("native Windows Codex wrapper should emit PowerShell agent-deck env, got %q", cmd)
 	}
 }
 
@@ -3896,6 +4090,60 @@ func TestPrepareCommand_WindowsCodexExtraArgsWrapperStaysCmd(t *testing.T) {
 	require.NotContains(t, wrapped, "export AGENTDECK_TOOL")
 }
 
+func TestPrepareCommand_WindowsConfiguredCodextExtraArgsWrapperStaysCmd(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("windows-specific Codex TUI behavior")
+	}
+
+	cfg := &UserConfig{
+		Codex: CodexSettings{Command: "codext"},
+	}
+	restore := resetUserConfigCache(t, cfg)
+	defer restore()
+
+	inst := &Instance{ID: "abc123", Title: "windows-codext-extra-args", Tool: "codex", Command: "codex"}
+	inst.Wrapper = "{command} --model gpt-5.5 -c model_reasoning_effort=medium --ask-for-approval on-request"
+
+	cmd := inst.buildCodexCommand(inst.Command)
+	wrapped, _, err := inst.prepareCommand(cmd)
+	if err != nil {
+		t.Fatalf("prepareCommand() unexpected error: %v", err)
+	}
+
+	require.Contains(t, wrapped, `cmd.exe /d /s /c "`)
+	require.Contains(t, wrapped, `codext --no-alt-screen --model gpt-5.5 -c model_reasoning_effort=medium --ask-for-approval on-request`)
+	require.NotContains(t, wrapped, "bash -c")
+	require.NotContains(t, wrapped, "export AGENTDECK_TOOL")
+}
+
+func TestPrepareCommand_WindowsConfiguredLauncherExtraArgsWrapperPreserved(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("windows-specific Codex launcher behavior")
+	}
+
+	cfg := &UserConfig{
+		Codex: CodexSettings{Command: "npx codex"},
+	}
+	restore := resetUserConfigCache(t, cfg)
+	defer restore()
+
+	inst := &Instance{ID: "abc123", Title: "windows-npx-codex-extra-args", Tool: "codex", Command: "codex"}
+	inst.Wrapper = "{command} --model gpt-5.5 -c model_reasoning_effort=medium --ask-for-approval on-request"
+	inst.CodexSessionID = "019ddde5-d48a-7f13-ae4f-880fe2c5d342"
+
+	cmd := inst.buildCodexCommand(inst.Command)
+	wrapped, _, err := inst.prepareCommand(cmd)
+	if err != nil {
+		t.Fatalf("prepareCommand() unexpected error: %v", err)
+	}
+
+	require.Contains(t, wrapped, "npx codex --model gpt-5.5 -c model_reasoning_effort=medium --ask-for-approval on-request resume "+inst.CodexSessionID)
+	require.Contains(t, wrapped, "$env:AGENTDECK_TOOL='codex'")
+	require.NotContains(t, wrapped, `cmd.exe /d /s /c "`)
+	require.NotContains(t, wrapped, "bash -c")
+	require.NotContains(t, wrapped, "--no-alt-screen")
+}
+
 func TestPrepareCommand_WindowsCodexToolDefExtraArgsWrapperStaysCmd(t *testing.T) {
 	if runtime.GOOS != "windows" {
 		t.Skip("windows-specific Codex TUI behavior")
@@ -3946,11 +4194,13 @@ func TestPrepareCommand_WindowsCompoundCodexExtraArgsWrapperUsesNormalWrapper(t 
 		t.Fatalf("prepareCommand() unexpected error: %v", err)
 	}
 
-	require.Contains(t, wrapped, "bash -c")
+	require.NotContains(t, wrapped, "bash -c")
 	require.Contains(t, wrapped, "codex; Write-Host done")
 	require.Contains(t, wrapped, "--model gpt-5.5")
+	require.Contains(t, wrapped, "$env:AGENTDECK_TOOL='codex'")
 	require.NotContains(t, wrapped, `cmd.exe /d /s /c "`)
 	require.NotContains(t, wrapped, "--no-alt-screen")
+	require.NotContains(t, wrapped, "export AGENTDECK_TOOL")
 }
 
 func TestPrepareCommand_WindowsCodexSubcommandExtraArgsWrapperUsesNormalWrapper(t *testing.T) {
@@ -3968,15 +4218,17 @@ func TestPrepareCommand_WindowsCodexSubcommandExtraArgsWrapperUsesNormalWrapper(
 		t.Fatalf("prepareCommand() unexpected error: %v", err)
 	}
 
-	require.Contains(t, wrapped, "bash -c")
+	require.NotContains(t, wrapped, "bash -c")
 	require.Contains(t, wrapped, "codex --profile work exec -- echo hi")
 	require.Contains(t, wrapped, "--model gpt-5.5")
+	require.Contains(t, wrapped, "$env:AGENTDECK_TOOL='codex'")
 	require.NotContains(t, wrapped, `cmd.exe /d /s /c "`)
 	require.NotContains(t, wrapped, "--no-alt-screen")
 	require.NotContains(t, wrapped, " resume "+inst.CodexSessionID)
+	require.NotContains(t, wrapped, "export AGENTDECK_TOOL")
 }
 
-func TestBuildClaudeCommand_WindowsWrapperEmitsPOSIXEnv(t *testing.T) {
+func TestBuildClaudeCommand_WindowsWrapperEmitsPowerShellEnv(t *testing.T) {
 	if runtime.GOOS != "windows" {
 		t.Skip("windows-specific shell syntax")
 	}
@@ -3990,11 +4242,11 @@ func TestBuildClaudeCommand_WindowsWrapperEmitsPOSIXEnv(t *testing.T) {
 	inst.Wrapper = "{command}"
 
 	cmd := inst.buildClaudeCommand("claude")
-	if strings.Contains(cmd, "$env:") {
-		t.Fatalf("wrapped Claude command must not emit PowerShell env syntax, got %q", cmd)
+	if strings.Contains(cmd, "export ") {
+		t.Fatalf("native Windows Claude wrapper must not emit POSIX env syntax, got %q", cmd)
 	}
-	if !strings.Contains(cmd, "AGENTDECK_INSTANCE_ID="+inst.ID) {
-		t.Fatalf("wrapped Claude command should emit POSIX inline env, got %q", cmd)
+	if !strings.Contains(cmd, "$env:AGENTDECK_INSTANCE_ID='"+inst.ID+"'") {
+		t.Fatalf("native Windows Claude wrapper should emit PowerShell env, got %q", cmd)
 	}
 }
 
@@ -5256,15 +5508,16 @@ func TestPrepareCommand_AppliesWrapperBeforeBashWrap(t *testing.T) {
 	inst := NewInstance("issue-601-unit", "/tmp")
 	inst.Tool = "claude"
 	inst.Wrapper = "{command} --extra1 --extra2"
+	inst.SSHHost = "user@example.com"
 
 	got, _, err := inst.prepareCommand("tool")
 	if err != nil {
 		t.Fatalf("prepareCommand returned error: %v", err)
 	}
 
-	want := `bash -c 'tool --extra1 --extra2'`
-	if got != want {
-		t.Fatalf("prepareCommand output shape wrong.\n  got:  %q\n  want: %q", got, want)
+	want := `bash -c '\''tool --extra1 --extra2'\''`
+	if !strings.Contains(got, want) {
+		t.Fatalf("prepareCommand output shape wrong.\n  got:  %q\n  want substring: %q", got, want)
 	}
 
 	// Defense in depth: trailing flags must NOT appear outside the quoted payload.
@@ -5281,15 +5534,16 @@ func TestPrepareCommand_WrapperWithSingleQuoteInCmd_QuotesSafely(t *testing.T) {
 	inst := NewInstance("issue-601-quoting", "/tmp")
 	inst.Tool = "claude"
 	inst.Wrapper = "{command} --trailing"
+	inst.SSHHost = "user@example.com"
 
 	got, _, err := inst.prepareCommand(`echo it's-fine`)
 	if err != nil {
 		t.Fatalf("prepareCommand returned error: %v", err)
 	}
 
-	want := `bash -c 'echo it'"'"'s-fine --trailing'`
-	if got != want {
-		t.Fatalf("quoting escape wrong.\n  got:  %q\n  want: %q", got, want)
+	if !strings.Contains(got, `bash -c '\''echo it`) ||
+		!strings.Contains(got, `s-fine --trailing'\''`) {
+		t.Fatalf("quoting escape wrong.\n  got: %q", got)
 	}
 }
 
@@ -5315,6 +5569,7 @@ func TestPrepareCommand_NoWrapper_Unchanged(t *testing.T) {
 func TestPrepareCommand_Issue601_ReporterRepro(t *testing.T) {
 	inst := NewInstance("issue-601-repro", "/tmp")
 	inst.Tool = "claude"
+	inst.SSHHost = "user@example.com"
 	// Mirrors what resolveSessionCommand produces for:
 	//   -c "my-claude-wrapper --session-id UUID --dangerously-skip-permissions"
 	inst.Wrapper = "{command} --session-id aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee --dangerously-skip-permissions"

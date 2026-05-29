@@ -107,7 +107,7 @@ func TestIssue666_SweepDuplicateToolSessions_OpenCode(t *testing.T) {
 	}
 }
 
-func TestIssue666_SweepDuplicateToolSessions_Codex(t *testing.T) {
+func TestIssue666_SweepDuplicateToolSessions_CodexSkipsToolID(t *testing.T) {
 	calls, restore := withSpyKiller(t)
 	defer restore()
 
@@ -117,8 +117,11 @@ func TestIssue666_SweepDuplicateToolSessions_Codex(t *testing.T) {
 
 	inst.sweepDuplicateToolSessions()
 
-	if findSweepCall(*calls, "CODEX_SESSION_ID") == nil {
-		t.Fatalf("expected CODEX_SESSION_ID sweep, got calls: %+v", *calls)
+	if got := findSweepCall(*calls, "CODEX_SESSION_ID"); got != nil {
+		t.Fatalf("CodexSessionID is not a safe destructive dedupe key; got CODEX_SESSION_ID sweep: %+v", got)
+	}
+	if got := findSweepCall(*calls, "AGENTDECK_INSTANCE_ID"); got == nil {
+		t.Fatalf("expected instance-id sweep to remain for Codex, got calls: %+v", *calls)
 	}
 }
 

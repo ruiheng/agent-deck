@@ -71,7 +71,10 @@ func TestSpawnEnv_ExposesResolvedConfigDirHint_RegressionFor925(t *testing.T) {
 
 	wantHint := "AGENTDECK_RESOLVED_CONFIG_DIR=" + profile
 	if !strings.Contains(cmd, wantHint) {
-		t.Errorf("spawn cmd must contain %q (intended resolved dir, not the scratch override);\ngot: %s", wantHint, cmd)
+		wantHintPS := "$env:AGENTDECK_RESOLVED_CONFIG_DIR='" + profile + "'"
+		if !strings.Contains(cmd, wantHintPS) {
+			t.Errorf("spawn cmd must contain %q or %q (intended resolved dir, not the scratch override);\ngot: %s", wantHint, wantHintPS, cmd)
+		}
 	}
 
 	// The hint must NEVER carry the worker-scratch path — that would
@@ -84,7 +87,10 @@ func TestSpawnEnv_ExposesResolvedConfigDirHint_RegressionFor925(t *testing.T) {
 
 	wantGroup := "AGENTDECK_RESOLVED_GROUP=projects/devops"
 	if !strings.Contains(cmd, wantGroup) {
-		t.Errorf("spawn cmd must contain %q;\ngot: %s", wantGroup, cmd)
+		wantGroupPS := "$env:AGENTDECK_RESOLVED_GROUP='projects/devops'"
+		if !strings.Contains(cmd, wantGroupPS) {
+			t.Errorf("spawn cmd must contain %q or %q;\ngot: %s", wantGroup, wantGroupPS, cmd)
+		}
 	}
 
 	// With CLAUDE_CONFIG_DIR env set, the instance-chain resolver returns
@@ -92,6 +98,9 @@ func TestSpawnEnv_ExposesResolvedConfigDirHint_RegressionFor925(t *testing.T) {
 	// here so env wins). See resolveClaudeConfigDir.
 	wantSource := "AGENTDECK_RESOLVED_SOURCE=env"
 	if !strings.Contains(cmd, wantSource) {
-		t.Errorf("spawn cmd must contain %q;\ngot: %s", wantSource, cmd)
+		wantSourcePS := "$env:AGENTDECK_RESOLVED_SOURCE='env'"
+		if !strings.Contains(cmd, wantSourcePS) {
+			t.Errorf("spawn cmd must contain %q or %q;\ngot: %s", wantSource, wantSourcePS, cmd)
+		}
 	}
 }

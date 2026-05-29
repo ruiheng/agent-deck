@@ -162,7 +162,10 @@ config_dir = "~/.claude-personal"
 	wantDir := filepath.Join(home, ".claude-personal")
 	wantInline := "CLAUDE_CONFIG_DIR=" + wantDir
 	if !strings.Contains(cmd, wantInline) {
-		t.Errorf("spawn must export per-group config_dir verbatim; want contains %q\n  got: %s", wantInline, cmd)
+		wantInlinePS := "$env:CLAUDE_CONFIG_DIR='" + wantDir + "'"
+		if !strings.Contains(cmd, wantInlinePS) {
+			t.Errorf("spawn must export per-group config_dir verbatim; want contains %q or %q\n  got: %s", wantInline, wantInlinePS, cmd)
+		}
 	}
 	if strings.Contains(cmd, "worker-scratch") {
 		t.Errorf("spawn must not reference worker-scratch path when no telegram conductor; got: %s", cmd)

@@ -655,12 +655,38 @@ func discoverLatestClaudeJSONL(projectPath string) (string, bool) {
 		configDir = filepath.Join(os.Getenv("HOME"), ".claude")
 	}
 
-	resolvedPath := projectPath
+	candidatePaths := []string{projectPath}
 	if resolved, err := filepath.EvalSymlinks(projectPath); err == nil {
-		resolvedPath = resolved
+		if resolved != projectPath {
+			candidatePaths = append([]string{resolved}, candidatePaths...)
+		}
 	}
 
-	encoded := ConvertToClaudeDirName(resolvedPath)
+	var bestUUID string
+	var bestMTime time.Time
+	for _, candidatePath := range candidatePaths {
+		// Symlinked workspaces can have transcripts under both encodings:
+		// the resolved real path and the raw symlink path. Discovery must pick
+		// the newest transcript across all candidates, not the first directory
+		// that happens to contain any JSONL.
+		if uuid, mtime, ok := discoverLatestClaudeJSONLInProjectDirWithMTime(configDir, candidatePath); ok && mtime.After(bestMTime) {
+			bestUUID = uuid
+			bestMTime = mtime
+		}
+	}
+	if bestUUID == "" {
+		return "", false
+	}
+	return bestUUID, true
+}
+
+func discoverLatestClaudeJSONLInProjectDir(configDir, projectPath string) (string, bool) {
+	uuid, _, ok := discoverLatestClaudeJSONLInProjectDirWithMTime(configDir, projectPath)
+	return uuid, ok
+}
+
+func discoverLatestClaudeJSONLInProjectDirWithMTime(configDir, projectPath string) (string, time.Time, bool) {
+	encoded := ConvertToClaudeDirName(projectPath)
 	if encoded == "" {
 		encoded = "-"
 	}
@@ -669,12 +695,12 @@ func discoverLatestClaudeJSONL(projectPath string) (string, bool) {
 	// #nosec G703 -- projectDir is derived from configDir (CLAUDE_CONFIG_DIR)
 	// joined with an encoded session ID; not from untrusted input.
 	if _, err := os.Stat(projectDir); os.IsNotExist(err) {
-		return "", false
+		return "", time.Time{}, false
 	}
 
 	entries, err := os.ReadDir(projectDir)
 	if err != nil || len(entries) == 0 {
-		return "", false
+		return "", time.Time{}, false
 	}
 
 	var bestUUID string
@@ -701,9 +727,9 @@ func discoverLatestClaudeJSONL(projectPath string) (string, bool) {
 	}
 
 	if bestUUID == "" {
-		return "", false
+		return "", time.Time{}, false
 	}
-	return bestUUID, true
+	return bestUUID, bestMTime, true
 }
 
 // getProjectSettingsPath returns the path to .claude/settings.local.json for a project

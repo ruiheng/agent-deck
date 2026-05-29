@@ -150,7 +150,10 @@ config_dir = "~/.claude-personal"
 
 	wantDir := filepath.Join(tmpHome, ".claude-personal")
 	if !strings.Contains(cmd, "CLAUDE_CONFIG_DIR="+wantDir) {
-		t.Errorf("child-group spawn missing inherited CLAUDE_CONFIG_DIR=%s\ngot: %s", wantDir, cmd)
+		wantPS := "$env:CLAUDE_CONFIG_DIR='" + wantDir + "'"
+		if !strings.Contains(cmd, wantPS) {
+			t.Errorf("child-group spawn missing inherited CLAUDE_CONFIG_DIR=%s\ngot: %s", wantDir, cmd)
+		}
 	}
 }
 

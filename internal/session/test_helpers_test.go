@@ -20,6 +20,7 @@ func isolatedHomeDir(t *testing.T) string {
 		}
 	}
 	t.Setenv("HOME", home)
+	t.Setenv("AGENTDECK_TEST_USE_HOME", "1")
 	t.Setenv("USERPROFILE", home)
 	vol := filepath.VolumeName(home)
 	if vol != "" {

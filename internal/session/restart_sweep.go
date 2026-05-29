@@ -29,9 +29,12 @@ var killDuplicateSessionsFn = tmux.KillSessionsWithEnvValue
 // this instance's) that duplicate this instance. It runs up to two sweeps:
 //
 //  1. Tool-session-id sweep (issue #596/#666 guard). Kills sessions
-//     sharing the same CLAUDE_/GEMINI_/OPENCODE_/CODEX_SESSION_ID, so a
+//     sharing the same CLAUDE_/GEMINI_/OPENCODE_SESSION_ID, so a
 //     fork-then-edit collision doesn't leave two `claude --resume`
 //     processes fighting over one conversation.
+//     Codex is intentionally excluded: its detected CODEX_SESSION_ID can be
+//     inherited or converge during same-cwd bootstrap scans, so it is not a
+//     safe destructive dedupe key.
 //
 //  2. Instance-id sweep (issue #678 guard). Kills sessions sharing the
 //     same AGENTDECK_INSTANCE_ID. This covers shell / placeholder
@@ -57,8 +60,6 @@ func (i *Instance) sweepDuplicateToolSessions() {
 		killDuplicateSessionsFn("GEMINI_SESSION_ID", i.GeminiSessionID, keepName)
 	case i.Tool == "opencode" && i.OpenCodeSessionID != "":
 		killDuplicateSessionsFn("OPENCODE_SESSION_ID", i.OpenCodeSessionID, keepName)
-	case i.Tool == "codex" && i.CodexSessionID != "":
-		killDuplicateSessionsFn("CODEX_SESSION_ID", i.CodexSessionID, keepName)
 	}
 
 	if i.ID != "" {
