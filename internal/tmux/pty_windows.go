@@ -9,10 +9,15 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"strings"
 	"time"
 )
 
 const windowsAttachMinInteractiveDuration = 750 * time.Millisecond
+const (
+	windowsDetachKeyCommandTimeout = time.Second
+	windowsControlPipeResumeDelay  = 300 * time.Millisecond
+)
 
 // IndexDetachKey returns the index of a control-key sequence in data, or -1 if
 // not found. On Windows we currently only need raw-byte detection for compile-
@@ -35,6 +40,12 @@ func (s *Session) windowsAttachCommand(ctx context.Context, args ...string) *exe
 	// psmux warns about nested sessions when this env var is inherited from the
 	// leader pane. Clearing it allows attaching to another managed session from
 	// inside the current psmux session.
+	cmd.Env = environWithoutPSMUXSession()
+	return cmd
+}
+
+func (s *Session) windowsControlCommand(ctx context.Context, args ...string) *exec.Cmd {
+	cmd := s.tmuxCmdContext(ctx, args...)
 	cmd.Env = environWithoutPSMUXSession()
 	return cmd
 }
@@ -78,11 +89,34 @@ func windowsDetachKeyName(detachByte byte) string {
 
 func (s *Session) bindWindowsDetachKey(detachByte byte) func() {
 	key := windowsDetachKeyName(detachByte)
-	if err := s.windowsAttachCommand(context.Background(), "bind-key", "-n", key, "detach-client").Run(); err != nil {
+	ctx, cancel := context.WithTimeout(context.Background(), windowsDetachKeyCommandTimeout)
+	defer cancel()
+	if err := s.windowsControlCommand(ctx, "bind-key", "-n", key, "detach-client").Run(); err != nil {
 		return func() {}
 	}
 	return func() {
-		_ = s.windowsAttachCommand(context.Background(), "unbind-key", "-n", key).Run()
+		ctx, cancel := context.WithTimeout(context.Background(), windowsDetachKeyCommandTimeout)
+		defer cancel()
+		_ = s.windowsControlCommand(ctx, "unbind-key", "-n", key).Run()
+	}
+}
+
+func (s *Session) suspendControlPipeForWindowsAttach() func() {
+	pm := GetPipeManager()
+	if pm == nil || s == nil || strings.TrimSpace(s.Name) == "" {
+		return func() {}
+	}
+
+	// psmux can wedge its interactive Windows attach client when the same
+	// session also has agent-deck's background control-mode client connected.
+	// While the user owns the terminal, status polling for this one session is
+	// less important than keeping the psmux client responsive. Reconnect after
+	// the attach returns so the TUI regains event-driven status updates.
+	pm.Suspend(s.Name)
+	return func() {
+		time.AfterFunc(windowsControlPipeResumeDelay, func() {
+			pm.Resume(s.Name, s.SocketName)
+		})
 	}
 }
 
@@ -96,7 +130,11 @@ func (s *Session) Attach(ctx context.Context, detachByte ...byte) error {
 		detach = detachByte[0]
 	}
 	cleanupDetachKey := s.bindWindowsDetachKey(detach)
-	defer cleanupDetachKey()
+	resumeControlPipe := s.suspendControlPipeForWindowsAttach()
+	defer func() {
+		cleanupDetachKey()
+		resumeControlPipe()
+	}()
 
 	args := []string{"attach-session", "-t", s.Name}
 	cmd := s.windowsAttachCommand(ctx, args...)
@@ -128,7 +166,11 @@ func (s *Session) Resize(cols, rows int) error {
 // AttachReadOnly attaches to the session in read-only mode.
 func (s *Session) AttachReadOnly(ctx context.Context) error {
 	cleanupDetachKey := s.bindWindowsDetachKey(17)
-	defer cleanupDetachKey()
+	resumeControlPipe := s.suspendControlPipeForWindowsAttach()
+	defer func() {
+		cleanupDetachKey()
+		resumeControlPipe()
+	}()
 
 	args := []string{"attach-session", "-r", "-t", s.Name}
 	cmd := s.windowsAttachCommand(ctx, args...)

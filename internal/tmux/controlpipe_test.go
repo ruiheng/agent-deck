@@ -289,6 +289,60 @@ func TestPipeManager_ConnectIdempotent(t *testing.T) {
 	assert.Equal(t, 1, pm.ConnectedCount())
 }
 
+func TestPipeManager_SuspendSuppressesConnect(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	pm := NewPipeManager(ctx, nil)
+	defer pm.Close()
+
+	pm.Suspend("suspended-session")
+	require.NoError(t, pm.Connect("suspended-session", ""))
+	assert.False(t, pm.IsConnected("suspended-session"))
+	assert.True(t, pm.isSuspended("suspended-session"))
+}
+
+func TestPipeManager_ResumeClearsSuspend(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	pm := NewPipeManager(ctx, nil)
+	defer pm.Close()
+
+	pm.Suspend("resumed-session")
+	pm.Resume("resumed-session", "")
+
+	assert.False(t, pm.isSuspended("resumed-session"))
+}
+
+func TestPipeManager_NestedSuspendRequiresMatchingResumes(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	pm := NewPipeManager(ctx, nil)
+	defer pm.Close()
+
+	pm.Suspend("nested-session")
+	pm.Suspend("nested-session")
+
+	pm.Resume("nested-session", "")
+	assert.True(t, pm.isSuspended("nested-session"))
+
+	pm.Resume("nested-session", "")
+	assert.False(t, pm.isSuspended("nested-session"))
+}
+
+func TestPipeManager_ConnectNoopsAfterClose(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	pm := NewPipeManager(ctx, nil)
+	pm.Close()
+
+	require.NoError(t, pm.Connect("closed-session", ""))
+	assert.False(t, pm.IsConnected("closed-session"))
+}
+
 func TestPipeManager_GlobalSingleton(t *testing.T) {
 	// Singleton should be nil initially (or from previous test state)
 	old := GetPipeManager()

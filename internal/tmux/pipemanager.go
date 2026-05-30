@@ -32,6 +32,7 @@ type PipeManager struct {
 	// Reconnection tracking
 	reconnectMu  sync.Mutex
 	reconnecting map[string]bool
+	suspended    map[string]int
 
 	// Lifecycle
 	ctx    context.Context
@@ -46,6 +47,7 @@ func NewPipeManager(ctx context.Context, onOutput func(sessionName string)) *Pip
 		pipes:        make(map[string]*ControlPipe),
 		onOutput:     onOutput,
 		reconnecting: make(map[string]bool),
+		suspended:    make(map[string]int),
 		ctx:          childCtx,
 		cancel:       cancel,
 	}
@@ -58,7 +60,15 @@ func NewPipeManager(ctx context.Context, onOutput func(sessionName string)) *Pip
 // by socketName (Session.SocketName). Pass "" to target the user's default
 // server. Safe to call repeatedly; a live pipe short-circuits and returns nil.
 func (pm *PipeManager) Connect(sessionName, socketName string) error {
+	if pm.isClosed() {
+		return nil
+	}
+
 	pm.mu.Lock()
+	if pm.suspended[sessionName] > 0 {
+		pm.mu.Unlock()
+		return nil
+	}
 
 	// Already connected and alive?
 	if existing, ok := pm.pipes[sessionName]; ok && existing.IsAlive() {
@@ -88,6 +98,10 @@ func (pm *PipeManager) Connect(sessionName, socketName string) error {
 		pm.reconnectMu.Unlock()
 	}()
 
+	if pm.isClosed() {
+		return nil
+	}
+
 	// Kill stale control-mode clients left over from previous TUI instances.
 	// Without this, each TUI reconnect accumulates orphan `tmux -C attach-session`
 	// processes that are never cleaned up (#595).
@@ -100,6 +114,11 @@ func (pm *PipeManager) Connect(sessionName, socketName string) error {
 	}
 
 	pm.mu.Lock()
+	if pm.suspended[sessionName] > 0 || pm.isClosed() {
+		pm.mu.Unlock()
+		pipe.Close()
+		return nil
+	}
 	// Double-check: another goroutine may have connected while we were creating
 	if existing, ok := pm.pipes[sessionName]; ok && existing.IsAlive() {
 		pm.mu.Unlock()
@@ -116,6 +135,57 @@ func (pm *PipeManager) Connect(sessionName, socketName string) error {
 	go pm.watchPipe(sessionName, pipe)
 
 	return nil
+}
+
+// Suspend closes a session's control pipe and suppresses automatic reconnects
+// until Resume is called. This is used around Windows psmux interactive attach,
+// where a concurrent control-mode client can wedge the foreground client.
+func (pm *PipeManager) Suspend(sessionName string) {
+	pm.mu.Lock()
+	if pm.suspended == nil {
+		pm.suspended = make(map[string]int)
+	}
+	pm.suspended[sessionName]++
+	pipe, ok := pm.pipes[sessionName]
+	if ok {
+		delete(pm.pipes, sessionName)
+	}
+	pm.mu.Unlock()
+
+	if pipe != nil {
+		pipe.Close()
+	}
+	pipeLog.Debug("pipe_suspended", slog.String("session", sessionName))
+}
+
+// Resume releases one prior Suspend and reconnects the control pipe
+// asynchronously only after the final overlapping attach has returned.
+func (pm *PipeManager) Resume(sessionName, socketName string) {
+	pm.mu.Lock()
+	if count := pm.suspended[sessionName]; count > 1 {
+		pm.suspended[sessionName] = count - 1
+		pm.mu.Unlock()
+		return
+	}
+	if pm.suspended != nil && pm.suspended[sessionName] > 0 {
+		delete(pm.suspended, sessionName)
+	}
+	pm.mu.Unlock()
+
+	if pm.isClosed() {
+		return
+	}
+
+	go func() {
+		if err := pm.Connect(sessionName, socketName); err != nil {
+			pipeLog.Debug(
+				"pipe_resume_connect_failed",
+				slog.String("session", sessionName),
+				slog.String("socket", socketName),
+				slog.String("error", err.Error()),
+			)
+		}
+	}()
 }
 
 // Disconnect closes and removes the pipe for the given session.
@@ -369,6 +439,10 @@ func (pm *PipeManager) watchPipe(sessionName string, pipe *ControlPipe) {
 	}
 
 	pipeLog.Debug("pipe_died_scheduling_reconnect", slog.String("session", sessionName))
+	if pm.isSuspended(sessionName) {
+		pipeLog.Debug("pipe_reconnect_suppressed", slog.String("session", sessionName))
+		return
+	}
 
 	// Check if already reconnecting
 	pm.reconnectMu.Lock()
@@ -394,6 +468,10 @@ func (pm *PipeManager) watchPipe(sessionName string, pipe *ControlPipe) {
 		case <-pm.ctx.Done():
 			return
 		case <-time.After(backoff):
+		}
+		if pm.isSuspended(sessionName) {
+			pipeLog.Debug("pipe_reconnect_suppressed", slog.String("session", sessionName))
+			return
 		}
 
 		// Check if session still exists before trying to reconnect.
@@ -434,6 +512,21 @@ func (pm *PipeManager) watchPipe(sessionName string, pipe *ControlPipe) {
 	pm.mu.Lock()
 	delete(pm.pipes, sessionName)
 	pm.mu.Unlock()
+}
+
+func (pm *PipeManager) isSuspended(sessionName string) bool {
+	pm.mu.RLock()
+	defer pm.mu.RUnlock()
+	return pm.suspended[sessionName] > 0
+}
+
+func (pm *PipeManager) isClosed() bool {
+	select {
+	case <-pm.ctx.Done():
+		return true
+	default:
+		return false
+	}
 }
 
 // killStaleControlClients kills control-mode clients attached to a session

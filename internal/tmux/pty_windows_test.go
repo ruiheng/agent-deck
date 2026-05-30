@@ -31,6 +31,25 @@ func TestWindowsAttachCommandPreservesSocketName(t *testing.T) {
 	}
 }
 
+func TestWindowsControlCommandDoesNotInheritConsole(t *testing.T) {
+	t.Setenv("PSMUX_SESSION", "leader")
+	s := &Session{SocketName: "agentdeck-test"}
+	cmd := s.windowsControlCommand(context.Background(), "unbind-key", "-n", "C-q")
+
+	if cmd.Stdin != nil || cmd.Stdout != nil || cmd.Stderr != nil {
+		t.Fatal("non-interactive Windows tmux commands must not inherit console handles")
+	}
+	for _, kv := range cmd.Env {
+		if strings.HasPrefix(kv, "PSMUX_SESSION=") {
+			t.Fatalf("PSMUX_SESSION should be stripped from control env, got %q", kv)
+		}
+	}
+	want := []string{"tmux", "-L", "agentdeck-test", "unbind-key", "-n", "C-q"}
+	if !reflect.DeepEqual(cmd.Args, want) {
+		t.Fatalf("Windows control command must preserve socket isolation\n got:  %v\n want: %v", cmd.Args, want)
+	}
+}
+
 func TestWindowsAttachMissingSession(t *testing.T) {
 	t.Skip("psmux missing-target process exit is not stable enough for an integration assertion; exit classification is covered below")
 	s := &Session{Name: "agentdeck_missing_session_zzz"}
