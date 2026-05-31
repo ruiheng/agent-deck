@@ -88,6 +88,10 @@ regressions below passed Unix tests while failing only on native Windows.
 - If a change touches attach, verify Windows attach uses real console handles.
   Do not capture stdout/stderr for interactive `tmux attach-session` on Windows;
   psmux can fail with `incorrect function` when Go pipes replace the console.
+- If a change touches Windows interactive attach, verify the foreground attach
+  path is not racing agent-deck's background control-mode client for the same
+  session. Suspend the session's control pipe while the user owns the attached
+  console, and only reconnect after detach cleanup completes.
 - If a change touches attach success handling, do not treat every Windows exit
   code 1 as success. psmux may return 1 for normal detach, but fast exit-1
   attach failures must remain failures.
@@ -224,6 +228,14 @@ Important differences observed on Windows:
 
 - `attach-session` must inherit stdin/stdout/stderr directly from the console.
   Capturing output through Go pipes can produce `incorrect function`.
+- A foreground `attach-session` can become unresponsive when agent-deck keeps a
+  background `tmux -C attach-session` control-mode client connected to the same
+  psmux session. The observed recovery was to kill only the foreground attach
+  client; the server, pane process, and agent process remained alive. Native
+  Windows interactive attach should therefore suspend that session's control
+  pipe for the duration of the attach. The suspension must be reference-counted
+  for overlapping attach/read-only attach operations, and delayed reconnects
+  must no-op after `PipeManager.Close()`.
 - `attach-session` can return exit code 1 for a normal interactive detach.
   Duration alone is not enough: quick successful attach+detach is valid when
   the managed session is still visible after attach exits.
@@ -366,6 +378,14 @@ Checklist:
 - `Ctrl+b d` may still work, but it is not the intended primary habit.
 - On Windows, bind a tmux-level fallback detach key for cases where terminal flow
   control intercepts input.
+- The temporary Windows detach key bind/unbind commands are non-interactive tmux
+  commands. They should preserve socket targeting and strip `PSMUX_SESSION`, but
+  they must not inherit stdin/stdout/stderr console handles from the foreground
+  attach path.
+- During native Windows attach, suspend the selected session's control pipe and
+  suppress automatic reconnects until attach returns. Reconnect only after
+  cleanup has run, and keep suspension active until all overlapping attach
+  calls for that session have returned.
 - Do not add output capture to interactive attach unless it is proven to preserve
   console handles on psmux.
 - If failure detection needs output, prefer separate non-interactive probes or
@@ -542,6 +562,7 @@ Recommended targeted checks after Windows/session changes:
 
 ```powershell
 go test ./internal/tmux -run "TestWindowsAttach|TestStartCommandSpec|TestWindowsDetachKeyName|TestCapture" -count=1
+go test ./internal/tmux -run "TestWindowsControlCommand|TestPipeManager_SuspendSuppressesConnect|TestPipeManager_ResumeClearsSuspend|TestPipeManager_NestedSuspendRequiresMatchingResumes|TestPipeManager_ConnectNoopsAfterClose" -count=1
 go test ./internal/session -run "TestShouldRunCommandAsInitialProcess|TestBuildCodexCommand|TestBuildClaudeCommand_Windows|TestPrepareCommand_Windows|TestInstance_UpdateCodexSession|TestIssue680|TestS8" -count=1
 go test ./internal/tmux -run "TestStartCommandSpec_WindowsCmdWhenMarked|TestSessionWrapRespawnCommand_WindowsCmdWhenMarked|TestSessionWrapRespawnCommand_WindowsPowerShellWhenMarked" -count=1
 go test ./internal/session -run "TestRecreateTmuxSession|TestShouldUsePowerShellCommandShell|TestBuildCodexCommand_WindowsNativeCodexUsesCmd" -count=1
