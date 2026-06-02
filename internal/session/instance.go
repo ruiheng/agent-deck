@@ -1286,11 +1286,14 @@ func (i *Instance) buildCodexCommand(baseCommand string) string {
 		return baseCommand
 	}
 
+	plan := i.planCodexLaunch(baseCommand)
 	yoloFlag := i.resolveCodexYoloFlag()
 	modelFlag := i.resolveCodexModelFlag()
-	command := i.resolveCodexCommand(baseCommand)
-	launchFlags := yoloFlag + modelFlag + i.resolveCodexNoAltScreenFlagForLaunch(baseCommand, command)
-	if i.shouldFoldCodexExtraArgsWrapperIntoLaunchForCommand(command) {
+	launchFlags := yoloFlag + modelFlag
+	if plan.noAltScreen {
+		launchFlags += " --no-alt-screen"
+	}
+	if plan.foldExtraArgsWrapper {
 		if extraArgs := i.codexExtraArgsWrapperSuffix(); extraArgs != "" {
 			launchFlags += " " + extraArgs
 		}
@@ -1302,31 +1305,30 @@ func (i *Instance) buildCodexCommand(baseCommand string) string {
 	// immediately and leaves the managed tmux session dead. Do not apply this
 	// host-local check to SSH, sandbox, wrapper, or custom command launches
 	// because their CODEX_HOME may live outside the agent-deck host process.
-	codexHome, validateCodexHome := i.codexHomeDirForResumeValidation()
-	if i.CodexSessionID != "" && i.shouldValidateCodexResumeOnHost(command) && validateCodexHome && !codexRolloutExistsInHome(codexHome, i.CodexSessionID) {
+	if i.CodexSessionID != "" && plan.validateHostResume && !codexRolloutExistsInHome(plan.codexHome, i.CodexSessionID) {
 		sessionLog.Warn("codex_resume_stale_sid_dropped",
 			slog.String("instance_id", i.ID),
 			slog.String("title", i.Title),
 			slog.String("sid", i.CodexSessionID),
-			slog.String("codex_home", codexHome))
+			slog.String("codex_home", plan.codexHome))
 		i.CodexSessionID = ""
 		i.CodexDetectedAt = time.Time{}
 		ClearHookSessionAnchor(i.ID)
 	}
 
-	if i.CodexSessionID != "" && i.shouldAppendCodexResumeForLaunch(command) {
-		launchCommand := fmt.Sprintf("%s%s resume %s", command, launchFlags, i.CodexSessionID)
-		if i.shouldUseWindowsCmdCommandShellForCodexLaunch(baseCommand, command) {
+	if i.CodexSessionID != "" && plan.appendResume {
+		launchCommand := fmt.Sprintf("%s%s resume %s", plan.command, launchFlags, i.CodexSessionID)
+		if plan.shell == codexLaunchShellWindowsCmd {
 			return shellCmdExeWrap(i.buildWindowsCmdCodexEnv(), launchCommand)
 		}
-		return i.buildCodexEnvPrefix(command) + launchCommand
+		return i.buildCodexEnvPrefix(plan.command) + launchCommand
 	}
 
-	launchCommand := command + launchFlags
-	if i.shouldUseWindowsCmdCommandShellForCodexLaunch(baseCommand, command) {
+	launchCommand := plan.command + launchFlags
+	if plan.shell == codexLaunchShellWindowsCmd {
 		return shellCmdExeWrap(i.buildWindowsCmdCodexEnv(), launchCommand)
 	}
-	return i.buildCodexEnvPrefix(command) + launchCommand
+	return i.buildCodexEnvPrefix(plan.command) + launchCommand
 }
 
 // buildCursorCommand builds the command for the Cursor CLI (`cursor agent`).
@@ -1363,6 +1365,53 @@ func (i *Instance) buildCopilotCommand(baseCommand string) string {
 		return envPrefix + baseCommand
 	}
 	return envPrefix + GetToolCommand("copilot")
+}
+
+type codexLaunchShell int
+
+const (
+	codexLaunchShellDefault codexLaunchShell = iota
+	codexLaunchShellWindowsCmd
+)
+
+type codexLaunchPlan struct {
+	command              string
+	shell                codexLaunchShell
+	appendResume         bool
+	validateHostResume   bool
+	codexHome            string
+	noAltScreen          bool
+	foldExtraArgsWrapper bool
+}
+
+func (i *Instance) planCodexLaunch(baseCommand string) codexLaunchPlan {
+	command := i.resolveCodexCommand(baseCommand)
+	nativeWindowsCodex := runtime.GOOS == "windows" &&
+		i.Tool == "codex" &&
+		!i.IsSSH() &&
+		!i.IsSandboxed()
+	tuiInvocation := i.isCodexTUICommandInvocationForLaunch(command)
+	foldExtraArgs := nativeWindowsCodex &&
+		i.isCodexExtraArgsFoldableLaunch(strings.TrimSpace(command)) &&
+		i.hasCodexExtraArgsWrapper()
+	wrapperAllowsNative := !i.hasEffectiveWrapper() || foldExtraArgs
+
+	plan := codexLaunchPlan{
+		command:              command,
+		appendResume:         i.shouldAppendCodexResumeForLaunch(command),
+		noAltScreen:          nativeWindowsCodex && tuiInvocation && (!i.hasEffectiveWrapper() || i.hasCodexExtraArgsWrapper()),
+		foldExtraArgsWrapper: foldExtraArgs,
+	}
+	if nativeWindowsCodex && tuiInvocation && wrapperAllowsNative {
+		plan.shell = codexLaunchShellWindowsCmd
+	}
+	if i.shouldValidateCodexResumeOnHost(command) {
+		if codexHome, ok := i.codexHomeDirForResumeValidation(); ok {
+			plan.validateHostResume = true
+			plan.codexHome = codexHome
+		}
+	}
+	return plan
 }
 
 func (i *Instance) buildCodexEnvPrefix(command string) string {
@@ -7274,13 +7323,7 @@ func (i *Instance) shouldWrapEffectiveWrapperInPOSIXShell() bool {
 }
 
 func (i *Instance) shouldUseWindowsCmdCommandShell(command string) bool {
-	trimmed := strings.TrimSpace(command)
-	return runtime.GOOS == "windows" &&
-		i.Tool == "codex" &&
-		i.isCodexTUICommandInvocationForLaunch(trimmed) &&
-		!i.IsSSH() &&
-		!i.IsSandboxed() &&
-		(!i.hasEffectiveWrapper() || i.shouldFoldCodexExtraArgsWrapperIntoLaunchForCommand(command))
+	return i.planCodexLaunch(command).shell == codexLaunchShellWindowsCmd
 }
 
 func (i *Instance) shouldUseWindowsCmdCommandShellForPreparedCommand(command string) bool {
@@ -7291,15 +7334,14 @@ func (i *Instance) shouldUseWindowsCmdCommandShellForPreparedCommand(command str
 }
 
 func (i *Instance) shouldUseWindowsCmdCommandShellForCodexLaunch(baseCommand, launchCommand string) bool {
-	return i.shouldUseWindowsCmdCommandShell(launchCommand)
+	return i.planCodexLaunch(baseCommand).shell == codexLaunchShellWindowsCmd
 }
 
 func (i *Instance) shouldUseCodexRespawnPane() bool {
 	if !IsCodexCompatible(i.Tool) {
 		return false
 	}
-	launchCommand := i.resolveCodexCommand(i.Command)
-	return !i.shouldUseWindowsCmdCommandShellForCodexLaunch(i.Command, launchCommand)
+	return i.planCodexLaunch(i.Command).shell != codexLaunchShellWindowsCmd
 }
 
 func isWindowsCmdWrappedLaunch(command string) bool {
@@ -7563,19 +7605,14 @@ func (i *Instance) shouldValidateCodexResumeOnHost(command string) bool {
 }
 
 func (i *Instance) resolveCodexNoAltScreenFlag(command string) string {
-	if runtime.GOOS != "windows" ||
-		i.Tool != "codex" ||
-		!i.isCodexTUICommandInvocationForLaunch(command) ||
-		i.IsSSH() ||
-		i.IsSandboxed() ||
-		(i.hasEffectiveWrapper() && !i.hasCodexExtraArgsWrapper()) {
+	if !i.planCodexLaunch(command).noAltScreen {
 		return ""
 	}
 	return " --no-alt-screen"
 }
 
 func (i *Instance) resolveCodexNoAltScreenFlagForLaunch(baseCommand, launchCommand string) string {
-	if i.resolveCodexNoAltScreenFlag(launchCommand) != "" {
+	if i.planCodexLaunch(baseCommand).noAltScreen {
 		return " --no-alt-screen"
 	}
 	return ""
@@ -7587,13 +7624,7 @@ func (i *Instance) hasCodexExtraArgsWrapper() bool {
 }
 
 func (i *Instance) shouldFoldCodexExtraArgsWrapperIntoLaunchForCommand(command string) bool {
-	trimmed := strings.TrimSpace(command)
-	return runtime.GOOS == "windows" &&
-		i.Tool == "codex" &&
-		i.isCodexExtraArgsFoldableLaunch(trimmed) &&
-		!i.IsSSH() &&
-		!i.IsSandboxed() &&
-		i.hasCodexExtraArgsWrapper()
+	return i.planCodexLaunch(command).foldExtraArgsWrapper
 }
 
 func (i *Instance) isCodexExtraArgsFoldableLaunch(command string) bool {

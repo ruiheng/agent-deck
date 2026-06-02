@@ -3537,6 +3537,68 @@ func TestShouldUsePowerShellCommandShell_WindowsExecutionShells(t *testing.T) {
 	}
 }
 
+func TestPlanCodexLaunch_WindowsClassifiesLaunchPolicy(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("windows-specific Codex launch policy")
+	}
+
+	tests := []struct {
+		name       string
+		inst       *Instance
+		config     *UserConfig
+		wantShell  codexLaunchShell
+		wantNoAlt  bool
+		wantFold   bool
+		wantResume bool
+	}{
+		{
+			name:       "native TUI uses cmd and no alt screen",
+			inst:       &Instance{ID: "abc123", Title: "native", Tool: "codex", Command: "codex"},
+			wantShell:  codexLaunchShellWindowsCmd,
+			wantNoAlt:  true,
+			wantResume: true,
+		},
+		{
+			name:       "subcommand stays PowerShell-compatible and does not resume",
+			inst:       &Instance{ID: "abc123", Title: "subcommand", Tool: "codex", Command: "codex exec -- echo hi"},
+			wantShell:  codexLaunchShellDefault,
+			wantNoAlt:  false,
+			wantResume: false,
+		},
+		{
+			name:       "extra args wrapper folds into native TUI launch",
+			inst:       &Instance{ID: "abc123", Title: "wrapped", Tool: "codex", Command: "codex", Wrapper: "{command} --model gpt-5.5"},
+			wantShell:  codexLaunchShellWindowsCmd,
+			wantNoAlt:  true,
+			wantFold:   true,
+			wantResume: true,
+		},
+		{
+			name:       "configured launcher appends resume without native cmd path",
+			inst:       &Instance{ID: "abc123", Title: "launcher", Tool: "codex", Command: "codex"},
+			config:     &UserConfig{Codex: CodexSettings{Command: "npx codex"}},
+			wantShell:  codexLaunchShellDefault,
+			wantNoAlt:  false,
+			wantResume: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if tt.config != nil {
+				restore := resetUserConfigCache(t, tt.config)
+				defer restore()
+			}
+
+			plan := tt.inst.planCodexLaunch(tt.inst.Command)
+			require.Equal(t, tt.wantShell, plan.shell)
+			require.Equal(t, tt.wantNoAlt, plan.noAltScreen)
+			require.Equal(t, tt.wantFold, plan.foldExtraArgsWrapper)
+			require.Equal(t, tt.wantResume, plan.appendResume)
+		})
+	}
+}
+
 func TestBuildCodexCommand_WindowsNativeCodexUsesCmd(t *testing.T) {
 	if runtime.GOOS != "windows" {
 		t.Skip("windows-specific behavior")

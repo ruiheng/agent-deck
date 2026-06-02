@@ -120,6 +120,27 @@ func (s *Session) suspendControlPipeForWindowsAttach() func() {
 	}
 }
 
+type windowsAttachLease struct {
+	cleanupDetachKey  func()
+	resumeControlPipe func()
+}
+
+func (s *Session) beginWindowsAttachLease(detachByte byte) windowsAttachLease {
+	return windowsAttachLease{
+		cleanupDetachKey:  s.bindWindowsDetachKey(detachByte),
+		resumeControlPipe: s.suspendControlPipeForWindowsAttach(),
+	}
+}
+
+func (l windowsAttachLease) Close() {
+	if l.cleanupDetachKey != nil {
+		l.cleanupDetachKey()
+	}
+	if l.resumeControlPipe != nil {
+		l.resumeControlPipe()
+	}
+}
+
 // Attach attaches to the session using the current Windows console.
 func (s *Session) Attach(ctx context.Context, detachByte ...byte) error {
 	// Do not preflight with has-session on Windows. psmux can report false
@@ -129,12 +150,8 @@ func (s *Session) Attach(ctx context.Context, detachByte ...byte) error {
 	if len(detachByte) > 0 && detachByte[0] != 0 {
 		detach = detachByte[0]
 	}
-	cleanupDetachKey := s.bindWindowsDetachKey(detach)
-	resumeControlPipe := s.suspendControlPipeForWindowsAttach()
-	defer func() {
-		cleanupDetachKey()
-		resumeControlPipe()
-	}()
+	lease := s.beginWindowsAttachLease(detach)
+	defer lease.Close()
 
 	args := []string{"attach-session", "-t", s.Name}
 	cmd := s.windowsAttachCommand(ctx, args...)
@@ -165,12 +182,8 @@ func (s *Session) Resize(cols, rows int) error {
 
 // AttachReadOnly attaches to the session in read-only mode.
 func (s *Session) AttachReadOnly(ctx context.Context) error {
-	cleanupDetachKey := s.bindWindowsDetachKey(17)
-	resumeControlPipe := s.suspendControlPipeForWindowsAttach()
-	defer func() {
-		cleanupDetachKey()
-		resumeControlPipe()
-	}()
+	lease := s.beginWindowsAttachLease(17)
+	defer lease.Close()
 
 	args := []string{"attach-session", "-r", "-t", s.Name}
 	cmd := s.windowsAttachCommand(ctx, args...)
