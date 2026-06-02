@@ -91,13 +91,13 @@ func (s *Session) bindWindowsDetachKey(detachByte byte) func() {
 	key := windowsDetachKeyName(detachByte)
 	ctx, cancel := context.WithTimeout(context.Background(), windowsDetachKeyCommandTimeout)
 	defer cancel()
-	if err := s.windowsControlCommand(ctx, "bind-key", "-n", key, "detach-client").Run(); err != nil {
+	if err := s.windowsControlCommand(ctx, "bind-key", "-n", "-T", "root", key, "detach-client").Run(); err != nil {
 		return func() {}
 	}
 	return func() {
 		ctx, cancel := context.WithTimeout(context.Background(), windowsDetachKeyCommandTimeout)
 		defer cancel()
-		_ = s.windowsControlCommand(ctx, "unbind-key", "-n", key).Run()
+		_ = s.windowsControlCommand(ctx, "unbind-key", "-n", "-T", "root", key).Run()
 	}
 }
 

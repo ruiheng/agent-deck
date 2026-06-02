@@ -34,7 +34,7 @@ func TestWindowsAttachCommandPreservesSocketName(t *testing.T) {
 func TestWindowsControlCommandDoesNotInheritConsole(t *testing.T) {
 	t.Setenv("PSMUX_SESSION", "leader")
 	s := &Session{SocketName: "agentdeck-test"}
-	cmd := s.windowsControlCommand(context.Background(), "unbind-key", "-n", "C-q")
+	cmd := s.windowsControlCommand(context.Background(), "unbind-key", "-n", "-T", "root", "C-q")
 
 	if cmd.Stdin != nil || cmd.Stdout != nil || cmd.Stderr != nil {
 		t.Fatal("non-interactive Windows tmux commands must not inherit console handles")
@@ -44,9 +44,26 @@ func TestWindowsControlCommandDoesNotInheritConsole(t *testing.T) {
 			t.Fatalf("PSMUX_SESSION should be stripped from control env, got %q", kv)
 		}
 	}
-	want := []string{"tmux", "-L", "agentdeck-test", "unbind-key", "-n", "C-q"}
+	want := []string{"tmux", "-L", "agentdeck-test", "unbind-key", "-n", "-T", "root", "C-q"}
 	if !reflect.DeepEqual(cmd.Args, want) {
 		t.Fatalf("Windows control command must preserve socket isolation\n got:  %v\n want: %v", cmd.Args, want)
+	}
+}
+
+func TestWindowsDetachKeyBindingUsesRootTable(t *testing.T) {
+	s := &Session{SocketName: "agentdeck-test"}
+	key := windowsDetachKeyName(17)
+
+	bindCmd := s.windowsControlCommand(context.Background(), "bind-key", "-n", "-T", "root", key, "detach-client")
+	wantBind := []string{"tmux", "-L", "agentdeck-test", "bind-key", "-n", "-T", "root", "C-q", "detach-client"}
+	if !reflect.DeepEqual(bindCmd.Args, wantBind) {
+		t.Fatalf("Windows detach bind must target root table\n got:  %v\n want: %v", bindCmd.Args, wantBind)
+	}
+
+	unbindCmd := s.windowsControlCommand(context.Background(), "unbind-key", "-n", "-T", "root", key)
+	wantUnbind := []string{"tmux", "-L", "agentdeck-test", "unbind-key", "-n", "-T", "root", "C-q"}
+	if !reflect.DeepEqual(unbindCmd.Args, wantUnbind) {
+		t.Fatalf("Windows detach unbind must target root table\n got:  %v\n want: %v", unbindCmd.Args, wantUnbind)
 	}
 }
 
