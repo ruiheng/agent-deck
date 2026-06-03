@@ -649,8 +649,12 @@ func TestRequireProfileExists_RejectsBareDir(t *testing.T) {
 		t.Errorf("want ErrProfileMissing, got %v", err)
 	}
 	// Sanity: a real state.db is accepted.
-	if _, err := os.Create(filepath.Join(dir, "state.db")); err != nil {
+	f, err := os.Create(filepath.Join(dir, "state.db"))
+	if err != nil {
 		t.Fatalf("touch state.db: %v", err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatalf("close state.db: %v", err)
 	}
 	if err := requireProfileExists("phantom"); err != nil {
 		t.Errorf("want nil, got %v", err)

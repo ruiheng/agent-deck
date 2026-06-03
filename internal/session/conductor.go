@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/asheshgoplani/agent-deck/internal/platform"
@@ -160,6 +161,8 @@ type ConductorMeta struct {
 	HeartbeatIdleMinutes int `json:"heartbeat_idle_minutes"`
 }
 
+var conductorMetaWriteLocks sync.Map
+
 // GetAgent returns the normalized conductor agent, defaulting to Claude.
 func (m *ConductorMeta) GetAgent() string {
 	if m == nil {
@@ -266,6 +269,8 @@ func GetConductorLastActivity(name, profile string) (time.Time, error) {
 	if err != nil {
 		return time.Time{}, fmt.Errorf("storage for profile %s: %w", profile, err)
 	}
+	defer storage.Close()
+
 	instances, _, err := storage.LoadWithGroups()
 	if err != nil {
 		return time.Time{}, fmt.Errorf("load instances: %w", err)
@@ -457,6 +462,10 @@ func SaveConductorMeta(meta *ConductorMeta) error {
 		return fmt.Errorf("failed to marshal meta.json: %w", err)
 	}
 	metaPath := filepath.Join(dir, "meta.json")
+	lock := conductorMetaPathLock(metaPath)
+	lock.Lock()
+	defer lock.Unlock()
+
 	perm := os.FileMode(0o644)
 	if len(meta.Env) > 0 || meta.EnvFile != "" {
 		perm = 0o600 // restrict access when env vars contain secrets
@@ -484,11 +493,17 @@ func SaveConductorMeta(meta *ConductorMeta) error {
 		_ = os.Remove(tmpPath)
 		return fmt.Errorf("failed to chmod meta.json temp: %w", cerr)
 	}
-	if rerr := os.Rename(tmpPath, metaPath); rerr != nil {
+	if rerr := replaceFile(tmpPath, metaPath); rerr != nil {
 		_ = os.Remove(tmpPath)
 		return fmt.Errorf("failed to rename meta.json temp: %w", rerr)
 	}
 	return nil
+}
+
+func conductorMetaPathLock(path string) *sync.Mutex {
+	clean := filepath.Clean(path)
+	lock, _ := conductorMetaWriteLocks.LoadOrStore(clean, &sync.Mutex{})
+	return lock.(*sync.Mutex)
 }
 
 // ListConductors scans all conductor directories that have meta.json

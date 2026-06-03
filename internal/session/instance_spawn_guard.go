@@ -35,7 +35,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"syscall"
 	"time"
 )
 
@@ -182,7 +181,7 @@ func defaultAcquireInstanceSpawnLock(instanceID string) (func(), error) {
 		if err == nil {
 			fmt.Fprintf(f, "%d", os.Getpid())
 			_ = f.Close()
-			return func() { _ = os.Remove(path) }, nil
+			return func() { removeInstanceSpawnLock(path) }, nil
 		}
 
 		if reclaimStaleInstanceSpawnLock(path) {
@@ -196,6 +195,15 @@ func defaultAcquireInstanceSpawnLock(instanceID string) (func(), error) {
 			)
 		}
 		time.Sleep(instanceSpawnLockRetryInterval)
+	}
+}
+
+func removeInstanceSpawnLock(path string) {
+	for attempt := 0; attempt < 20; attempt++ {
+		if err := os.Remove(path); err == nil || os.IsNotExist(err) {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 }
 
@@ -266,12 +274,7 @@ func reclaimStaleInstanceSpawnLock(path string) bool {
 	if parseErr != nil {
 		return false
 	}
-	proc, err := os.FindProcess(pid)
-	if err != nil {
-		_ = os.Remove(path)
-		return true
-	}
-	if err := proc.Signal(syscall.Signal(0)); err != nil {
+	if !instanceSpawnLockPIDAlive(pid) {
 		_ = os.Remove(path)
 		return true
 	}

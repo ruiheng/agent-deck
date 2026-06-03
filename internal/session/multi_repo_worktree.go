@@ -2,7 +2,6 @@ package session
 
 import (
 	"bytes"
-	"os"
 	"path/filepath"
 	"time"
 
@@ -26,7 +25,9 @@ func CreateMultiRepoWorktrees(allPaths []string, parentDir string, branch string
 			repoRoot, rootErr := git.GetWorktreeBaseRoot(p)
 			if rootErr != nil {
 				result.Warnings = append(result.Warnings, "worktree_skip: "+p+": "+rootErr.Error())
-				_ = os.Symlink(p, wtPath)
+				if err := createMultiRepoPathAlias(p, wtPath); err != nil {
+					result.Warnings = append(result.Warnings, "path_alias_fail: "+p+": "+err.Error())
+				}
 				result.MappedPaths = append(result.MappedPaths, wtPath)
 				continue
 			}
@@ -35,7 +36,9 @@ func CreateMultiRepoWorktrees(allPaths []string, parentDir string, branch string
 			setupErr, err := git.CreateWorktreeWithSetup(repoRoot, wtPath, branch, &buf, &buf, setupTimeout)
 			if err != nil {
 				result.Warnings = append(result.Warnings, "worktree_create_fail: "+p+": "+err.Error())
-				_ = os.Symlink(p, wtPath)
+				if err := createMultiRepoPathAlias(p, wtPath); err != nil {
+					result.Warnings = append(result.Warnings, "path_alias_fail: "+p+": "+err.Error())
+				}
 				result.MappedPaths = append(result.MappedPaths, wtPath)
 				continue
 			}
@@ -51,10 +54,16 @@ func CreateMultiRepoWorktrees(allPaths []string, parentDir string, branch string
 			})
 			result.MappedPaths = append(result.MappedPaths, wtPath)
 		} else {
-			_ = os.Symlink(p, wtPath)
+			if err := createMultiRepoPathAlias(p, wtPath); err != nil {
+				result.Warnings = append(result.Warnings, "path_alias_fail: "+p+": "+err.Error())
+			}
 			result.MappedPaths = append(result.MappedPaths, wtPath)
 		}
 	}
 
 	return result
+}
+
+func createMultiRepoPathAlias(source, target string) error {
+	return createMultiRepoPathAliasPlatform(source, target)
 }

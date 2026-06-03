@@ -1498,6 +1498,7 @@ func TestSetupConductor_HeartbeatRulesOverride(t *testing.T) {
 
 	// Setup with custom heartbeat rules path (creates per-conductor symlink)
 	err := SetupConductor(name, profile, true, true, "test description", "", "", customRulesPath, nil, "")
+	skipIfWindowsSymlinkPrivilegeError(t, err)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -2425,11 +2426,13 @@ func TestGetConductorLastActivity_NoConductorSession(t *testing.T) {
 	t.Setenv("HOME", tmpHome)
 
 	// Bootstrap a storage profile so NewStorageWithProfile succeeds.
-	if _, err := NewStorageWithProfile("default"); err != nil {
+	storage, err := NewStorageWithProfile("default")
+	if err != nil {
 		t.Fatalf("setup storage: %v", err)
 	}
+	t.Cleanup(func() { _ = storage.Close() })
 
-	_, err := GetConductorLastActivity("no-such-conductor", "default")
+	_, err = GetConductorLastActivity("no-such-conductor", "default")
 	if err == nil {
 		t.Fatal("expected error when conductor session not in storage, got nil")
 	}
@@ -2447,6 +2450,7 @@ func TestGetConductorLastActivity_NoManagedSessions(t *testing.T) {
 	if err != nil {
 		t.Fatalf("setup storage: %v", err)
 	}
+	t.Cleanup(func() { _ = storage.Close() })
 
 	// Register the conductor session itself (no children).
 	conductorInst := NewInstance("conductor-alpha", "/tmp")
@@ -2477,6 +2481,7 @@ func TestGetConductorLastActivity_ExcludesConductorWindow(t *testing.T) {
 	if err != nil {
 		t.Fatalf("setup storage: %v", err)
 	}
+	t.Cleanup(func() { _ = storage.Close() })
 
 	conductorInst := NewInstance("conductor-beta", "/tmp")
 	conductorInst.IsConductor = true
@@ -2517,6 +2522,7 @@ func TestGetConductorLastActivity_IncludesUnparentedWatchedSessions(t *testing.T
 	if err != nil {
 		t.Fatalf("setup storage: %v", err)
 	}
+	t.Cleanup(func() { _ = storage.Close() })
 
 	conductorInst := NewInstance("conductor-delta", "/tmp")
 	conductorInst.IsConductor = true
@@ -2551,6 +2557,7 @@ func TestGetConductorLastActivity_TransitiveScan(t *testing.T) {
 	if err != nil {
 		t.Fatalf("setup storage: %v", err)
 	}
+	t.Cleanup(func() { _ = storage.Close() })
 
 	conductorInst := NewInstance("conductor-gamma", "/tmp")
 	conductorInst.IsConductor = true

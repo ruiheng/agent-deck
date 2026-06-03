@@ -4,6 +4,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -78,8 +79,11 @@ func TestCreateMultiRepoWorktrees_WorktreeCreationFailureFallsBackToSymlink(t *t
 	require.Len(t, result2.MappedPaths, 1)
 	// Falls back to symlink
 	info, err := os.Lstat(result2.MappedPaths[0])
+	require.NoError(t, err, "warnings: %v", result2.Warnings)
+	assertPathAlias(t, repo, result2.MappedPaths[0], info)
+	readme, err := os.ReadFile(filepath.Join(result2.MappedPaths[0], "README.md"))
 	require.NoError(t, err)
-	assert.NotZero(t, info.Mode()&os.ModeSymlink)
+	assert.Equal(t, "# test", string(readme))
 	// Reported as a warning
 	require.Len(t, result2.Warnings, 1)
 	assert.Contains(t, result2.Warnings[0], "worktree_create_fail")
@@ -113,16 +117,36 @@ func TestCreateMultiRepoWorktrees_NonGitPathGetsSymlinked(t *testing.T) {
 
 	// Second path: symlink to original non-git dir
 	info, err = os.Lstat(result.MappedPaths[1])
+	require.NoError(t, err, "warnings: %v", result.Warnings)
+	assertPathAlias(t, nonGitDir, result.MappedPaths[1], info)
+	data, err := os.ReadFile(filepath.Join(result.MappedPaths[1], "data.txt"))
 	require.NoError(t, err)
-	assert.NotZero(t, info.Mode()&os.ModeSymlink)
-	target, err := os.Readlink(result.MappedPaths[1])
-	require.NoError(t, err)
-	assert.Equal(t, nonGitDir, target)
+	assert.Equal(t, "hello", string(data))
 
 	// Only the git repo appears in Worktrees
 	require.Len(t, result.Worktrees, 1)
 	assert.Equal(t, repo, result.Worktrees[0].OriginalPath)
 
+	assert.Empty(t, result.Warnings)
+}
+
+func TestCreateMultiRepoWorktrees_NonGitPathWithCmdMetacharacters(t *testing.T) {
+	root := t.TempDir()
+	nonGitDir := filepath.Join(root, "R&D source")
+	writeTestFile(t, filepath.Join(nonGitDir, "data.txt"), "hello")
+
+	parentDir := filepath.Join(root, "parent & target")
+	require.NoError(t, os.MkdirAll(parentDir, 0o755))
+
+	result := CreateMultiRepoWorktrees([]string{nonGitDir}, parentDir, "unused", 0)
+
+	require.Len(t, result.MappedPaths, 1)
+	info, err := os.Lstat(result.MappedPaths[0])
+	require.NoError(t, err, "warnings: %v", result.Warnings)
+	assertPathAlias(t, nonGitDir, result.MappedPaths[0], info)
+	data, err := os.ReadFile(filepath.Join(result.MappedPaths[0], "data.txt"))
+	require.NoError(t, err)
+	assert.Equal(t, "hello", string(data))
 	assert.Empty(t, result.Warnings)
 }
 
@@ -167,4 +191,18 @@ func testGitCommit(t *testing.T, dir, msg string) {
 	cmd.Dir = dir
 	out, err := cmd.CombinedOutput()
 	require.NoError(t, err, "git commit: %s", out)
+}
+
+func assertPathAlias(t *testing.T, source, alias string, info os.FileInfo) {
+	t.Helper()
+	if runtime.GOOS != "windows" {
+		assert.NotZero(t, info.Mode()&os.ModeSymlink)
+		target, err := os.Readlink(alias)
+		require.NoError(t, err)
+		assert.Equal(t, source, target)
+		return
+	}
+	stat, err := os.Stat(alias)
+	require.NoError(t, err)
+	assert.True(t, stat.IsDir(), "expected Windows directory alias for %s", source)
 }

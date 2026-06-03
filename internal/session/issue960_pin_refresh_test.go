@@ -83,8 +83,13 @@ func TestPluginUpgrade_RefreshesMcpJsonPins_RegressionFor960(t *testing.T) {
 	if strings.Contains(s, "1.0.0") {
 		t.Errorf(".mcp.json still references stale 1.0.0 pin after refresh:\n%s", s)
 	}
-	if !strings.Contains(s, v2Server) {
-		t.Errorf(".mcp.json missing refreshed v2 path %q:\n%s", v2Server, s)
+	var refreshedConfig map[string]map[string]map[string]any
+	if err := json.Unmarshal(data, &refreshedConfig); err != nil {
+		t.Fatalf("parse refreshed mcp.json: %v", err)
+	}
+	args, ok := refreshedConfig["mcpServers"][name]["args"].([]any)
+	if !ok || len(args) == 0 || args[0] != v2Server {
+		t.Errorf(".mcp.json missing refreshed v2 path %q; args=%v", v2Server, args)
 	}
 
 	// The non-versioned --flag arg must survive untouched.

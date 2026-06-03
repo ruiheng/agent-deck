@@ -1,7 +1,9 @@
 package session
 
 import (
+	"os"
 	"path/filepath"
+	"strconv"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -102,6 +104,44 @@ func TestInstanceSpawnLock_DifferentInstancesDoNotSerialize(t *testing.T) {
 	case <-done:
 	case <-time.After(2 * time.Second):
 		t.Fatal("acquire of inst-B blocked on inst-A's lock — per-instance scoping broken")
+	}
+}
+
+func TestInstanceSpawnLock_DoesNotReclaimLivePID(t *testing.T) {
+	withTempLockDir(t)
+
+	path, err := instanceSpawnLockPath("inst-live-pid")
+	if err != nil {
+		t.Fatalf("lock path: %v", err)
+	}
+	if err := os.WriteFile(path, []byte(" "+strconv.Itoa(os.Getpid())+"\n"), 0o600); err != nil {
+		t.Fatalf("write lock: %v", err)
+	}
+
+	if reclaimStaleInstanceSpawnLock(path) {
+		t.Fatal("live process lock was reclaimed")
+	}
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("live process lock should remain: %v", err)
+	}
+}
+
+func TestInstanceSpawnLock_ReclaimsFreshDeadPID(t *testing.T) {
+	withTempLockDir(t)
+
+	path, err := instanceSpawnLockPath("inst-dead-pid")
+	if err != nil {
+		t.Fatalf("lock path: %v", err)
+	}
+	if err := os.WriteFile(path, []byte("99999999"), 0o600); err != nil {
+		t.Fatalf("write lock: %v", err)
+	}
+
+	if !reclaimStaleInstanceSpawnLock(path) {
+		t.Fatal("fresh dead process lock was not reclaimed")
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("dead process lock should be removed, got err=%v", err)
 	}
 }
 
