@@ -302,6 +302,22 @@ type Instance struct {
 	// survive the bash -c wrapper.
 	ExtraArgs []string `json:"extra_args,omitempty"`
 
+	// ExitToShell is the per-session override for the [shell] exit_to_shell
+	// toggle (issue #1161). nil → inherit the global config default (off);
+	// non-nil → force on/off for this session regardless of config. When on
+	// and the tool is a built-in agent, the spawn command is wrapped so that
+	// exiting the agent drops the pane to an interactive shell at the same cwd.
+	ExitToShell *bool `json:"exit_to_shell,omitempty"`
+
+	// LaunchShell is the per-session override for the [shell] launch_shell
+	// toggle (issue #1218). nil → inherit the global config default (off);
+	// non-nil → force on/off for this session regardless of config. When on,
+	// the spawn command is wrapped with "$SHELL -l -c '<cmd>'" so that
+	// environment variables from ~/.zshrc, ~/.bashrc etc. are available to
+	// the agent process. This solves MCP config {env:VAR} failures when
+	// launching from the TUI without going through the user's shell.
+	LaunchShell *bool `json:"launch_shell,omitempty"`
+
 	// StartupQuery is the claude-code positional "startup query" (#725,
 	// v1.7.67). Set from the new-session dialog's "Start query" field and
 	// emitted as a single shell-quoted positional arg on the claude
@@ -353,6 +369,10 @@ type Instance struct {
 	// Set by MCP dialog Apply() to avoid race condition where Apply writes
 	// config then Restart immediately overwrites it with different pool state
 	SkipMCPRegenerate bool `json:"-"` // Don't persist, transient flag
+
+	// Gateway health cache for Hermes sessions (volatile, not persisted).
+	hermesGatewayCheckedAt time.Time
+	hermesGatewayOK        bool
 }
 
 // SandboxConfig holds per-session Docker sandbox settings.
@@ -617,6 +637,23 @@ func (i *Instance) applyLaunchSettingsFromConfig() {
 	settings := GetTmuxSettings()
 	i.tmuxSession.LaunchInUserScope = settings.GetLaunchInUserScope()
 	i.tmuxSession.LaunchAs = settings.GetLaunchAs()
+	i.applyVimModeFromConfig()
+}
+
+// applyVimModeFromConfig copies [claude].vim_mode onto the tmux session so the
+// keysender prepends an Escape + `i` insert-mode guarantee before each send.
+// Only meaningful for Claude-compatible tools; other tools never sit in a vim
+// composer, so we leave the flag at its zero value (false) for them to keep
+// their send path byte-identical (issue #1264).
+func (i *Instance) applyVimModeFromConfig() {
+	if i.tmuxSession == nil || !IsClaudeCompatible(i.Tool) {
+		return
+	}
+	cfg, _ := LoadUserConfig()
+	if cfg == nil {
+		return
+	}
+	i.tmuxSession.VimMode = cfg.Claude.GetVimMode()
 }
 
 // NewInstanceWithGroup creates a new session instance with explicit group
@@ -862,7 +899,10 @@ func (i *Instance) buildBashExportPrefix(includeConfigDir bool) string {
 	prefix := fmt.Sprintf("export AGENTDECK_INSTANCE_ID=%s; ", i.ID)
 	if includeConfigDir {
 		configDir := i.applyWorkerScratchOverride(GetClaudeConfigDirForInstance(i))
-		prefix += fmt.Sprintf("export CLAUDE_CONFIG_DIR=%s; ", configDir)
+		// shellescape: the resolved config_dir lands in the same `bash -c`
+		// payload as the quoted AGENTDECK_RESOLVED_* exports below; a config_dir
+		// containing ;/$() would otherwise inject. Audit F2.
+		prefix += fmt.Sprintf("export CLAUDE_CONFIG_DIR=%s; ", shellescape.Quote(configDir))
 	}
 	prefix += i.buildResolvedAccountHintExports()
 	return prefix
@@ -957,7 +997,10 @@ func (i *Instance) buildClaudeExtraFlags(opts *ClaudeOptions) string {
 	// Instance-level flags (not from ClaudeOptions)
 	// --add-dir: Grant subagent access to parent's project directory (for worktrees, etc.)
 	if i.ParentProjectPath != "" {
-		flags = append(flags, fmt.Sprintf("--add-dir %s", i.ParentProjectPath))
+		// shellescape: directory names may legally contain $()/`/;/space; the
+		// path is re-parsed by the inner `bash -c` (see bashCWrap), so quote it
+		// like --model below. Audit F1.
+		flags = append(flags, "--add-dir "+shellescape.Quote(i.ParentProjectPath))
 	}
 
 	// Multi-repo: pass all project paths via --add-dir (deduplicated, excluding cwd)
@@ -973,7 +1016,7 @@ func (i *Instance) buildClaudeExtraFlags(opts *ClaudeOptions) string {
 				continue
 			}
 			seen[real] = true
-			flags = append(flags, fmt.Sprintf("--add-dir %s", p))
+			flags = append(flags, "--add-dir "+shellescape.Quote(p)) // audit F1
 		}
 	}
 
@@ -1001,7 +1044,7 @@ func (i *Instance) buildClaudeExtraFlags(opts *ClaudeOptions) string {
 	// each listed plugin channel. Persisted on Instance.Channels and refreshed
 	// on every Start/Restart/resume because every command-build flows here.
 	if len(i.Channels) > 0 {
-		flags = append(flags, fmt.Sprintf("--channels %s", strings.Join(i.Channels, ",")))
+		flags = append(flags, "--channels "+shellescape.Quote(strings.Join(i.Channels, ","))) // audit F1
 	}
 
 	// User-supplied extra args: each token is shellescape-quoted before
@@ -1329,6 +1372,35 @@ func (i *Instance) buildCodexCommand(baseCommand string) string {
 		return shellCmdExeWrap(i.buildWindowsCmdCodexEnv(), launchCommand)
 	}
 	return i.buildCodexEnvPrefix(plan.command) + launchCommand
+}
+
+// buildPiCommand builds the command for the Pi CLI.
+// Pi sessions are JSONL files, not externally named sessions like Claude/Codex.
+// Scope Pi's session directory to the Agent Deck instance and always launch
+// with --continue so restarts resume that instance without colliding with other
+// Agent Deck Pi sessions in the same project.
+func (i *Instance) buildPiCommand(baseCommand string) string {
+	if i.Tool != "pi" {
+		return baseCommand
+	}
+
+	envPrefix := i.buildEnvSourceCommand()
+	cmd := strings.TrimSpace(baseCommand)
+	if cmd == "" {
+		cmd = "pi"
+	}
+
+	// Use target-side $HOME rather than resolving the Agent Deck process' home
+	// directory. This keeps local, SSH, and sandbox launch paths consistent.
+	sessionDir := "${HOME}/.pi/agent-deck/" + shellescape.Quote(i.ID)
+	quotedInstanceID := shellescape.Quote(i.ID)
+
+	return envPrefix + fmt.Sprintf(
+		"session_dir=%s; mkdir -p \"$session_dir\" && AGENTDECK_INSTANCE_ID=%s %s --continue --session-dir \"$session_dir\"",
+		sessionDir,
+		quotedInstanceID,
+		cmd,
+	)
 }
 
 // buildCursorCommand builds the command for the Cursor CLI (`cursor agent`).
@@ -3146,6 +3218,8 @@ func (i *Instance) Start() error {
 		command = i.buildCodexCommand(i.Command)
 		// Record start time for session ID detection (Unix millis)
 		i.CodexStartedAt = time.Now().UnixMilli()
+	case i.Tool == "pi":
+		command = i.buildPiCommand(i.Command)
 	case i.Tool == "copilot":
 		command = i.buildCopilotCommand(i.Command)
 	case i.Tool == "cursor":
@@ -3352,6 +3426,8 @@ func (i *Instance) StartWithMessage(message string) error {
 	case IsCodexCompatible(i.Tool):
 		command = i.buildCodexCommand(i.Command)
 		i.CodexStartedAt = time.Now().UnixMilli()
+	case i.Tool == "pi":
+		command = i.buildPiCommand(i.Command)
 	case i.Tool == "copilot":
 		command = i.buildCopilotCommand(i.Command)
 	case i.Tool == "crush":
@@ -3535,6 +3611,15 @@ func (i *Instance) sendMessageWhenReady(message string) error {
 			// Send message atomically (text + Enter in single tmux invocation)
 			if err := i.tmuxSession.SendKeysAndEnter(message); err != nil {
 				return fmt.Errorf("failed to send message: %w", err)
+			}
+
+			// The verify loop below keys off Claude-specific signals (an
+			// "active" transition, composer glyph, unsent-paste markers). Non-
+			// Claude tools never surface those, so the loop false-negatives a
+			// delivered message and Enter-spams the composer; skip it for every
+			// non-Claude tool (#1238 — generalizes #1228's codex-only skip).
+			if !UsesClaudeDeliveryVerify(i.Tool) {
+				return nil
 			}
 
 			// Verify the agent accepted Enter and began processing.
@@ -3721,7 +3806,7 @@ func (i *Instance) UpdateStatus() error {
 
 	// COLD LOAD: CLI doesn't run StatusFileWatcher, so hookStatus is always empty.
 	// Read the hook file from disk once to give CLI the same fast path as the TUI.
-	if i.hookStatus == "" && (IsClaudeCompatible(i.Tool) || i.Tool == "codex" || i.Tool == "gemini") {
+	if i.hookStatus == "" && (IsClaudeCompatible(i.Tool) || i.Tool == "codex" || i.Tool == "gemini" || i.Tool == "hermes") {
 		if hs := readHookStatusFile(i.ID); hs != nil {
 			i.hookStatus = hs.Status
 			i.hookEvent = hs.Event
@@ -3740,7 +3825,7 @@ func (i *Instance) UpdateStatus() error {
 	// Freshness is tool- and state-specific (e.g. Codex running vs waiting).
 	// When this path is stale/missing, control naturally falls through to tmux
 	// polling and tool-specific session sync (tmux env/process-files/disk).
-	if (IsClaudeCompatible(i.Tool) || IsCodexCompatible(i.Tool) || i.Tool == "gemini") &&
+	if (IsClaudeCompatible(i.Tool) || IsCodexCompatible(i.Tool) || i.Tool == "gemini" || i.Tool == "hermes") &&
 		i.hookStatus != "" &&
 		time.Since(i.hookLastUpdate) < hookFastPathFreshnessForTool(i.Tool, i.hookStatus) {
 		switch i.hookStatus {
@@ -3794,6 +3879,32 @@ func (i *Instance) UpdateStatus() error {
 				}
 			}
 		}
+		// A1: For Hermes, run the gateway reachability check even on the fast path.
+		// Without this, a dead gateway can still report running/waiting for the full
+		// hook freshness window because the check below is skipped.
+		// Use GetHermesGatewayURL() so the common auto-discovery setup (no explicit
+		// [hermes].gateway_url in config) still gets gateway-health degradation —
+		// reading config.Hermes.GatewayURL directly would skip the discovery path
+		// via ~/.hermes/gateway_state.json.
+		if i.Tool == "hermes" && (i.Status == StatusRunning || i.Status == StatusWaiting) {
+			if gatewayURL := GetHermesGatewayURL(); gatewayURL != "" {
+				if time.Since(i.hermesGatewayCheckedAt) > 30*time.Second {
+					i.mu.Unlock()
+					reachable := IsHermesGatewayReachable(gatewayURL)
+					i.mu.Lock()
+					// Mirror the stale-stop guard from the tmux path: a concurrent
+					// Kill() may have published StatusStopped while we were unlocked.
+					if i.Status == StatusStopped {
+						return nil
+					}
+					i.hermesGatewayCheckedAt = time.Now()
+					i.hermesGatewayOK = reachable
+				}
+				if !i.hermesGatewayOK {
+					i.Status = StatusError
+				}
+			}
+		}
 		return nil
 	}
 
@@ -3836,10 +3947,37 @@ func (i *Instance) UpdateStatus() error {
 		i.Status = StatusError
 	}
 
+	// Hermes: augment status with gateway health when a gateway URL is resolvable.
+	// Check is throttled to 30s to avoid 1.5s HTTP delays on every status tick.
+	// Use GetHermesGatewayURL() so the auto-discovery path (gateway_state.json +
+	// loopback probe) gets the same degradation behavior as an explicit config
+	// override — without this, users on the documented-easy setup never see a
+	// dead gateway flip them to StatusError.
+	if i.Tool == "hermes" && i.Status != StatusStopped && i.Status != StatusError {
+		if gatewayURL := GetHermesGatewayURL(); gatewayURL != "" {
+			if time.Since(i.hermesGatewayCheckedAt) > 30*time.Second {
+				// A2: A concurrent Kill() may publish StatusStopped while we are
+				// unlocked for the HTTP probe; re-check after reacquiring the lock
+				// and skip the write to avoid clobbering the stop.
+				i.mu.Unlock()
+				reachable := IsHermesGatewayReachable(gatewayURL)
+				i.mu.Lock()
+				if i.Status == StatusStopped {
+					return nil
+				}
+				i.hermesGatewayCheckedAt = time.Now()
+				i.hermesGatewayOK = reachable
+			}
+			if !i.hermesGatewayOK {
+				i.Status = StatusError
+			}
+		}
+	}
+
 	// Update tool detection dynamically for built-in tools.
-	// Do not upgrade explicit shell sessions based on content sniffing alone:
+	// Do not upgrade explicit shell or custom sessions based on content sniffing:
 	// prompts/history can mention "codex", "claude", etc. and would otherwise
-	// silently mutate the session type after attach/send.
+	// silently mutate the configured session type after attach/send.
 	if detectedTool := i.tmuxSession.DetectTool(); shouldAdoptDetectedTool(i.Tool, detectedTool) {
 		i.Tool = detectedTool
 	}
@@ -4796,6 +4934,20 @@ func (i *Instance) GetLastResponseBestEffort() (*ResponseOutput, error) {
 				return recovered, nil
 			}
 		}
+
+		// Disk scan: the tmux env var is fixed at launch, so after a /clear or
+		// compaction it points at a stale, empty transcript. Find the newest
+		// transcript on disk that carries a real assistant reply. Mirrors the
+		// Gemini syncGeminiSessionFromDisk fallback below.
+		if id, recovered := i.findLatestClaudeTranscriptOnDisk(); recovered != nil {
+			i.ClaudeSessionID = id
+			i.ClaudeDetectedAt = time.Now()
+			// Sync back to tmux so subsequent reads (and restarts) stay current.
+			if i.tmuxSession != nil && i.tmuxSession.Exists() {
+				_ = i.tmuxSession.SetEnvironment("CLAUDE_SESSION_ID", id)
+			}
+			return recovered, nil
+		}
 	}
 
 	// Gemini-specific recovery path (mirrors Claude recovery above)
@@ -4910,6 +5062,70 @@ func (i *Instance) getClaudeLastResponse() (*ResponseOutput, error) {
 	return parseClaudeLastAssistantMessage(data, filepath.Base(sessionFile))
 }
 
+// findLatestClaudeTranscriptOnDisk scans the instance's Claude project directory
+// for the most recently modified transcript that carries a real (non-sidechain)
+// assistant message, returning its session ID and parsed response.
+//
+// This recovers from a stale CLAUDE_SESSION_ID: when a Claude session rolls over
+// (/clear or compaction starts a NEW transcript), the tmux env var — fixed at
+// launch — still points at the OLD, now-empty transcript. Without this fallback
+// the read path drops to raw tmux-pane parsing, which leaks tool output (e.g. a
+// `list --json` dump) into conductor chat replies. Mirrors the Gemini
+// syncGeminiSessionFromDisk fallback.
+//
+// Returns ("", nil) when no suitable transcript is found.
+func (i *Instance) findLatestClaudeTranscriptOnDisk() (string, *ResponseOutput) {
+	configDir := GetClaudeConfigDir()
+
+	resolvedPath := i.ProjectPath
+	if resolved, err := filepath.EvalSymlinks(i.ProjectPath); err == nil {
+		resolvedPath = resolved
+	}
+	projectDir := filepath.Join(configDir, "projects", ConvertToClaudeDirName(resolvedPath))
+
+	entries, err := os.ReadDir(projectDir)
+	if err != nil {
+		return "", nil
+	}
+
+	type candidate struct {
+		id  string
+		mod time.Time
+	}
+	var candidates []candidate
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".jsonl") {
+			continue
+		}
+		info, err := e.Info()
+		if err != nil {
+			continue
+		}
+		candidates = append(candidates, candidate{
+			id:  strings.TrimSuffix(e.Name(), ".jsonl"),
+			mod: info.ModTime(),
+		})
+	}
+
+	// Newest first; the current conversation is the most recently written file
+	// that still contains a real assistant reply.
+	sort.Slice(candidates, func(a, b int) bool {
+		return candidates[a].mod.After(candidates[b].mod)
+	})
+
+	for _, c := range candidates {
+		data, err := os.ReadFile(filepath.Join(projectDir, c.id+".jsonl"))
+		if err != nil {
+			continue
+		}
+		resp, err := parseClaudeLastAssistantMessage(data, c.id+".jsonl")
+		if err == nil && resp != nil && strings.TrimSpace(resp.Content) != "" {
+			return c.id, resp
+		}
+	}
+	return "", nil
+}
+
 // parseClaudeLastAssistantMessage parses a Claude JSONL file to extract the last assistant message
 func parseClaudeLastAssistantMessage(data []byte, sessionID string) (*ResponseOutput, error) {
 	// JSONL record structure (same as global_search.go)
@@ -4918,10 +5134,11 @@ func parseClaudeLastAssistantMessage(data []byte, sessionID string) (*ResponseOu
 		Content json.RawMessage `json:"content"`
 	}
 	type claudeRecord struct {
-		SessionID string          `json:"sessionId"`
-		Type      string          `json:"type"`
-		Message   json.RawMessage `json:"message"`
-		Timestamp string          `json:"timestamp"`
+		SessionID   string          `json:"sessionId"`
+		Type        string          `json:"type"`
+		Message     json.RawMessage `json:"message"`
+		Timestamp   string          `json:"timestamp"`
+		IsSidechain bool            `json:"isSidechain"`
 	}
 
 	var lastAssistantContent string
@@ -4942,6 +5159,12 @@ func parseClaudeLastAssistantMessage(data []byte, sessionID string) (*ResponseOu
 		var record claudeRecord
 		if err := json.Unmarshal(line, &record); err != nil {
 			continue // Skip malformed lines
+		}
+
+		// Skip subagent sidechain records: the conversation's "last response"
+		// is the parent agent's reply, not a Task subagent's output.
+		if record.IsSidechain {
+			continue
 		}
 
 		// Capture session ID
@@ -5830,6 +6053,8 @@ func (i *Instance) Restart() error {
 			command = i.buildCodexCommand(i.Command)
 			// Record start time for async session ID detection
 			i.CodexStartedAt = time.Now().UnixMilli()
+		case i.Tool == "pi":
+			command = i.buildPiCommand(i.Command)
 		case i.Tool == "copilot":
 			command = i.buildCopilotCommand(i.Command)
 		case i.Tool == "crush":
@@ -6150,6 +6375,12 @@ func (i *Instance) CanRestart() bool {
 	// Codex sessions without ID can still restart (will start fresh)
 	// This allows restart even before session ID is detected
 	if IsCodexCompatible(i.Tool) {
+		return true
+	}
+
+	// Pi sessions are scoped to an Agent Deck instance-specific session dir and
+	// can always be relaunched with --continue.
+	if i.Tool == "pi" {
 		return true
 	}
 
@@ -6582,6 +6813,32 @@ func (i *Instance) SetCodexOptions(opts *CodexOptions) error {
 	return nil
 }
 
+// GetHermesOptions returns Hermes-specific options from ToolOptionsJSON, or nil if not set.
+func (i *Instance) GetHermesOptions() *HermesOptions {
+	if len(i.ToolOptionsJSON) == 0 {
+		return nil
+	}
+	opts, err := UnmarshalHermesOptions(i.ToolOptionsJSON)
+	if err != nil {
+		return nil
+	}
+	return opts
+}
+
+// SetHermesOptions stores Hermes-specific options into ToolOptionsJSON.
+func (i *Instance) SetHermesOptions(opts *HermesOptions) error {
+	if opts == nil {
+		i.ToolOptionsJSON = nil
+		return nil
+	}
+	data, err := MarshalToolOptions(opts)
+	if err != nil {
+		return err
+	}
+	i.ToolOptionsJSON = data
+	return nil
+}
+
 // GetOpenCodeOptions returns OpenCode-specific options, or nil if not set
 func (i *Instance) GetOpenCodeOptions() *OpenCodeOptions {
 	if len(i.ToolOptionsJSON) == 0 {
@@ -6644,14 +6901,19 @@ func (i *Instance) RefreshLiveSessionIDs() {
 	}
 }
 
-// GetMCPInfo returns MCP server information for this session
-// Returns nil if not a Claude or Gemini session
+// GetMCPInfo returns MCP server information for this session.
+// Returns nil if not a Claude-compatible, Gemini, or Cursor session.
+// Hermes is intentionally excluded: it uses its own ~/.hermes/config.yaml
+// `mcp_servers:` schema (user-scoped, YAML), not Claude's project-scoped
+// .mcp.json — agent-deck does not manage it yet.
 func (i *Instance) GetMCPInfo() *MCPInfo {
 	switch {
 	case IsClaudeCompatible(i.Tool):
 		return GetMCPInfo(i.ProjectPath)
 	case i.Tool == "gemini":
 		return GetGeminiMCPInfo(i.ProjectPath)
+	case i.Tool == "cursor":
+		return GetCursorMCPInfo(i.ProjectPath)
 	default:
 		return nil
 	}
@@ -6661,12 +6923,12 @@ func (i *Instance) GetMCPInfo() *MCPInfo {
 // This should be called when a session starts or restarts, so we can track
 // which MCPs are actually loaded in the running Claude session vs just configured
 func (i *Instance) CaptureLoadedMCPs() {
-	if !IsClaudeCompatible(i.Tool) {
+	if !IsClaudeCompatible(i.Tool) && i.Tool != "cursor" {
 		i.LoadedMCPNames = nil
 		return
 	}
 
-	mcpInfo := GetMCPInfo(i.ProjectPath)
+	mcpInfo := i.GetMCPInfo()
 	if mcpInfo == nil {
 		i.LoadedMCPNames = nil
 		return
@@ -6680,6 +6942,38 @@ func (i *Instance) CaptureLoadedMCPs() {
 // Otherwise, MCPs will use stdio configs (npx ...)
 // Returns error if .mcp.json write fails
 func (i *Instance) regenerateMCPConfig() error {
+	if i.Tool == "cursor" {
+		ClearCursorMCPCache(i.ProjectPath)
+		mcpInfo := i.GetMCPInfo()
+		if mcpInfo == nil || !mcpInfo.HasAny() {
+			return nil
+		}
+
+		switch GetMCPDefaultScope() {
+		case "global", "user":
+			globalMCPs := mcpInfo.Global
+			if len(globalMCPs) == 0 {
+				return nil
+			}
+			if err := i.WriteGlobalMCPConfig(globalMCPs); err != nil {
+				mcpLog.Debug("regen_cursor_global_mcp_failed", slog.String("error", err.Error()))
+				return fmt.Errorf("failed to regenerate Cursor global MCP config: %w", err)
+			}
+			mcpLog.Debug("regen_cursor_global_mcp_succeeded", slog.String("title", i.Title), slog.Int("mcp_count", len(globalMCPs)))
+		default:
+			localMCPs := mcpInfo.Local()
+			if len(localMCPs) == 0 {
+				return nil
+			}
+			if err := i.WriteLocalMCPConfig(localMCPs); err != nil {
+				mcpLog.Debug("regen_cursor_project_mcp_failed", slog.String("error", err.Error()))
+				return fmt.Errorf("failed to regenerate .cursor/mcp.json: %w", err)
+			}
+			mcpLog.Debug("regen_cursor_project_mcp_succeeded", slog.String("title", i.Title), slog.Int("mcp_count", len(localMCPs)))
+		}
+		return nil
+	}
+
 	ClearMCPCache(i.ProjectPath) // Force fresh read from disk (not stale 30s cache)
 	mcpInfo := GetMCPInfo(i.ProjectPath)
 	if mcpInfo == nil {
@@ -7224,12 +7518,140 @@ func (i *Instance) wrapForSandbox(command string) (string, string, error) {
 	return wrappedCmd, containerName, nil
 }
 
+// builtinAgentTools are the first-party agent CLIs agent-deck launches as a
+// pane's initial process and whose clean exit (e.g. `/exit`) can fall back to
+// an interactive shell when exit_to_shell is enabled (issue #1161).
+var builtinAgentTools = map[string]bool{
+	"claude":   true,
+	"gemini":   true,
+	"opencode": true,
+	"codex":    true,
+	"copilot":  true,
+	"cursor":   true,
+	"hermes":   true,
+	"crush":    true,
+}
+
+// isBuiltinAgentTool reports whether tool is a first-party agent (or a custom
+// tool wrapping claude/codex). Custom non-agent commands and "shell" are not
+// agents and must never be exit-to-shell wrapped.
+func isBuiltinAgentTool(tool string) bool {
+	if builtinAgentTools[tool] {
+		return true
+	}
+	return IsClaudeCompatible(tool) || IsCodexCompatible(tool)
+}
+
+// exitToShellEnabled resolves the exit-to-shell toggle for this instance.
+// Per-session override (Instance.ExitToShell) wins; otherwise the global
+// [shell] exit_to_shell config flag applies. Default is OFF (opt-in). #1161.
+func (i *Instance) exitToShellEnabled() bool {
+	if i.ExitToShell != nil {
+		return *i.ExitToShell
+	}
+	cfg, _ := LoadUserConfig()
+	return cfg != nil && cfg.Shell.GetExitToShell()
+}
+
+// wrapExitToShell rewrites a built-in agent's spawn command so the pane falls
+// back to an interactive shell at the same cwd when the agent exits, restoring
+// the pre-#503 exit→shell→resume workflow (issue #1161, Option A).
+//
+// The transform is:
+//
+//	<agent cmd>; exec "$SHELL" -i
+//
+// with the agent's own `exec ` launcher neutralised — claude execs itself for
+// job control, which would replace the wrapping bash and prevent the trailing
+// shell exec from ever running. Only the first `exec ` (the launcher) is
+// stripped; any later "exec " lives inside a shell-quoted startup-query suffix.
+// Agents that do not exec (gemini, codex, …) are unaffected by the strip and
+// simply get the suffix appended.
+//
+// No-op when the flag is off, the command is empty, the session is sandboxed
+// (docker exec owns the in-container process), or the tool is not a built-in
+// agent. Resume is unaffected: i.ClaudeSessionID is captured in Go before the
+// command is built, so the `--session-id`/`--resume` id still targets the same
+// session after the shell detour.
+func (i *Instance) wrapExitToShell(command string) string {
+	if command == "" || i.IsSandboxed() || !i.exitToShellEnabled() || !isBuiltinAgentTool(i.Tool) {
+		return command
+	}
+	rewritten := strings.Replace(command, "exec ", "", 1)
+	return rewritten + `; exec "$SHELL" -i`
+}
+
+// launchShellEnabled returns whether the session should wrap agent commands
+// with a shell invocation that loads startup files before launching the agent.
+// Checks per-session override first, then falls back to global [shell].launch_shell config.
+func (i *Instance) launchShellEnabled() bool {
+	if i.LaunchShell != nil {
+		return *i.LaunchShell
+	}
+	cfg, _ := LoadUserConfig()
+	return cfg != nil && cfg.Shell.GetLaunchShell()
+}
+
+// wrapLaunchShell wraps the command with an interactive shell invocation so
+// that environment variables from ~/.zshrc, ~/.bashrc, etc. are available to
+// the agent process (issue #1218).
+//
+// The transform is:
+//
+//	$SHELL -il -c '<command>'
+//
+// where $SHELL is the user's configured shell (e.g. /bin/zsh, /bin/bash).
+// For bash, ~/.bashrc is sourced explicitly before the command because
+// interactive login bash does not read it automatically.
+//
+// This solves the issue where OpenCode MCP configs with {env:VAR} references
+// fail when launched from the TUI because agent-deck spawns the agent directly
+// without going through the user's interactive shell environment.
+//
+// No-op when the flag is off, the command is empty, the session is sandboxed
+// (container already handles environment), or for shell tools (to avoid
+// double-wrapping). SSH remote sessions are also excluded because the remote
+// SSH invocation should handle the login shell setup.
+func (i *Instance) wrapLaunchShell(command string) string {
+	if command == "" || i.IsSandboxed() || !i.launchShellEnabled() {
+		return command
+	}
+	// Don't wrap shell sessions or SSH sessions
+	if i.Tool == "shell" || i.SSHHost != "" {
+		return command
+	}
+	// Get the shell from environment, default to bash
+	shell := os.Getenv("SHELL")
+	if shell == "" {
+		shell = "/bin/bash"
+	}
+	// Escape single quotes in the command for safe shell quoting
+	escaped := strings.ReplaceAll(command, "'", "'\"'\"'")
+	if filepath.Base(shell) == "bash" {
+		return fmt.Sprintf("%s -il -c 'if [ -f ~/.bashrc ]; then source ~/.bashrc; fi; %s'", shell, escaped)
+	}
+	return fmt.Sprintf("%s -il -c '%s'", shell, escaped)
+}
+
 // prepareCommand applies the full command wrapping chain: user wrapper → sandbox → ignore-suspend.
 // Returns the wrapped command, the sandbox container name (empty if not sandboxed), and an error.
 // All code paths that launch or respawn a tmux pane should use this instead of calling
 // applyWrapper/wrapForSandbox/wrapIgnoreSuspend individually.
 func (i *Instance) prepareCommand(cmd string) (string, string, error) {
-	// Apply the user wrapper FIRST so that extra args folded into a
+	// Exit-to-shell wrap FIRST, on the bare agent command, so the agent's own
+	// `exec ` launcher is still visible to neutralise and the trailing shell
+	// exec stays the outermost statement before any user-wrapper / bash -c /
+	// SSH layering. No-op unless opt-in for a built-in agent (issue #1161).
+	cmd = i.wrapExitToShell(cmd)
+
+	// Launch-shell wrap SECOND, before user wrapper, so the interactive shell
+	// loads its startup files and then executes the complete command (with
+	// exit-to-shell suffix if enabled). This ensures env vars from ~/.zshrc,
+	// ~/.bashrc, etc. are available to the agent and any trailing shell
+	// (issue #1218). No-op unless opt-in.
+	cmd = i.wrapLaunchShell(cmd)
+
+	// Apply the user wrapper THIRD so that extra args folded into a
 	// "{command} --flag1 --flag2" wrapper template become part of the string
 	// that the bash -c wrap protects. Previously the order was reversed
 	// (bash -c wrap then wrapper substitution), which produced

@@ -18,6 +18,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 	"unicode/utf16"
@@ -845,6 +846,20 @@ type Session struct {
 	// CommandUsesWindowsCmd is set for native Windows commands that must run
 	// through cmd.exe directly instead of PowerShell or POSIX shell wrappers.
 	CommandUsesWindowsCmd bool
+
+	// VimMode guarantees the inner agent's input composer is in insert mode
+	// before any text/Enter is delivered. When the inner tool (Claude Code with
+	// `"editorMode": "vim"`) leaves its prompt in vim NORMAL mode — the default
+	// state after a turn finishes — a bracketed paste still lands in the input
+	// widget, but the trailing Enter is interpreted as a navigation keystroke
+	// instead of submit, so the message is typed but never sent (issue #1264).
+	// When true, SendEnter and SendKeysAndEnter prepend an Escape + `i` sequence
+	// so the prompt is guaranteed to be in insert mode. The sequence is
+	// idempotent: Escape always lands in normal mode and `i` always enters
+	// insert, so it is safe even when the prompt is already in insert mode.
+	// Off by default (zero value) — non-vim sessions and other tools are
+	// unaffected. Populated at session-creation time from [claude].vim_mode.
+	VimMode bool
 
 	// LaunchInUserScope starts the tmux server through systemd-run --user --scope
 	// so the server is owned by the user's systemd manager instead of the current
@@ -2102,6 +2117,14 @@ func (s *Session) Start(command string) error {
 	return nil
 }
 
+// hasSessionProbeTimeout bounds a `tmux has-session` existence probe. A tmux
+// server that is briefly busy (e.g. tearing down another session) can make the
+// probe hang; rather than block a status poll — or, worse, mistake the stall
+// for a dead session — we cap it and treat a timeout as indeterminate (assume
+// the session still exists and let a later poll resolve it). Overridable in
+// tests.
+var hasSessionProbeTimeout = 2 * time.Second
+
 // Exists checks if the tmux session exists
 // Uses cached session list when available (refreshed by RefreshExistingSessions)
 // Falls back to direct tmux call if cache is stale
@@ -2124,9 +2147,18 @@ func (s *Session) Exists() bool {
 	}
 
 	// Cache is stale (or skipped for an isolated socket): fall back to a
-	// direct tmux check on the session's own socket.
-	cmd := s.tmuxCmd("has-session", "-t", s.Name)
-	return cmd.Run() == nil
+	// direct tmux check on the session's own socket. Bound it: a server that
+	// is briefly busy can make the probe hang, and a probe that never answers
+	// is indeterminate — assume the session still exists rather than reporting
+	// it dead (which would flip a live session to StatusError). Only a probe
+	// that actually completes with a non-success status means "gone".
+	ctx, cancel := context.WithTimeout(context.Background(), hasSessionProbeTimeout)
+	defer cancel()
+	err := s.tmuxCmdContext(ctx, "has-session", "-t", s.Name).Run()
+	if ctx.Err() == context.DeadlineExceeded {
+		return true // probe timed out: indeterminate, assume still alive
+	}
+	return err == nil
 }
 
 // ExistsFresh bypasses caches and asks the session's tmux server directly.
@@ -2212,6 +2244,19 @@ func (s *Session) buildStatusBarArgs() []string {
 	return args
 }
 
+// hideCwdPrefixInTitle, when true, drops the "[<project>] " prefix from the
+// terminal title (set-titles-string). Default false preserves the historical
+// "[<project>] <name>" format. Set once at startup from the user config's
+// [display] include_cwd_prefix via SetHideCwdPrefixInTitle.
+var hideCwdPrefixInTitle atomic.Bool
+
+// SetHideCwdPrefixInTitle configures whether the terminal title includes the
+// "[<cwd-basename>]" prefix. Pass true to drop it (display.include_cwd_prefix =
+// false). Safe to call concurrently; intended to run once at startup.
+func SetHideCwdPrefixInTitle(hide bool) {
+	hideCwdPrefixInTitle.Store(hide)
+}
+
 // buildTerminalTitleArgs returns the tmux command args for configuring the outer
 // terminal title shown by clients such as iTerm2. Session metadata user options
 // are always refreshed so custom title formats can reuse them.
@@ -2229,7 +2274,11 @@ func (s *Session) buildTerminalTitleArgs() []string {
 		defaults = append(defaults, option{key: "set-titles", value: "on"})
 	}
 	if _, overridden := s.OptionOverrides["set-titles-string"]; !overridden {
-		defaults = append(defaults, option{key: "set-titles-string", value: "[#{@agentdeck_project_name}] #{@agentdeck_display_name}"})
+		titleStr := "[#{@agentdeck_project_name}] #{@agentdeck_display_name}"
+		if hideCwdPrefixInTitle.Load() {
+			titleStr = "#{@agentdeck_display_name}"
+		}
+		defaults = append(defaults, option{key: "set-titles-string", value: titleStr})
 	}
 
 	args := make([]string, 0, len(defaults)*6)
@@ -4071,6 +4120,13 @@ func (s *Session) hashContent(content string) string {
 	return hex.EncodeToString(h[:])
 }
 
+// keySenderExec is a swappable seam for the tmux subprocesses spawned by the
+// SendKeys / SendEnter / SendNamedKey key-delivery primitives. It defaults to
+// tmuxExec (the real `tmux` binary) in production; tests override it to record
+// the exact key sequence emitted without standing up a real tmux server. See
+// the vim-mode regression test in tmux_vim_mode_test.go (issue #1264).
+var keySenderExec = tmuxExec
+
 // SendKeys sends keys to the tmux session
 // Uses -l flag to treat keys as literal text, preventing tmux special key interpretation
 func (s *Session) SendKeys(keys string) error {
@@ -4078,15 +4134,44 @@ func (s *Session) SendKeys(keys string) error {
 	// The -l flag makes tmux treat the string as literal text, not key names
 	// This prevents issues like "Enter" being interpreted as the Enter key
 	// and provides a layer of safety against tmux special sequences
-	cmd := s.tmuxCmd("send-keys", "-l", "-t", s.Name, "--", keys)
+	cmd := keySenderExec(s.SocketName, "send-keys", "-l", "-t", s.Name, "--", keys)
 	return cmd.Run()
 }
 
-// SendEnter sends an Enter key to the tmux session
-func (s *Session) SendEnter() error {
+// ensureInsertMode prepends an Escape + `i` sequence so a vim-mode composer
+// (Claude Code with "editorMode": "vim") is guaranteed to be in insert mode
+// before text or Enter is delivered. No-op unless VimMode is set. The sequence
+// is idempotent — Escape lands in normal mode, `i` enters insert — so it is
+// safe to call when the prompt is already in insert mode. See issue #1264.
+func (s *Session) ensureInsertMode() {
+	if !s.VimMode {
+		return
+	}
+	// Escape: guarantee normal mode regardless of current state.
+	_ = keySenderExec(s.SocketName, "send-keys", "-t", s.Name, "Escape").Run()
+	// i: enter insert mode so the following paste/Enter are taken literally.
+	_ = keySenderExec(s.SocketName, "send-keys", "-t", s.Name, "i").Run()
+}
+
+// sendEnterRaw emits a single Enter keystroke without the vim-mode insert
+// guard. Used internally by SendKeysAndEnter, which has already guaranteed
+// insert mode before the paste — re-escaping before the trailing Enter would
+// drop the prompt back to normal mode and swallow the submit.
+func (s *Session) sendEnterRaw() error {
 	s.invalidateCache()
-	cmd := s.tmuxCmd("send-keys", "-t", s.Name, "Enter")
+	cmd := keySenderExec(s.SocketName, "send-keys", "-t", s.Name, "Enter")
 	return cmd.Run()
+}
+
+// SendEnter sends an Enter key to the tmux session. When VimMode is set it
+// first guarantees the composer is in insert mode (issue #1264) so the Enter
+// submits the message instead of being consumed as a vim normal-mode motion.
+// This covers the bare-Enter nudges the send-verify retry loop fires against a
+// detected unsent prompt (cmd/agent-deck/session_cmd.go), which would
+// otherwise all no-op in normal mode.
+func (s *Session) SendEnter() error {
+	s.ensureInsertMode()
+	return s.sendEnterRaw()
 }
 
 // OpenKeySender opens a persistent tmux control-mode client bound to this
@@ -4105,7 +4190,7 @@ func (s *Session) OpenKeySender() (KeySender, error) {
 // Backspace, arrow keys, Tab, and Ctrl-{C,D} from the TUI to the focused pane.
 func (s *Session) SendNamedKey(key string) error {
 	s.invalidateCache()
-	cmd := s.tmuxCmd("send-keys", "-t", s.Name, key)
+	cmd := keySenderExec(s.SocketName, "send-keys", "-t", s.Name, key)
 	return cmd.Run()
 }
 
@@ -4116,6 +4201,10 @@ func (s *Session) SendNamedKey(key string) error {
 // marker and gets swallowed by async TUI frameworks (Ink/Node.js, curses).
 func (s *Session) SendKeysAndEnter(keys string) error {
 	s.invalidateCache()
+	// Guarantee the composer is in insert mode BEFORE the paste so a vim
+	// normal-mode prompt doesn't interpret the message body as motion/command
+	// keystrokes (issue #1264). No-op unless VimMode is set.
+	s.ensureInsertMode()
 	// Use chunked sending for large messages to avoid tmux buffer limits
 	if err := s.SendKeysChunked(keys); err != nil {
 		return err
@@ -4124,7 +4213,10 @@ func (s *Session) SendKeysAndEnter(keys string) error {
 	// before Enter arrives. Without this, tmux 3.2+ paste sequences cause
 	// the immediately-following Enter to be swallowed by the paste handler.
 	time.Sleep(100 * time.Millisecond)
-	return s.SendEnter()
+	// sendEnterRaw (not SendEnter): we already guaranteed insert mode above and
+	// the paste keeps us in insert; re-escaping here would drop back to normal
+	// mode and swallow the submit.
+	return s.sendEnterRaw()
 }
 
 // SendKeysChunked sends large content to the tmux session in chunks to avoid

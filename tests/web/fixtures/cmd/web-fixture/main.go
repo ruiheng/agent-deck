@@ -64,7 +64,18 @@ func main() {
 		MenuData:     store,
 	})
 	server.SetMutator(store)
-	server.SetMCPManager(newFixtureMCPManager())
+	// Hold the MCP manager on the store so /__fixture/reset clears its
+	// in-memory attachments too. Without this, attachments leak across the
+	// serially-run mcps.spec.js cases (and across Playwright retries, which
+	// re-run the whole serial block), breaking the "fresh fixture" and
+	// "un-attached → 404" assertions.
+	store.mcpMgr = newFixtureMCPManager()
+	server.SetMCPManager(store.mcpMgr)
+	// Without this, GET /api/skills falls back to defaultSkillsService, which
+	// scans the host's real ~/.agent-deck/skills + ~/.claude/skills via
+	// session.ListAvailableSkills() — so the seeded alpha/beta/gamma catalog is
+	// never served and skills.spec.js fails (empty/host-dependent catalog).
+	server.SetSkillsService(store)
 
 	// Wrap the server's handler with the fixture admin endpoints so tests can
 	// reset and inspect state without going through the real Go test harness.
@@ -119,6 +130,7 @@ type fixtureStore struct {
 	startupToken string // echoed at /__fixture/whoami for spawn verification
 	catalog      []session.SkillCandidate
 	attached     map[string][]session.ProjectSkillAttachment // by projectPath
+	mcpMgr       *fixtureMCPManager                          // reset alongside the store on /__fixture/reset
 
 	// undoStack tracks recently-deleted sessions for ctrl+z undo. Capped
 	// at 10 entries (FIFO eviction) to match the TUI Home.undoStack.
@@ -352,6 +364,49 @@ func (s *fixtureStore) UndoDelete() (string, error) {
 	return restored.ID, nil
 }
 
+// UpdateSession implements web.SessionMutator. Mirrors the production path:
+// validates field names against a small allowlist and applies the value to
+// the in-memory MenuSession DTO. Restart-required fields are tracked with
+// the same policy as session.RestartPolicyFor so e2e tests can assert the
+// restartRequired flag without booting a real session.
+func (s *fixtureStore) UpdateSession(id string, updates map[string]string) ([]string, bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	sess, ok := s.sessions[id]
+	if !ok {
+		return nil, false, fmt.Errorf("session not found: %s", id)
+	}
+	changed := make([]string, 0, len(updates))
+	restartRequired := false
+	for field, value := range updates {
+		var oldValue string
+		switch field {
+		case session.FieldTitle:
+			oldValue = sess.Title
+			sess.Title = value
+		case session.FieldTool:
+			oldValue = sess.Tool
+			sess.Tool = value
+		case session.FieldNotes, session.FieldColor, session.FieldExtraArgs,
+			session.FieldPlugins, session.FieldChannels,
+			session.FieldSkipPermissions, session.FieldAutoMode:
+			// Fixture DTO doesn't carry these; treat as accepted no-op so
+			// tests can verify the round-trip without expanding MenuSession.
+			oldValue = value
+		default:
+			return nil, false, fmt.Errorf("invalid field: %s", field)
+		}
+		if oldValue == value {
+			continue
+		}
+		changed = append(changed, field)
+		if session.RestartPolicyFor(field) == session.FieldRestartRequired {
+			restartRequired = true
+		}
+	}
+	return changed, restartRequired, nil
+}
+
 func (s *fixtureStore) ForkSession(parentID string) (string, error) {
 	s.mu.Lock()
 	parent, ok := s.sessions[parentID]
@@ -482,6 +537,9 @@ func (s *fixtureStore) adminHandler() http.Handler {
 			return
 		}
 		s.seed()
+		if s.mcpMgr != nil {
+			s.mcpMgr.Reset()
+		}
 		w.WriteHeader(http.StatusNoContent)
 	})
 	mux.HandleFunc("/__fixture/snapshot", func(w http.ResponseWriter, r *http.Request) {

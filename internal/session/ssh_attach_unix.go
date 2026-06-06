@@ -18,20 +18,11 @@ import (
 	"golang.org/x/term"
 )
 
-const sshAttachReplyQuarantine = 2 * time.Second
+const sshAttachReplyQuarantine = 500 * time.Millisecond
 
 func (r *SSHRunner) attachWithPTY(remoteCmd string) error {
-	sshArgs := []string{
-		"-tt",
-		"-o", "ControlMaster=auto",
-		"-o", "ControlPath=" + sshControlDir + "/%r@%h:%p",
-		"-o", "ControlPersist=600",
-		r.Host,
-		remoteCmd,
-	}
-
-	cmd := exec.Command("ssh", sshArgs...)
-	ptmx, err := pty.Start(cmd)
+	cmd := exec.Command("ssh", r.buildAttachArgsForRemoteCommand(remoteCmd)...)
+	ptmx, err := tmux.StartAttachPTY(cmd, os.Stdin)
 	if err != nil {
 		return fmt.Errorf("failed to start ssh with pty: %w", err)
 	}

@@ -7,6 +7,175 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.9.47] - 2026-06-03
+
+### Fixed
+
+- **The recurring "Please run /login" / 401 outage** ([#1266](https://github.com/asheshgoplani/agent-deck/pull/1266)). The keep-warm OAuth refresh daemon was sending its refresh request as `application/x-www-form-urlencoded`, which Anthropic rejects with a 400 — so the warm-keeping silently failed and tokens still expired. The refresh is now sent as a JSON body with a `client_id` fallback, plus a contract test to lock the request shape. Combined with the v1.9.46 clean-symlink reassert and keep-warm daemon, **one login per profile now persists** across multi-session use — no API key required.
+- **Skills-pane web regression: attached skills list never loaded on deep-link** ([#1270](https://github.com/asheshgoplani/agent-deck/pull/1270)). The web skills pane failed to render / lost row-click selection when opened directly; rendering and selection are restored.
+- **`session send` silently failing in Claude Code vim normal mode** ([#1264](https://github.com/asheshgoplani/agent-deck/issues/1264) / [#1271](https://github.com/asheshgoplani/agent-deck/pull/1271)). When Claude Code's prompt was in vim NORMAL mode (the default state after a turn finishes with `"editorMode": "vim"`), the trailing Enter was interpreted as a navigation keystroke instead of submit, so messages were typed but never sent — and the send-verify retry loop's bare Enter nudges all no-op'd for the same reason. A new opt-in `[claude].vim_mode` knob gates an Escape + `i` insert-mode guarantee at the keysender layer, so every `SendEnter` / `SendKeysAndEnter` against a vim-mode target submits reliably. Off by default; non-vim Claude sessions and other tools are unaffected.
+- **`fork --with-state` correctness on the vcs backend** ([#1029](https://github.com/asheshgoplani/agent-deck/issues/1029) / [#1051](https://github.com/asheshgoplani/agent-deck/issues/1051) / [#1263](https://github.com/asheshgoplani/agent-deck/pull/1263)). The #1029 fork-with-state correctness batch is reconciled onto the vcs backend abstraction so forking with state behaves correctly on the vcs backend.
+- **Remote deploy `ETXTBSY` on self-replacing binary** ([#1171](https://github.com/asheshgoplani/agent-deck/issues/1171) / [#1265](https://github.com/asheshgoplani/agent-deck/pull/1265)). Remote deploy now writes to a temp file and uses an atomic rename, avoiding the `ETXTBSY` error when replacing a running binary.
+- **Conductor stale `CLAUDE_SESSION_ID` recovery** ([#1237](https://github.com/asheshgoplani/agent-deck/pull/1237)). The conductor recovers from a stale `CLAUDE_SESSION_ID` via a disk scan, stopping raw JSON from leaking into chat.
+- **PEP 668 detection in Python dependency install** ([#1169](https://github.com/asheshgoplani/agent-deck/pull/1169)). `installPythonDeps` detects an externally-managed environment (PEP 668) and surfaces an actionable error instead of failing opaquely.
+- **SHA-256 verification on local self-update binary** ([#1219](https://github.com/asheshgoplani/agent-deck/pull/1219)). The self-update flow verifies the SHA-256 checksum of the downloaded binary before applying it.
+- **Full Slack message body delivered to conductor** ([#1223](https://github.com/asheshgoplani/agent-deck/pull/1223)). The watcher now delivers the full Slack message body to the conductor instead of a truncated subject.
+- **`launch-subagent` inherits parent session group** ([#1213](https://github.com/asheshgoplani/agent-deck/pull/1213)). Sub-agents launched via `launch-subagent` inherit the parent session's group by default.
+- **tmux transient-stall false-death** ([#1216](https://github.com/asheshgoplani/agent-deck/pull/1216)). Live sessions are no longer marked dead on transient tmux stalls.
+- **Dropdowns obscuring content in short terminals** ([#1244](https://github.com/asheshgoplani/agent-deck/pull/1244)). Dropdowns no longer overflow and obscure content in short terminal windows.
+- **Resume built-in Pi sessions** ([#1197](https://github.com/asheshgoplani/agent-deck/pull/1197)). Built-in Pi sessions resume correctly in Agent Deck.
+- **Hook-handler / test-isolation fixes** ([#1196](https://github.com/asheshgoplani/agent-deck/pull/1196) / [#1050](https://github.com/asheshgoplani/agent-deck/pull/1050) / [#1220](https://github.com/asheshgoplani/agent-deck/pull/1220)). User-config cache is cleared in plugin-catalog test helpers, isolated `TMUX_TMPDIR` uses a `/tmp` base on darwin, and skills e2e specs no longer fail on a collapsed sidebar in headless viewports.
+
+### Added
+
+- **First-class session support for Hermes Agent CLI** ([#1257](https://github.com/asheshgoplani/agent-deck/pull/1257)). Hermes Agent CLI is supported as a first-class session tool.
+- **Cursor Agent CLI MCP management** ([#1135](https://github.com/asheshgoplani/agent-deck/pull/1135)). Agent Deck can manage the Cursor Agent CLI `mcp.json` (both project and global scope).
+- **Web Edit session dialog** ([#1132](https://github.com/asheshgoplani/agent-deck/pull/1132)). The web UI gains `PATCH /sessions/{id}` and an Edit dialog, closing the "Edit session settings" gap in the parity matrix.
+- **Tool registry migration** ([#1258](https://github.com/asheshgoplani/agent-deck/issues/1258) / [#1261](https://github.com/asheshgoplani/agent-deck/pull/1261)). A tool registry migration prototype lays groundwork for unified tool definitions.
+- **Global `sync_title` toggle** ([#1255](https://github.com/asheshgoplani/agent-deck/pull/1255)). A global `sync_title` config disables session-name sync when not wanted.
+
+### Changed
+
+- **Bumped Go 1.25.10 → 1.25.11** ([#1262](https://github.com/asheshgoplani/agent-deck/issues/1262) / [#1267](https://github.com/asheshgoplani/agent-deck/pull/1267)). Go is bumped to 1.25.11 to clear reachable stdlib vulnerabilities GO-2026-5039 and GO-2026-5037. Also pulls in the go-minor-patch dependency group (3 updates) and bumps `actions/attest-build-provenance` from 2 to 4 ([#1268](https://github.com/asheshgoplani/agent-deck/pull/1268) / [#1269](https://github.com/asheshgoplani/agent-deck/pull/1269)).
+- **`launch_shell` env inheritance** ([#1218](https://github.com/asheshgoplani/agent-deck/issues/1218) / [#1231](https://github.com/asheshgoplani/agent-deck/pull/1231)). A new opt-in `[shell].launch_shell` option starts shell sessions through the user's login shell so they inherit the shell environment variables.
+- **Durable per-parent outbox-drain perf gate** ([#1235](https://github.com/asheshgoplani/agent-deck/pull/1235)). The durable per-parent outbox drain gains a performance gate (WARM walltime + Tier-2 fsync count) to guard against regression.
+
+## [1.9.46] - 2026-06-02
+
+### Added
+
+- **`include_cwd_prefix` display toggle** ([#1221](https://github.com/asheshgoplani/agent-deck/issues/1221) / [#1229](https://github.com/asheshgoplani/agent-deck/pull/1229)). A configurable toggle controls whether the working-directory prefix is shown in session display, letting users opt out of the cwd prefix where it adds noise.
+- **Claude Opus 4.8 in the model catalog** ([#1241](https://github.com/asheshgoplani/agent-deck/issues/1241) / [#1242](https://github.com/asheshgoplani/agent-deck/pull/1242)). `claude-opus-4-8` is added to `MODEL_ID_CATALOG` so the latest Opus model is selectable and resolves correctly throughout the UI.
+- **SLSA build-provenance attestation with fail-closed verification** ([#1159](https://github.com/asheshgoplani/agent-deck/issues/1159) / [#1250](https://github.com/asheshgoplani/agent-deck/pull/1250)). Release artifacts now carry SLSA build provenance, and artifact verification is fail-closed — an unattested or tampered artifact is rejected rather than silently accepted.
+- **Tier-1 WARM performance suite** ([#1234](https://github.com/asheshgoplani/agent-deck/issues/1234) / [#1251](https://github.com/asheshgoplani/agent-deck/pull/1251)). A warm-path performance test suite with corrected warm measurement, guarding the hot code paths against regression.
+
+### Changed
+
+- **Single-instance per profile is now the default** ([#1246](https://github.com/asheshgoplani/agent-deck/issues/1246) / [#1247](https://github.com/asheshgoplani/agent-deck/pull/1247)). `allow_multiple` now defaults to `false`, so a profile runs a single instance by default. This stops concurrent instances from tearing each other down.
+- **Bumped all deprecated GitHub Actions** ([#991](https://github.com/asheshgoplani/agent-deck/issues/991) / [#1249](https://github.com/asheshgoplani/agent-deck/pull/1249)). Every deprecated Action across the CI workflows (including perf-smoke and lighthouse-ci) is upgraded to a supported version, keeping the pipelines from breaking on runner deprecations.
+- **Stabilized the Playwright e2e suite** ([#1236](https://github.com/asheshgoplani/agent-deck/pull/1236) / [#1248](https://github.com/asheshgoplani/agent-deck/pull/1248)). Broken Playwright specs on main are repaired and desktop-coupled specs gain phone-viewport applicability guards, so the e2e suite runs green across viewports.
+
+### Fixed
+
+- **Durable, subscription-safe credentials (clean-symlink + keep-warm daemon)** ([#1222](https://github.com/asheshgoplani/agent-deck/issues/1222) / [#1253](https://github.com/asheshgoplani/agent-deck/pull/1253)). Credentials are managed via a clean symlink (dropping the fragile mtime-promote step) and a keep-warm refresh daemon, making multi-session use subscription-safe without an API key and eliminating the credential loss that drove the work-profile re-login loop.
+- **Tool-aware post-send verification** ([#1238](https://github.com/asheshgoplani/agent-deck/issues/1238) / [#1205](https://github.com/asheshgoplani/agent-deck/issues/1205) / [#876](https://github.com/asheshgoplani/agent-deck/issues/876) / [#1245](https://github.com/asheshgoplani/agent-deck/pull/1245)). Post-send verification is now tool-aware, so sends to non-Claude tools are no longer reported as false-negative drops.
+- **Hook-handler graceful degradation on missing `PROJECT_DIR`** ([#1233](https://github.com/asheshgoplani/agent-deck/issues/1233) / [#1243](https://github.com/asheshgoplani/agent-deck/pull/1243)). A missing `PROJECT_DIR` now degrades gracefully instead of emitting a FATAL on every call.
+- **iTerm2 ghost-lines** ([#1240](https://github.com/asheshgoplani/agent-deck/issues/1240) / [#1252](https://github.com/asheshgoplani/agent-deck/pull/1252)). Ghost-lines under iTerm2 are prevented without regressing panel width-measurement.
+
+## [1.9.45] - 2026-05-30
+
+### Added
+
+- **Near-instant idle-conductor completion delivery (wake-nudge wired)** ([#1225](https://github.com/asheshgoplani/agent-deck/issues/1225) / [#1226](https://github.com/asheshgoplani/agent-deck/pull/1226)). The durable outbox shipped in v1.9.44 is correct (no loss, exactly-once) but an **idle** conductor only drained on its next heartbeat — up to ~14 min of latency. The `WakeNudger` (built but previously unwired) is now triggered from the single producer commit chokepoint (`commitEventToInbox`), which both producers funnel through: the interactive `running→waiting` path and the one-shot `run-task` kernel-exit path. The moment a completion durably lands in a parent's inbox, an **idle** conductor is woken to drain it — collapsing the idle worst case from ~14 min to **sub-second**. The nudge is event-driven (fired on commit, not polled), conductor-scoped, idle-gated (never sends into a busy pane — a send-keys there only queues, the exact failure the pull model avoids), debounced per-parent (~500ms, coalesces a burst of simultaneous completions into one wake without delaying the first), and **best-effort/fire-and-forget**: a dropped or failed nudge is harmless because the same durable record is still drained on the parent's next Stop/heartbeat (wake ≠ deliver). A busy parent is intentionally left to drain at its next turn boundary — the physical floor for a busy Claude pane — so the nudge adds no noise there. Zero billed inference.
+
+## [1.9.44] - 2026-05-29
+
+### Added
+
+- **Durable per-parent outbox for inter-agent completions** ([#1225](https://github.com/asheshgoplani/agent-deck/issues/1225) / [#1226](https://github.com/asheshgoplani/agent-deck/pull/1226)). Child completions are committed to a durable, per-parent outbox (`~/.agent-deck/inboxes/<parent>.jsonl`) and drained by the parent on its own schedule, replacing the push-into-tmux model that silently lost completions to an always-busy conductor. At-least-once delivery with exactly-once effects (last-wins per child, consumed-turn dedup ledger); survives parent busy-ness, restart, and compaction.
+
+### Changed
+
+- **Activated the durable-outbox comms engine** ([#1225](https://github.com/asheshgoplani/agent-deck/issues/1225) / [#1226](https://github.com/asheshgoplani/agent-deck/pull/1226)). The conductor Stop hook is now **synchronous** so Claude Code reads the `{decision:"block"}` the hook emits and injects busy-parent completions at the next turn boundary, and `agent-deck inbox drain self` is the first step of every conductor heartbeat (the idle-conductor fallback). The Stop-sync flip is **conductor-scoped at runtime**, not globally: a session with an empty inbox (every leaf/non-conductor session) fast-returns with no block and zero ledger writes, so the flip is inert for them. The loop guard is crash-safe and fails safe on an absent `stop_hook_active` flag. Roll out canary-first to one conductor. Zero billed inference — the hook is a Go handler, no `claude -p`.
+
+### Fixed
+
+- **Work-profile 401 `/login` loop on session spawn/restart** ([#1222](https://github.com/asheshgoplani/agent-deck/issues/1222) / [#1224](https://github.com/asheshgoplani/agent-deck/pull/1224)). The scratch `.credentials.json` symlink is re-asserted on spawn and on start/restart, stopping the work-profile credential loss that forced a re-login loop.
+
+## [1.9.43] - 2026-05-28
+
+### Added
+
+- **Opt-in kernel-exact task-worker completion** ([#1215](https://github.com/asheshgoplani/agent-deck/issues/1215)). A one-shot task worker's exit is caught exactly-once and wakes the launching session reliably, replacing poll-inference for that path. Interactive sessions are unchanged.
+
+### Fixed
+
+- **notify-daemon can no longer run stale code** ([#1215](https://github.com/asheshgoplani/agent-deck/issues/1215)). A `RuntimeMaxSec` recycle plus a version self-check stop the daemon from silently running old code — the cause of notification fixes not taking effect.
+
+## [1.9.42] - 2026-05-28
+
+### Fixed
+
+- **Attached-skills API now emits camelCase JSON** so the web UI can read attached-skill fields ([#1211](https://github.com/asheshgoplani/agent-deck/issues/1211)). `ProjectSkillAttachment` previously lacked `json:` tags, so the API emitted PascalCase while the frontend reads camelCase, and attached skills wouldn't display.
+
+### Internal
+
+- Web parity guards re-baselined and the skills-service wired into the test fixture.
+
+## [1.9.41] - 2026-05-27
+
+### Security
+
+- **Web: unauthenticated non-loopback bind is now refused** ([#1209](https://github.com/asheshgoplani/agent-deck/issues/1209)). Binding a non-loopback address now requires a token (closes the unauthenticated-RCE gap); use `--insecure-bind` to override explicitly. The terminal bridge is token-gated and query-string tokens are rejected.
+- **Remote: `remote update` verifies the release asset's SHA-256 before deploying** ([#1207](https://github.com/asheshgoplani/agent-deck/issues/1207)). Adds a safe SSH host-key stance with no insecure host-key bypass.
+- **install.sh verifies the downloaded binary's SHA-256 before install** ([#1210](https://github.com/asheshgoplani/agent-deck/issues/1210)). Adds a skill-migration `RemoveAll` path-containment guard, passes the webhook secret via env instead of a CLI flag, and shell-quotes spawn args (no injection via session/dir names).
+
+## [1.9.40] - 2026-05-27
+
+### Added
+
+- **Opt-in `[shell] exit_to_shell` — exit your agent, drop to a shell, then resume the same session** ([#1161](https://github.com/asheshgoplani/agent-deck/issues/1161), thanks @Djeeteg007). When enabled, exiting your agent (e.g. `/exit`) drops you to an interactive shell at the same cwd so you can run `aws-vault`/`direnv`/etc., then resume the same session with full context preserved (default off).
+
+## [1.9.39] - 2026-05-27
+
+### Fixed
+
+- **Typing into a session now echoes in ~60ms instead of lagging up to ~2s** ([#1131](https://github.com/asheshgoplani/agent-deck/issues/1131), thanks @ddorman-dn). The insert-mode preview pane refreshes immediately after each keystroke instead of only on the 2s background tick.
+
+## [1.9.38] - 2026-05-27
+
+### Fixed (CRITICAL / data loss)
+
+- **Dismissing a session created via `worktree_reuse` no longer deletes the user's original repository** ([#1200](https://github.com/asheshgoplani/agent-deck/issues/1200), thanks @mic-web). The dismiss path could run `os.RemoveAll` on the user's original repo; worktree removal is now guarded to only delete agent-deck-created worktrees under the managed dir.
+
+## [1.9.37] - 2026-05-27
+
+### Fixed
+
+- **`worktree.default_enabled` now falls back to a normal session on non-git directories instead of failing** ([#1185](https://github.com/asheshgoplani/agent-deck/issues/1185), thanks @marekaf). When the default-worktree setting was on and you created a session in a directory that isn't a git repo, creation errored; it now degrades gracefully to a plain session.
+- **New-session dialog "Type custom path/model" inputs now accept typed input** ([#1190](https://github.com/asheshgoplani/agent-deck/issues/1190), thanks @marekaf). Selecting the custom path or model option kept focus on the list instead of the text field, so keystrokes were swallowed (root cause [#1023](https://github.com/asheshgoplani/agent-deck/issues/1023)).
+
+### Added
+
+- **Capability-level E2E test suite** — lifecycle (launch/stop/fork) and echo-agent round-trip coverage with a snapshot dashboard ([#1191](https://github.com/asheshgoplani/agent-deck/issues/1191), [#1193](https://github.com/asheshgoplani/agent-deck/issues/1193), [#1194](https://github.com/asheshgoplani/agent-deck/issues/1194)).
+
+### Changed
+
+- Go dependency bumps (go-minor-patch group, [#1180](https://github.com/asheshgoplani/agent-deck/issues/1180)).
+- Release workflow gained a `workflow_dispatch` escape hatch for publishing a tag manually.
+
+## [1.9.36] - 2026-05-26
+
+Two inter-agent comms backbone fixes that make conductor↔worker signalling trustworthy. As always the local release worker stops at `git push origin <tag>` and `.github/workflows/release.yml` is the single source of truth for `goreleaser release --clean`.
+
+### Fixed
+
+- **Conductors now get a trustworthy worker-"finished" signal** ([#1186](https://github.com/asheshgoplani/agent-deck/issues/1186)). The worker prints a completion sentinel (`===AGENTDECK_DONE=== status=… summary=…`) and agent-deck emits a real `[DONE] Child finished` event on the Stop hook edge instead of the ambiguous "waiting" status, so conductors no longer have to poll artifacts to know a task finished.
+- **EVENT notifications no longer re-fire 10-40× for an idle session** ([#1187](https://github.com/asheshgoplani/agent-deck/issues/1187)). The dedup key is now derived from append-only transcript content instead of the clock (which was re-stamped on every pane redraw), so an idle-but-animating Claude pane emits its `[EVENT]` once.
+
+## [1.9.35] - 2026-05-26
+
+Two community contributions: a configurable default model for new Claude sessions ([#1172](https://github.com/asheshgoplani/agent-deck/issues/1172), credit [@marekaf](https://github.com/marekaf)) and a tmux pane that now fills the full terminal width when a Claude session opens ([#1167](https://github.com/asheshgoplani/agent-deck/issues/1167), credit [@OrNatanAxon](https://github.com/OrNatanAxon)). As always the local release worker stops at `git push origin <tag>` and `.github/workflows/release.yml` is the single source of truth for `goreleaser release --clean`.
+
+### Added
+
+- **Configurable `default_model` for new Claude sessions** ([#1172](https://github.com/asheshgoplani/agent-deck/issues/1172), credit [@marekaf](https://github.com/marekaf)). The `[claude]` config block now accepts a `default_model` key so new Claude sessions preselect your chosen model instead of always defaulting to Sonnet.
+
+### Fixed
+
+- **Claude session pane now fills the full terminal width on open** ([#1167](https://github.com/asheshgoplani/agent-deck/issues/1167), credit [@OrNatanAxon](https://github.com/OrNatanAxon)). The attach PTY is now pre-sized to the terminal before attach, so the pane no longer opens at a narrow default width.
+- **Hardened the #1167 attach-width tests against CI load races** ([#1178](https://github.com/asheshgoplani/agent-deck/issues/1178)). The tests now poll until the expected width is reached instead of relying on a fixed sleep, so they no longer flake under release-runner load.
+
+## [1.9.32] - 2026-05-25
+
+Three community-reported bug fixes: a remote-update false-success loop ([#1171](https://github.com/asheshgoplani/agent-deck/issues/1171), credit [@javierciccarelli](https://github.com/javierciccarelli)), the new-session model picker hiding typed input and swallowing Esc ([#1162](https://github.com/asheshgoplani/agent-deck/issues/1162), credit [@wbonnefond](https://github.com/wbonnefond)), and federated remote sessions flickering out on transient SSH errors ([#1170](https://github.com/asheshgoplani/agent-deck/issues/1170), credit [@devtechwebsource](https://github.com/devtechwebsource)). As always the local release worker stops at `git push origin <tag>` and `.github/workflows/release.yml` is the single source of truth for `goreleaser release --clean`.
+
+### Fixed
+
+- **`remote update` no longer reports a false success while leaving the remote on the old version** ([#1171](https://github.com/asheshgoplani/agent-deck/issues/1171), credit [@javierciccarelli](https://github.com/javierciccarelli)). Root cause: `DeployBinary` SCP'd the new binary to the bare relative path `agent-deck` (→ `~/agent-deck` in the SSH user's home), while `CheckBinary` ran `agent-deck version` through the remote `$PATH` (→ `~/.local/bin/agent-deck` from `install.sh`). Deploy and check targeted *different files*, so the command printed `✓ Installed vX` while the remote kept running the old binary; a second `remote update` again reported "outdated", looping forever. Two-part fix: (1) `ResolveRemotePath` now deploys to the binary the remote actually executes — `command -v agent-deck`, falling back to the `install.sh` default `$HOME/.local/bin/agent-deck` — and creates the parent directory unconditionally; (2) `InstallBinary` verifies the remote's `$PATH` binary reports the new version *before* claiming success, surfacing an actionable error (e.g. "deployed to X but remote runs vY from $PATH") instead of a false ✓. Pinned by `internal/session/issue1171_remote_update_path_test.go`. **Upgrade note:** hosts left with a stray `~/agent-deck` from earlier broken runs can delete it (`rm ~/agent-deck`); it is harmless and never executed.
+- **New-session model picker now echoes typed input and scopes Esc to the picker** ([#1162](https://github.com/asheshgoplani/agent-deck/issues/1162), credit [@wbonnefond](https://github.com/wbonnefond)). Two UX bugs: (1) the suggestions dropdown overlay was positioned by counting raw content newlines, but the command-button row above the model field wraps to extra visual lines at narrow widths, so the undercount dropped the dropdown on top of the model input and hid whatever the user typed — now positioned from the visual (width-wrapped) line count via `lipgloss.Height`; (2) `Esc` killed the entire new-session flow because `home.go` called `newDialog.Hide()` before the dialog could treat it as close-self for the picker — now the parent forwards `Esc` to the dialog when `IsModelPickerOpen()` is true, dismissing only the picker (form stays alive, typed value preserved) while a second `Esc`, or `Esc` on any other field, cancels the flow as before. Pinned by `internal/ui/issue1162_model_picker_test.go`.
+- **Federated remote sessions no longer flicker out on a transient SSH error** ([#1170](https://github.com/asheshgoplani/agent-deck/issues/1170), credit [@devtechwebsource](https://github.com/devtechwebsource)). The 30s poll shared a single 15s context across all remotes fetched sequentially (one slow/offline remote starved the others) and the handler did a wholesale `h.remoteSessions = msg.sessions`, wiping last-good data for any remote missing from a partial fetch. Fix: each remote is now fetched in parallel with its own 15s timeout, and the new pure `mergeRemoteSessions` keeps last-good sessions for errored remotes while successful fetches replace wholesale (new sessions appear, removed sessions drop, deconfigured remotes drop). Poll cadence is configurable via `[ui] remote_session_refresh_secs` (default 15s, clamped 5–300). Pinned by `internal/session/issue1170_remote_session_refresh_test.go` and `internal/ui/issue1170_remote_refresh_test.go`.
+
 ## [1.9.31] - 2026-05-23
 
 A targeted release led by the **structural telegram-leak fix** ([#1164](https://github.com/asheshgoplani/agent-deck/pull/1164), closes [#1163](https://github.com/asheshgoplani/agent-deck/issues/1163)) — the flagship change of this cycle — plus four community contributions from [@spawnia](https://github.com/spawnia) (multi-repo trust + imports, hidden-terminal fix, CSRF protection) and a security bump of `golang.org/x/net`. v1.9.31 is the **twenty-sixth release cut under the Option A pipeline** ([#981](https://github.com/asheshgoplani/agent-deck/pull/981) in v1.9.6); the local release worker stops at `git push origin <tag>` and `.github/workflows/release.yml` is the single source of truth for `goreleaser release --clean`.

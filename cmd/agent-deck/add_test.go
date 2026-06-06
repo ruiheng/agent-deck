@@ -540,6 +540,10 @@ func TestResolveAddPath(t *testing.T) {
 	if err != nil {
 		t.Fatalf("os.Getwd: %v", err)
 	}
+	absolutePath := "/tmp/abs"
+	if vol := filepath.VolumeName(cwd); vol != "" {
+		absolutePath = filepath.Join(vol+string(os.PathSeparator), "tmp", "abs")
+	}
 
 	tests := []struct {
 		name string
@@ -551,7 +555,7 @@ func TestResolveAddPath(t *testing.T) {
 		{"tilde with subdir", "~/projects/foo", filepath.Join(home, "projects/foo")},
 		{"HOME env var", "$HOME", home},
 		{"HOME env var with subdir", "$HOME/bar", filepath.Join(home, "bar")},
-		{"absolute path passes through", "/tmp/abs", "/tmp/abs"},
+		{"absolute path passes through", absolutePath, absolutePath},
 		{"relative resolves against cwd", "rel/sub", filepath.Join(cwd, "rel/sub")},
 	}
 

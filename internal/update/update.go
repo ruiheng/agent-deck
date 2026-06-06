@@ -3,6 +3,7 @@ package update
 
 import (
 	"archive/tar"
+	"bytes"
 	"compress/gzip"
 	"encoding/json"
 	"fmt"
@@ -35,6 +36,9 @@ var checkInterval = DefaultCheckInterval
 
 // apiBaseURL is the base URL for GitHub API calls. Overridable in tests.
 var apiBaseURL = "https://api.github.com"
+
+// detectHomebrewManagedInstall is a test seam for self-update install paths.
+var detectHomebrewManagedInstall = DetectHomebrewManagedInstall
 
 // SetCheckInterval sets the update check interval from config
 func SetCheckInterval(hours int) {
@@ -384,35 +388,6 @@ func FetchReleaseByTag(tag string) (*Release, error) {
 	return &release, nil
 }
 
-// DownloadAndExtractBinary downloads a release tarball and returns the binary bytes.
-func DownloadAndExtractBinary(downloadURL string) ([]byte, error) {
-	client := &http.Client{Timeout: 120 * time.Second}
-	resp, err := client.Get(downloadURL)
-	if err != nil {
-		return nil, fmt.Errorf("failed to download: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("download failed with status %d", resp.StatusCode)
-	}
-
-	tmpFile, err := os.CreateTemp("", "agent-deck-update-*.tar.gz")
-	if err != nil {
-		return nil, fmt.Errorf("failed to create temp file: %w", err)
-	}
-	tmpPath := tmpFile.Name()
-	defer os.Remove(tmpPath)
-
-	if _, err = io.Copy(tmpFile, resp.Body); err != nil {
-		tmpFile.Close()
-		return nil, fmt.Errorf("failed to save download: %w", err)
-	}
-	tmpFile.Close()
-
-	return extractBinaryFromTarGz(tmpPath)
-}
-
 // CompareVersions compares two semantic versions
 // Returns: -1 if v1 < v2, 0 if v1 == v2, 1 if v1 > v2
 func CompareVersions(v1, v2 string) int {
@@ -536,7 +511,7 @@ func PerformUpdate(downloadURL string) error {
 		return fmt.Errorf("no download URL available for %s/%s", runtime.GOOS, runtime.GOARCH)
 	}
 
-	execPath, upgradeCmd, managed, err := DetectHomebrewManagedInstall()
+	execPath, upgradeCmd, managed, err := detectHomebrewManagedInstall()
 	if err != nil {
 		return fmt.Errorf("failed to detect install type: %w", err)
 	}
@@ -580,6 +555,32 @@ func PerformUpdate(downloadURL string) error {
 		return fmt.Errorf("failed to extract: %w", err)
 	}
 
+	return installSelfUpdateBinary(execPath, binaryData)
+}
+
+// PerformVerifiedUpdate downloads, verifies, extracts, and installs a release
+// binary for the requested platform. It fails closed: checksum download,
+// missing-entry, or hash mismatch errors occur before the installed binary is
+// touched.
+func PerformVerifiedUpdate(release *Release, goos, goarch string) error {
+	execPath, upgradeCmd, managed, err := detectHomebrewManagedInstall()
+	if err != nil {
+		return fmt.Errorf("failed to detect install type: %w", err)
+	}
+	if managed {
+		return fmt.Errorf("homebrew-managed install detected at %s; use `%s`", execPath, upgradeCmd)
+	}
+
+	fmt.Printf("Downloading and verifying %s/%s release binary...\n", goos, goarch)
+	binaryData, err := DownloadVerifiedBinary(release, goos, goarch)
+	if err != nil {
+		return fmt.Errorf("download/verify failed: %w", err)
+	}
+
+	return installSelfUpdateBinary(execPath, binaryData)
+}
+
+func installSelfUpdateBinary(execPath string, binaryData []byte) error {
 	// Create temp file for new binary
 	newBinaryPath := execPath + ".new"
 	if err := os.WriteFile(newBinaryPath, binaryData, 0755); err != nil {
@@ -800,15 +801,27 @@ func FormatChangelogForDisplay(entries []ChangelogEntry) string {
 	return sb.String()
 }
 
-// extractBinaryFromTarGz extracts the agent-deck binary from a .tar.gz file
+// extractBinaryFromTarGz extracts the agent-deck binary from a .tar.gz file.
 func extractBinaryFromTarGz(tarPath string) ([]byte, error) {
 	file, err := os.Open(tarPath)
 	if err != nil {
 		return nil, err
 	}
 	defer file.Close()
+	return extractBinaryFromTarGzReader(file)
+}
 
-	gzr, err := gzip.NewReader(file)
+// extractBinaryFromTarGzBytes extracts the agent-deck binary from an in-memory
+// .tar.gz, used by the verified-download path so the archive bytes can be
+// SHA-256'd before extraction (#1206).
+func extractBinaryFromTarGzBytes(data []byte) ([]byte, error) {
+	return extractBinaryFromTarGzReader(bytes.NewReader(data))
+}
+
+// extractBinaryFromTarGzReader extracts the agent-deck binary from a gzipped
+// tar stream.
+func extractBinaryFromTarGzReader(r io.Reader) ([]byte, error) {
+	gzr, err := gzip.NewReader(r)
 	if err != nil {
 		return nil, err
 	}

@@ -15,7 +15,6 @@ import (
 	"os/signal"
 	"path/filepath"
 	"runtime"
-	"slices"
 	"strings"
 	"syscall"
 	"time"
@@ -38,7 +37,7 @@ import (
 	"github.com/asheshgoplani/agent-deck/internal/web"
 )
 
-var Version = "1.9.31" // overridden at build time via -ldflags "-X main.Version=..."
+var Version = "1.9.47" // overridden at build time via -ldflags "-X main.Version=..."
 
 // Table column widths for list command output
 const (
@@ -124,7 +123,12 @@ func promptForUpdate() bool {
 	}
 
 	fmt.Println()
-	if err := update.PerformUpdate(info.DownloadURL); err != nil {
+	release, err := update.FetchReleaseByTag(info.LatestVersion)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Update failed: failed to fetch release info: %v\n", err)
+		return false
+	}
+	if err := update.PerformVerifiedUpdate(release, runtime.GOOS, runtime.GOARCH); err != nil {
 		fmt.Fprintf(os.Stderr, "Update failed: %v\n", err)
 		return false
 	}
@@ -335,14 +339,23 @@ func main() {
 		case "gemini-hooks":
 			handleGeminiHooks(args[1:])
 			return
+		case "hermes-hooks":
+			handleHermesHooks(args[1:])
+			return
 		case "notify-daemon":
 			handleNotifyDaemon(args[1:])
+			return
+		case "run-task":
+			handleRunTask(args[1:])
 			return
 		case "inbox":
 			handleInbox(args[1:])
 			return
 		case "feedback":
 			handleFeedback(args[1:])
+			return
+		case "creds-refresh":
+			handleCredsRefresh(args[1:])
 			return
 		case "debug-dump":
 			handleDebugDump()
@@ -2681,7 +2694,12 @@ func handleUpdate(args []string) {
 			os.Exit(1)
 		}
 	} else {
-		if err := update.PerformUpdate(info.DownloadURL); err != nil {
+		release, err := update.FetchReleaseByTag(info.LatestVersion)
+		if err != nil {
+			fmt.Printf("Error installing update: failed to fetch release info: %v\n", err)
+			os.Exit(1)
+		}
+		if err := update.PerformVerifiedUpdate(release, runtime.GOOS, runtime.GOARCH); err != nil {
 			fmt.Printf("Error installing update: %v\n", err)
 			os.Exit(1)
 		}
@@ -2771,7 +2789,7 @@ func handleUpdateToSpecificVersion(requested string, checkOnly bool) {
 	}
 
 	fmt.Println()
-	if err := update.PerformUpdate(downloadURL); err != nil {
+	if err := update.PerformVerifiedUpdate(release, runtime.GOOS, runtime.GOARCH); err != nil {
 		fmt.Printf("Error installing v%s: %v\n", targetVersion, err)
 		os.Exit(1)
 	}
@@ -2912,6 +2930,7 @@ func printHelp() {
 	fmt.Println("  skill            Manage project skills")
 	fmt.Println("  codex-hooks      Manage Codex notify hook integration")
 	fmt.Println("  gemini-hooks     Manage Gemini hook integration")
+	fmt.Println("  hermes-hooks     Manage Hermes Agent hook integration")
 	fmt.Println("  group            Manage groups")
 	fmt.Println("  worktree, wt     Manage git worktrees")
 	fmt.Println("  web              Start TUI with web UI server running alongside")
@@ -2953,6 +2972,9 @@ func printHelp() {
 	fmt.Println("  gemini-hooks install      Install Gemini hooks")
 	fmt.Println("  gemini-hooks uninstall    Remove Gemini hooks")
 	fmt.Println("  gemini-hooks status       Show Gemini hooks install status")
+	fmt.Println("  hermes-hooks install      Install Hermes Agent hooks")
+	fmt.Println("  hermes-hooks uninstall    Remove Hermes Agent hooks")
+	fmt.Println("  hermes-hooks status       Show Hermes hooks install status")
 	fmt.Println()
 	fmt.Println("Group Commands:")
 	fmt.Println("  group list                List all groups")
@@ -3000,9 +3022,9 @@ func printHelp() {
 	fmt.Println("  agent-deck skill attach my-app react  # Attach skill to project")
 	fmt.Println("  agent-deck group move my-app work     # Move session to group")
 	fmt.Println("  agent-deck web                        # TUI + web server on 127.0.0.1:8420")
-	fmt.Println("  agent-deck web --listen :9000         # TUI + web on custom port")
+	fmt.Println("  agent-deck web --listen 127.0.0.1:9000  # TUI + web on a custom loopback port")
 	fmt.Println("  agent-deck web --read-only            # TUI + web in read-only mode")
-	fmt.Println("  agent-deck web --token secret         # TUI + web with auth token")
+	fmt.Println("  agent-deck web --token secret         # auth token (REQUIRED to bind a non-loopback address)")
 	fmt.Println("  agent-deck web --help                 # Show web command flags")
 	fmt.Println()
 	fmt.Println("Environment Variables:")
@@ -3044,44 +3066,15 @@ func truncate(s string, max int) string {
 	return s[:max-3] + "..."
 }
 
-// detectTool determines the tool type from command
+// detectTool determines the tool type from a command string.
+//
+// Thin wrapper over the unified tool registry (issue #1258). The detection
+// heuristics that used to live in the switch below — including the "open-code"
+// alias for opencode and the whitespace-token match for short names like "pi" —
+// now live as per-entry data in internal/session/builtins.go and are applied by
+// Registry.Match(). Kept as a one-liner so existing callers don't churn.
 func detectTool(cmd string) string {
-	// Check custom tools first (exact match on original case)
-	if session.GetToolDef(cmd) != nil {
-		return cmd
-	}
-
-	cmd = strings.ToLower(cmd)
-	switch {
-	case strings.Contains(cmd, "claude"):
-		return "claude"
-	case strings.Contains(cmd, "opencode") || strings.Contains(cmd, "open-code"):
-		return "opencode"
-	case strings.Contains(cmd, "gemini"):
-		return "gemini"
-	case strings.Contains(cmd, "codex"):
-		return "codex"
-	case hasCommandToken(cmd, "pi"):
-		return "pi"
-	case strings.Contains(cmd, "copilot"):
-		return "copilot"
-	case strings.Contains(cmd, "crush"):
-		return "crush"
-	case strings.Contains(cmd, "cursor"):
-		return "cursor"
-	case strings.Contains(cmd, "hermes"):
-		return "hermes"
-	default:
-		return "shell"
-	}
-}
-
-// hasCommandToken reports whether `want` appears as a whitespace-delimited
-// token in `cmd` (case-insensitive). Used for short, ambiguous tool names
-// like "pi" where strings.Contains would falsely match "epic", "tapioca",
-// etc. Longer names like "copilot" or "claude" don't need this.
-func hasCommandToken(cmd, want string) bool {
-	return slices.Contains(strings.Fields(strings.ToLower(cmd)), want)
+	return session.MatchTool(cmd)
 }
 
 // handleUninstall removes agent-deck from the system

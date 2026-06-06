@@ -2,8 +2,19 @@
 
 package session
 
-import "fmt"
+import (
+	"fmt"
+	"os"
+	"os/exec"
+)
 
 func (r *SSHRunner) attachWithPTY(remoteCmd string) error {
-	return fmt.Errorf("pty attach is not used on Windows")
+	cmd := exec.Command("ssh", r.windowsAttachArgs(remoteCmd)...)
+	cmd.Stdin = os.Stdin
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("ssh attach failed: %w", err)
+	}
+	return nil
 }

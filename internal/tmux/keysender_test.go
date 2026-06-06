@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os/exec"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -15,6 +16,9 @@ import (
 // (e.g. TestPersistence_*) use the same skip pattern.
 func requireTmux(t *testing.T) {
 	t.Helper()
+	if runtime.GOOS == "windows" {
+		t.Skip("persistent tmux control-mode KeySender is disabled on Windows; production falls back to per-call send-keys")
+	}
 	if _, err := exec.LookPath("tmux"); err != nil {
 		t.Skip("tmux binary not on PATH; skipping")
 	}

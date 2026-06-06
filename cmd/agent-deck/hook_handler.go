@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -31,6 +32,31 @@ type hookPayload struct {
 	SessionID     string          `json:"session_id"`
 	Source        string          `json:"source"`
 	Matcher       json.RawMessage `json:"matcher,omitempty"`
+	// Cwd is the session's working directory (PROJECT_DIR) as reported by
+	// Claude Code on each hook event. Issue #1233: when a running session's
+	// registered worktree is renamed/removed, this points at a path that no
+	// longer exists; we use it to degrade gracefully rather than erroring on
+	// every tool call. Empty when the agent doesn't send a cwd (older Claude
+	// Code) — treated as "present" so behavior is unchanged.
+	Cwd string `json:"cwd"`
+	// StopHookActive is Claude Code's flag: true when this Stop is a
+	// continuation induced by a previous Stop-hook block. Issue #1225 uses it
+	// to bound consecutive inbox-drain blocks so the conductor cannot loop
+	// forever (resets the budget on a genuine user turn boundary).
+	//
+	// Audit B8: a *bool (not bool) so we can distinguish ABSENT from explicit
+	// false. A missing field must NOT be read as "fresh user turn" (which would
+	// reset the loop guard every Stop); resolveStopHookActive fails safe to true.
+	StopHookActive *bool `json:"stop_hook_active"`
+}
+
+// resolveStopHookActive fails safe (audit B8): an absent stop_hook_active is
+// treated as active=true (this Stop counts against the MaxStopHookBlocks budget)
+// rather than false (which would reset the budget). Only an EXPLICIT false — a
+// genuine user turn boundary that Claude Code is asserting — resets the guard.
+// This keeps the loop bounded even if Claude Code ever omits the field.
+func resolveStopHookActive(p hookPayload) bool {
+	return p.StopHookActive == nil || *p.StopHookActive
 }
 
 // hookStatusFile is the JSON written to ~/.agent-deck/hooks/{instance_id}.json
@@ -39,6 +65,12 @@ type hookStatusFile struct {
 	SessionID string `json:"session_id,omitempty"`
 	Event     string `json:"event"`
 	Timestamp int64  `json:"ts"`
+	// DoneStatus/DoneSummary carry a worker-printed completion sentinel
+	// detected on the Stop edge (issue #1186). omitempty so ordinary Stops
+	// (no sentinel) leave the fields absent, which the daemon reads as
+	// "no finished event to emit."
+	DoneStatus  string `json:"done_status,omitempty"`
+	DoneSummary string `json:"done_summary,omitempty"`
 }
 
 // mapEventToStatus maps a Claude Code hook event to an agent-deck status string.
@@ -58,6 +90,15 @@ func mapEventToStatus(event string) string {
 		return "running" // Gemini received user input and is processing
 	case "AfterAgent":
 		return "waiting" // Gemini completed response, back to waiting
+	// Hermes shell hook events
+	case "pre_tool_call":
+		return "running" // Hermes is executing a tool call
+	case "post_tool_call":
+		return "waiting" // Hermes finished a tool call, back at prompt
+	case "on_session_start":
+		return "waiting" // Hermes session started, waiting for first prompt
+	case "on_session_end":
+		return "dead" // Hermes session ended
 	case "UserPromptSubmit":
 		return "running" // User sent prompt, Claude is processing
 	case "Stop":
@@ -105,6 +146,17 @@ func handleHookHandler() {
 		return
 	}
 
+	// Issue #1233: gracefully degrade when the session's working directory
+	// (PROJECT_DIR / cwd) has been renamed or removed out from under a running
+	// session — e.g. a git worktree renamed while the session is live. Rather
+	// than emitting a FATAL-class error on every single tool call, log a single
+	// WARN (deduped per instance+path) that points at the moved path and
+	// suggests `agent-deck session move`, then soft-skip this invocation.
+	if projectDirMissing(payload.Cwd) {
+		warnProjectDirMissingOnce(instanceID, payload.Cwd)
+		return
+	}
+
 	// Map event to status
 	status := mapEventToStatus(payload.HookEventName)
 
@@ -124,7 +176,21 @@ func handleHookHandler() {
 		return
 	}
 
-	writeHookStatus(instanceID, status, payload.SessionID, payload.HookEventName)
+	// Issue #1186: on the Stop edge — the completion edge — scan the transcript
+	// tail for a worker-printed completion sentinel. When present, persist the
+	// parsed outcome into the hook status file so the daemon can emit a
+	// distinct "finished" event to the parent instead of the conductor having
+	// to poll artifacts. Absent on ordinary mid-task Stops, so the existing
+	// "waiting" behavior is unchanged.
+	if payload.HookEventName == "Stop" {
+		if sig, ok := detectDoneSentinel(data); ok {
+			writeHookStatus(instanceID, status, payload.SessionID, payload.HookEventName, sig)
+		} else {
+			writeHookStatus(instanceID, status, payload.SessionID, payload.HookEventName)
+		}
+	} else {
+		writeHookStatus(instanceID, status, payload.SessionID, payload.HookEventName)
+	}
 
 	// #572: Sync agent-deck title from Claude Code's --name / /rename value.
 	// Event-driven so user-facing rename lands within one hook tick; silent
@@ -147,6 +213,25 @@ func handleHookHandler() {
 	if payload.HookEventName == "PermissionRequest" && parentIsDSP() {
 		fmt.Println(`{"hookSpecificOutput":{"hookEventName":"PermissionRequest","permissionDecision":"allow"}}`)
 	}
+
+	// Issue #1225: on the Stop edge (the turn boundary), a parent drains its
+	// durable per-parent outbox and injects any pending child completions via
+	// {decision:"block",reason} — so a BUSY conductor still receives every
+	// completion at its very next free turn, with zero forced interrupts and
+	// zero loss. No-op when the inbox is empty (the common case for non-parent
+	// sessions), and bounded by a max-consecutive-block guard so it can't loop.
+	//
+	// NOTE: Claude Code only reads this decision when the Stop hook runs
+	// SYNCHRONOUSLY. The install flips the conductor's Stop hook to sync — see
+	// the maintainer note in the PR. Emitting here is harmless under the legacy
+	// async install (Claude ignores stdout) and activates once sync lands.
+	if payload.HookEventName == "Stop" {
+		if dec, blocked, derr := session.DrainForStopHook(instanceID, resolveStopHookActive(payload)); derr == nil && blocked {
+			if out, mErr := json.Marshal(dec); mErr == nil {
+				fmt.Println(string(out))
+			}
+		}
+	}
 }
 
 // parentIsDSP reports whether the parent process (typically the claude binary)
@@ -168,7 +253,9 @@ func parentIsDSP() bool {
 }
 
 // writeHookStatus writes a hook status file atomically for one instance.
-func writeHookStatus(instanceID, status, sessionID, event string) {
+// The optional done argument carries a completion sentinel (issue #1186);
+// when supplied its status/summary are persisted alongside the hook status.
+func writeHookStatus(instanceID, status, sessionID, event string, done ...session.DoneSignal) {
 	if instanceID == "" || status == "" {
 		return
 	}
@@ -195,6 +282,10 @@ func writeHookStatus(instanceID, status, sessionID, event string) {
 		SessionID: sessionID,
 		Event:     event,
 		Timestamp: time.Now().Unix(),
+	}
+	if len(done) > 0 {
+		statusFile.DoneStatus = done[0].Status
+		statusFile.DoneSummary = done[0].Summary
 	}
 
 	jsonData, err := json.Marshal(statusFile)
@@ -244,11 +335,51 @@ func isTerminalHookEvent(event string) bool {
 	// sidecar on ordinary non-terminal "Stop"/turn-complete style events.
 	switch norm {
 	case "sessionend", "sessionended", "sessionclose", "sessionclosed", "sessiondone", "sessionexit", "sessionexited",
+		"onsessionend", // Hermes: on_session_end normalized
 		"threadend", "threadended", "threadterminate", "threadterminated", "threadclose", "threadclosed",
 		"threaddone", "threadexit", "threadexited":
 		return true
 	default:
 		return false
+	}
+}
+
+// projectDirMissing reports whether cwd is a non-empty path that no longer
+// exists on disk. An empty cwd (older Claude Code, or hook events that omit
+// one) returns false — we can't tell, so behavior stays unchanged. Stat errors
+// other than "not exist" (e.g. permission) also return false: only a confirmed
+// missing directory triggers the degrade path.
+func projectDirMissing(cwd string) bool {
+	if cwd == "" {
+		return false
+	}
+	_, err := os.Stat(cwd)
+	return errors.Is(err, os.ErrNotExist)
+}
+
+// warnProjectDirMissingOnce logs a single WARN for a missing project dir and
+// records a marker so subsequent hook invocations for the same instance+path
+// stay silent. Because each hook runs as a fresh process, the "once" guard is
+// an on-disk marker (next to the hook status files) whose contents are the
+// missing path: if the session is later repointed to a different (also-missing)
+// path, the mismatch lets it warn again instead of being silenced by a stale
+// marker.
+func warnProjectDirMissingOnce(instanceID, cwd string) {
+	hooksDir := getHooksDir()
+	markerPath := filepath.Join(hooksDir, filepath.Base(instanceID)+".projectdir-missing")
+
+	if existing, err := os.ReadFile(markerPath); err == nil && strings.TrimSpace(string(existing)) == cwd {
+		return // already warned for this exact missing path
+	}
+
+	hookHandlerLog.Warn("hook_projectdir_missing",
+		slog.String("instance", instanceID),
+		slog.String("project_dir", cwd),
+		slog.String("suggestion", "run `agent-deck session move <id|title> <new-path>` to repoint the session at its moved worktree"),
+	)
+
+	if err := os.MkdirAll(hooksDir, 0o700); err == nil {
+		_ = os.WriteFile(markerPath, []byte(cwd), 0o600)
 	}
 }
 
@@ -538,6 +669,87 @@ func pathWithinBase(path, base string) bool {
 		return false
 	}
 	return true
+}
+
+// transcriptContentMessage extracts the assistant message content blocks from
+// the last transcript line, for completion-sentinel detection (issue #1186).
+type transcriptContentMessage struct {
+	Type    string `json:"type"`
+	Message struct {
+		Content json.RawMessage `json:"content"`
+	} `json:"message"`
+}
+
+// detectDoneSentinel parses transcript_path out of a Stop hook payload and
+// scans the transcript tail for a worker-printed completion sentinel. It
+// applies the same path-traversal / ~/.claude containment guards as the cost
+// path so a crafted payload can't read arbitrary files.
+func detectDoneSentinel(rawPayload []byte) (session.DoneSignal, bool) {
+	var stop stopHookPayload
+	if err := json.Unmarshal(rawPayload, &stop); err != nil {
+		return session.DoneSignal{}, false
+	}
+	if stop.TranscriptPath == "" {
+		return session.DoneSignal{}, false
+	}
+	cleanPath := filepath.Clean(stop.TranscriptPath)
+	if strings.Contains(cleanPath, "..") {
+		return session.DoneSignal{}, false
+	}
+	if home, err := os.UserHomeDir(); err == nil {
+		if !strings.HasPrefix(cleanPath, filepath.Join(home, ".claude")) {
+			return session.DoneSignal{}, false
+		}
+	}
+	return scanTranscriptForDone(cleanPath)
+}
+
+// scanTranscriptForDone reads the last transcript line, and if it is an
+// assistant turn, scans its text content for a completion sentinel. The path
+// is the injectable source: tests point it at a temp file, no live agent
+// required. A missing/unreadable file or a non-assistant tail yields no
+// sentinel rather than an error.
+func scanTranscriptForDone(path string) (session.DoneSignal, bool) {
+	lastLine, err := readLastLine(path)
+	if err != nil {
+		return session.DoneSignal{}, false
+	}
+	var msg transcriptContentMessage
+	if err := json.Unmarshal([]byte(lastLine), &msg); err != nil {
+		return session.DoneSignal{}, false
+	}
+	if msg.Type != "assistant" {
+		return session.DoneSignal{}, false
+	}
+	return session.ScanDoneSentinel(transcriptText(msg.Message.Content))
+}
+
+// transcriptText flattens an assistant message's content into plain text.
+// Claude transcripts encode content either as a string or as an array of
+// typed blocks ({"type":"text","text":"..."}); only text blocks contribute.
+func transcriptText(content json.RawMessage) string {
+	if len(content) == 0 {
+		return ""
+	}
+	var asString string
+	if err := json.Unmarshal(content, &asString); err == nil {
+		return asString
+	}
+	var blocks []struct {
+		Type string `json:"type"`
+		Text string `json:"text"`
+	}
+	if err := json.Unmarshal(content, &blocks); err != nil {
+		return ""
+	}
+	var sb strings.Builder
+	for _, b := range blocks {
+		if b.Type == "text" {
+			sb.WriteString(b.Text)
+			sb.WriteByte('\n')
+		}
+	}
+	return sb.String()
 }
 
 // readLastLine reads the last non-empty line from a file.

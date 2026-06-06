@@ -25,20 +25,31 @@ type SSHRunner struct {
 	AgentDeckPath string // Remote agent-deck binary path
 	Profile       string // Remote profile name
 
+	// configuredPath is the raw agent_deck_path from config ("" if unset). It
+	// lets ResolveRemotePath decide whether to honor an explicit user path or
+	// probe the remote's real binary location via $PATH (#1171).
+	configuredPath string
+
 	// runFn lets tests stub out command execution. nil = real SSH.
 	runFn func(ctx context.Context, args ...string) ([]byte, error)
 
 	// openStreamFn lets tests stub out the persistent-stream subprocess
 	// without spawning real ssh. nil = real SSH (#1112 bug 2).
 	openStreamFn func(ctx context.Context, args ...string) (io.WriteCloser, func() error, error)
+
+	// remoteExecFn lets tests stub raw remote shell execution used by the
+	// update/deploy path (ResolveRemotePath, DeployBinary, version checks)
+	// without spawning a real ssh/scp subprocess. nil = real SSH (#1171).
+	remoteExecFn func(ctx context.Context, remoteCmd string, stdin []byte) ([]byte, error)
 }
 
 // NewSSHRunner creates an SSHRunner from a RemoteConfig.
 func NewSSHRunner(name string, rc RemoteConfig) *SSHRunner {
 	return &SSHRunner{
-		Host:          rc.Host,
-		AgentDeckPath: rc.GetAgentDeckPath(),
-		Profile:       rc.GetProfile(),
+		Host:           rc.Host,
+		AgentDeckPath:  rc.GetAgentDeckPath(),
+		configuredPath: rc.AgentDeckPath,
+		Profile:        rc.GetProfile(),
 	}
 }
 
@@ -68,18 +79,16 @@ func (r *SSHRunner) OpenStream(ctx context.Context, args ...string) (io.WriteClo
 	if r.openStreamFn != nil {
 		return r.openStreamFn(ctx, args...)
 	}
+	if err := r.ensureSSHAvailable("ssh"); err != nil {
+		return nil, nil, err
+	}
+	if err := ValidateSSHHost(r.Host); err != nil {
+		return nil, nil, err
+	}
 	_ = os.MkdirAll(sshControlDir, 0700)
 
 	remoteCmd := r.buildRemoteCommand(args...)
-	sshArgs := []string{
-		"-o", "ControlMaster=auto",
-		"-o", "ControlPath=" + sshControlDir + "/%r@%h:%p",
-		"-o", "ControlPersist=600",
-		"-o", "ConnectTimeout=10",
-		"-o", "BatchMode=yes",
-		r.Host,
-		remoteCmd,
-	}
+	sshArgs := r.sshBaseArgs(remoteCmd)
 
 	cmd := exec.CommandContext(ctx, "ssh", sshArgs...)
 	stdin, err := cmd.StdinPipe()
@@ -110,15 +119,16 @@ func (r *SSHRunner) OpenStream(ctx context.Context, args ...string) (io.WriteClo
 
 // run executes an agent-deck command on the remote host using the provided context directly.
 func (r *SSHRunner) run(ctx context.Context, args ...string) ([]byte, error) {
-	if err := r.ensureSSHAvailable("ssh"); err != nil {
-		return nil, err
-	}
 	if r.runFn != nil {
 		return r.runFn(ctx, args...)
 	}
-	if runtime.GOOS != "windows" {
-		_ = os.MkdirAll(sshControlDir, 0700)
+	if err := r.ensureSSHAvailable("ssh"); err != nil {
+		return nil, err
 	}
+	if err := ValidateSSHHost(r.Host); err != nil {
+		return nil, err
+	}
+	_ = os.MkdirAll(sshControlDir, 0700)
 
 	remoteCmd := r.buildRemoteCommand(args...)
 	sshArgs := r.sshBaseArgs(remoteCmd)
@@ -144,34 +154,13 @@ func (r *SSHRunner) Attach(sessionID string) error {
 	if err := r.ensureSSHAvailable("ssh"); err != nil {
 		return err
 	}
-	if runtime.GOOS != "windows" {
-		_ = os.MkdirAll(sshControlDir, 0700)
+	if err := ValidateSSHHost(r.Host); err != nil {
+		return err
 	}
+	_ = os.MkdirAll(sshControlDir, 0700)
 
 	remoteCmd := r.buildRemoteCommand("session", "attach", sessionID)
-	if runtime.GOOS == "windows" {
-		cmd := exec.Command("ssh", r.windowsAttachArgs(remoteCmd)...)
-		cmd.Stdin = os.Stdin
-		cmd.Stdout = os.Stdout
-		cmd.Stderr = os.Stderr
-		if err := cmd.Run(); err != nil {
-			return fmt.Errorf("ssh attach failed: %w", err)
-		}
-		return nil
-	}
 	return r.attachWithPTY(remoteCmd)
-}
-
-func (r *SSHRunner) windowsAttachArgs(remoteCmd string) []string {
-	dest, port := splitSSHHostPort(r.Host)
-	sshArgs := []string{
-		"-tt",
-		"-o", "ConnectTimeout=10",
-	}
-	if port != "" {
-		sshArgs = append(sshArgs, "-p", port)
-	}
-	return append(sshArgs, dest, remoteCmd)
 }
 
 // RunCommand executes an arbitrary agent-deck command on the remote.
@@ -284,12 +273,10 @@ func (r *SSHRunner) FetchCostSummary(ctx context.Context) (*costs.RemoteCostSumm
 
 // DetectPlatform returns the remote host's OS and architecture (e.g., "linux", "amd64").
 func (r *SSHRunner) DetectPlatform(ctx context.Context) (goos, goarch string, err error) {
-	if err := r.ensureSSHAvailable("ssh"); err != nil {
+	if err := ValidateSSHHost(r.Host); err != nil {
 		return "", "", err
 	}
-	if runtime.GOOS != "windows" {
-		_ = os.MkdirAll(sshControlDir, 0700)
-	}
+	_ = os.MkdirAll(sshControlDir, 0700)
 
 	// Run uname on the remote to detect OS and machine architecture
 	sshArgs := r.sshBaseArgs("uname -s -m")
@@ -331,131 +318,312 @@ func (r *SSHRunner) DetectPlatform(ctx context.Context) (goos, goarch string, er
 	return goos, goarch, nil
 }
 
-// CheckBinary checks if agent-deck exists at the configured path on the remote.
-// Returns the version string if found, or empty string if not found.
-func (r *SSHRunner) CheckBinary(ctx context.Context) (version string, found bool) {
+// defaultRemoteInstallSubpath mirrors where install.sh places the binary,
+// relative to the remote user's $HOME (#1171).
+const defaultRemoteInstallSubpath = ".local/bin/agent-deck"
+
+// remoteExec runs a raw command string on the remote shell via ssh, optionally
+// piping stdin (used to stream the binary during deploy). Stubbable in tests
+// via remoteExecFn so the update path needs no real remote (#1171).
+func (r *SSHRunner) remoteExec(ctx context.Context, remoteCmd string, stdin []byte) ([]byte, error) {
+	if r.remoteExecFn != nil {
+		return r.remoteExecFn(ctx, remoteCmd, stdin)
+	}
 	if err := r.ensureSSHAvailable("ssh"); err != nil {
-		return "", false
+		return nil, err
 	}
-	if runtime.GOOS != "windows" {
-		_ = os.MkdirAll(sshControlDir, 0700)
+	if err := ValidateSSHHost(r.Host); err != nil {
+		return nil, err
 	}
+	_ = os.MkdirAll(sshControlDir, 0700)
 
-	remoteCmd := shellQuote(r.AgentDeckPath) + " version"
 	sshArgs := r.sshBaseArgs(remoteCmd)
-	timeoutCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
-	defer cancel()
-
-	cmd := exec.CommandContext(timeoutCtx, "ssh", sshArgs...)
-	var stdout bytes.Buffer
+	cmd := exec.CommandContext(ctx, "ssh", sshArgs...)
+	if stdin != nil {
+		cmd.Stdin = bytes.NewReader(stdin)
+	}
+	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
-	cmd.Stderr = nil
-
+	cmd.Stderr = &stderr
 	if err := cmd.Run(); err != nil {
-		return "", false
+		return nil, fmt.Errorf("remote command failed: %w: %s", err, stderr.String())
 	}
-
-	out := strings.TrimSpace(stdout.String())
-	// Output is like "Agent Deck v0.20.2"
-	if idx := strings.LastIndex(out, "v"); idx >= 0 {
-		return strings.TrimSpace(out[idx+1:]), true
-	}
-	return out, true
+	return stdout.Bytes(), nil
 }
 
-// DeployBinary uploads a binary to the remote at the configured agent-deck path.
-func (r *SSHRunner) DeployBinary(ctx context.Context, binaryData []byte) error {
-	if err := r.ensureSSHAvailable("ssh"); err != nil {
-		return err
+// parseRemoteVersion extracts the version from `agent-deck version` output,
+// e.g. "Agent Deck v0.20.2" -> "0.20.2".
+func parseRemoteVersion(raw string) string {
+	out := strings.TrimSpace(raw)
+	if idx := strings.LastIndex(out, "v"); idx >= 0 {
+		return strings.TrimSpace(out[idx+1:])
 	}
-	if err := r.ensureSSHAvailable("scp"); err != nil {
-		return err
-	}
-	if runtime.GOOS != "windows" {
-		_ = os.MkdirAll(sshControlDir, 0700)
-	}
+	return out
+}
 
-	// Write binary to temp file locally
-	tmpFile, err := os.CreateTemp("", "agent-deck-remote-*")
-	if err != nil {
-		return fmt.Errorf("failed to create temp file: %w", err)
-	}
-	tmpPath := tmpFile.Name()
-	defer os.Remove(tmpPath)
-
-	if _, err := tmpFile.Write(binaryData); err != nil {
-		tmpFile.Close()
-		return fmt.Errorf("failed to write temp file: %w", err)
-	}
-	tmpFile.Close()
-
-	// Ensure remote directory exists
-	remoteDir := r.AgentDeckPath
-	if idx := strings.LastIndex(remoteDir, "/"); idx > 0 {
-		mkdirCmd := "mkdir -p " + shellQuote(remoteDir[:idx])
-		mkdirArgs := r.sshBaseArgs(mkdirCmd)
-		mkdirCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
-		defer cancel()
-		mkCmd := exec.CommandContext(mkdirCtx, "ssh", mkdirArgs...)
-		_ = mkCmd.Run()
-	}
-
-	// SCP the binary to the remote
-	dest, port := splitSSHHostPort(r.Host)
-	scpArgs := []string{
-		"-o", "ConnectTimeout=10",
-	}
-	if runtime.GOOS != "windows" {
-		scpArgs = append(scpArgs,
-			"-o", "ControlMaster=auto",
-			"-o", "ControlPath="+sshControlDir+"/%r@%h:%p",
-			"-o", "ControlPersist=600",
-		)
-	}
-	if port != "" {
-		scpArgs = append(scpArgs, "-P", port)
-	}
-	scpArgs = append(scpArgs, tmpPath, dest+":"+r.AgentDeckPath)
-
-	scpCtx, cancel := context.WithTimeout(ctx, 120*time.Second)
+// versionAt runs `<path> version` on the remote and parses the reported
+// version. found is false when the binary cannot be executed (missing/not on
+// $PATH).
+func (r *SSHRunner) versionAt(ctx context.Context, path string) (version string, found bool) {
+	timeoutCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
-	scpCmd := exec.CommandContext(scpCtx, "scp", scpArgs...)
-	var stderr bytes.Buffer
-	scpCmd.Stderr = &stderr
-	if err := scpCmd.Run(); err != nil {
-		return fmt.Errorf("scp failed: %w: %s", err, stderr.String())
+	out, err := r.remoteExec(timeoutCtx, shellQuote(path)+" version", nil)
+	if err != nil {
+		return "", false
+	}
+	return parseRemoteVersion(string(out)), true
+}
+
+// CheckBinary reports the version of agent-deck as found on the remote's $PATH.
+// Returns found=false if the binary is not installed / not on $PATH.
+func (r *SSHRunner) CheckBinary(ctx context.Context) (version string, found bool) {
+	return r.versionAt(ctx, r.AgentDeckPath)
+}
+
+// remoteHome resolves the remote user's $HOME, or "" on failure.
+func (r *SSHRunner) remoteHome(ctx context.Context) string {
+	timeoutCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	out, err := r.remoteExec(timeoutCtx, `printf %s "$HOME"`, nil)
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(out))
+}
+
+// expandHome replaces a leading ~ / $HOME in path with the remote user's home,
+// so the result is an absolute path safe to shell-quote. Returns path unchanged
+// if it is already absolute or $HOME cannot be resolved.
+func (r *SSHRunner) expandHome(ctx context.Context, path string) string {
+	rest := ""
+	switch {
+	case path == "~" || path == "$HOME":
+		rest = ""
+	case strings.HasPrefix(path, "~/"):
+		rest = path[1:] // keep leading "/"
+	case strings.HasPrefix(path, "$HOME/"):
+		rest = path[len("$HOME"):]
+	default:
+		return path
+	}
+	home := r.remoteHome(ctx)
+	if home == "" {
+		return path
+	}
+	return strings.TrimRight(home, "/") + rest
+}
+
+// ResolveRemotePath determines the absolute filesystem path the remote actually
+// executes agent-deck from. This is the heart of the #1171 fix: deploying to a
+// bare relative name ("agent-deck") landed the binary in ~/agent-deck while the
+// remote ran ~/.local/bin/agent-deck from its $PATH. Resolution order:
+//  1. an explicit agent_deck_path from config (with ~ expanded), else
+//  2. `command -v agent-deck` — the binary the remote's $PATH actually runs, else
+//  3. the install.sh default: $HOME/.local/bin/agent-deck.
+func (r *SSHRunner) ResolveRemotePath(ctx context.Context) string {
+	if p := strings.TrimSpace(r.configuredPath); p != "" {
+		return r.expandHome(ctx, p)
 	}
 
-	// Make executable
-	chmodCmd := "chmod +x " + shellQuote(r.AgentDeckPath)
-	chmodArgs := r.sshBaseArgs(chmodCmd)
-	chmodCtx, cancel2 := context.WithTimeout(ctx, 10*time.Second)
-	defer cancel2()
-	cCmd := exec.CommandContext(chmodCtx, "ssh", chmodArgs...)
-	_ = cCmd.Run()
+	probeCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	if out, err := r.remoteExec(probeCtx, "command -v agent-deck 2>/dev/null", nil); err == nil {
+		// command -v can emit multiple lines; take the first absolute path.
+		for _, line := range strings.Split(string(out), "\n") {
+			if p := strings.TrimSpace(line); strings.HasPrefix(p, "/") {
+				return p
+			}
+		}
+	}
 
+	if home := r.remoteHome(ctx); home != "" {
+		return strings.TrimRight(home, "/") + "/" + defaultRemoteInstallSubpath
+	}
+	return "~/" + defaultRemoteInstallSubpath
+}
+
+// DeployBinary streams binaryData to remotePath on the remote, creating the
+// parent directory and marking it executable. It pipes through `ssh "cat > ..."`
+// rather than scp so the remote shell handles the path uniformly; remotePath is
+// expected to be absolute (see ResolveRemotePath) (#1171).
+func (r *SSHRunner) DeployBinary(ctx context.Context, binaryData []byte, remotePath string) error {
+	dir := remotePath
+	if idx := strings.LastIndex(remotePath, "/"); idx > 0 {
+		dir = remotePath[:idx]
+	}
+
+	// Stage to a sibling temp file and atomically rename it into place rather
+	// than redirecting onto remotePath directly. agent-deck keeps a long-lived
+	// `session attach` process running from remotePath, so truncating it in
+	// place (`cat > remotePath`) makes the kernel reject the write with ETXTBSY
+	// ("text file busy"). rename(2) only repoints the directory entry, so it
+	// succeeds while the old binary is still executing (the running process
+	// keeps the now-unlinked inode); the next launch picks up the new binary.
+	tmpPath := remotePath + ".new"
+	cmd := fmt.Sprintf("mkdir -p %s && cat > %s && chmod +x %s && mv -f %s %s",
+		shellQuote(dir), shellQuote(tmpPath), shellQuote(tmpPath),
+		shellQuote(tmpPath), shellQuote(remotePath))
+
+	deployCtx, cancel := context.WithTimeout(ctx, 120*time.Second)
+	defer cancel()
+	if _, err := r.remoteExec(deployCtx, cmd, binaryData); err != nil {
+		return fmt.Errorf("failed to deploy binary to %s: %w", remotePath, err)
+	}
+	return nil
+}
+
+// InstallBinary resolves the remote's real agent-deck path, deploys binaryData
+// there, then verifies the remote actually runs expectedVersion from its $PATH.
+// It returns an actionable error instead of a false success when the deployed
+// binary is not the one the remote executes (#1171).
+func (r *SSHRunner) InstallBinary(ctx context.Context, binaryData []byte, expectedVersion string) error {
+	path := r.ResolveRemotePath(ctx)
+	if err := r.DeployBinary(ctx, binaryData, path); err != nil {
+		return err
+	}
+
+	want := strings.TrimPrefix(expectedVersion, "v")
+
+	// The binary the remote actually runs: bare `agent-deck` through its $PATH.
+	if pathVer, found := r.versionAt(ctx, "agent-deck"); found && pathVer == want {
+		return nil
+	} else if found {
+		// Something is on $PATH but it is not what we just deployed.
+		return fmt.Errorf("deployed v%s to %s, but the remote runs v%s from $PATH — "+
+			"set agent_deck_path to the $PATH binary or fix the remote's PATH", want, path, pathVer)
+	}
+
+	// Nothing on $PATH. If the deployed binary itself reports the right version,
+	// the install worked but the location is not on $PATH yet.
+	if deployedVer, found := r.versionAt(ctx, path); found && deployedVer == want {
+		return fmt.Errorf("installed v%s at %s, but it is not on the remote's $PATH — "+
+			"add %s to PATH or set agent_deck_path to a $PATH location", want, path, path)
+	}
+
+	return fmt.Errorf("post-deploy verification failed: remote does not report v%s at %s or on $PATH", want, path)
+}
+
+// sshConnOpts returns the SSH -o options shared by every connection agent-deck
+// makes. They are the single source of truth for agent-deck's host-key stance:
+//
+//   - Host-key checking is left at ssh's secure default. agent-deck NEVER passes
+//     StrictHostKeyChecking=no and NEVER points UserKnownHostsFile at /dev/null,
+//     so an unknown or changed host key surfaces ssh's "Host key verification
+//     failed" error (verified against the user's ~/.ssh/known_hosts) instead of
+//     being silently trusted — MITM protection.
+//   - BatchMode=yes makes that failure fast and non-interactive on EVERY path
+//     (run, stream, deploy, and attach), so an unknown key or a missing
+//     credential errors clearly instead of hanging on a prompt.
+//   - ConnectTimeout bounds the dial.
+//
+// See the README "Remote Instances" section for the documented assumption.
+func (r *SSHRunner) sshConnOpts() []string {
+	opts := []string{
+		"-o", "ConnectTimeout=10",
+		"-o", "BatchMode=yes",
+	}
+	if runtime.GOOS != "windows" {
+		opts = append([]string{
+			"-o", "ControlMaster=auto",
+			"-o", "ControlPath=" + sshControlDir + "/%r@%h:%p",
+			"-o", "ControlPersist=600",
+		}, opts...)
+	}
+	return opts
+}
+
+// ValidateSSHHost rejects host strings ssh would misinterpret as options rather
+// than a destination. A host beginning with "-" (e.g. "-oProxyCommand=…") is
+// argument injection: passed as a discrete argv element, ssh parses it as a
+// flag and can be coerced into running an arbitrary local command. Whitespace
+// and empty hosts are rejected too. Hosts come from the user's own config, but
+// this closes the option-injection vector cheaply (#1206).
+func ValidateSSHHost(host string) error {
+	h := strings.TrimSpace(host)
+	if h == "" {
+		return fmt.Errorf("ssh host is empty")
+	}
+	if strings.HasPrefix(h, "-") {
+		return fmt.Errorf("invalid ssh host %q: must not begin with '-' (ssh would parse it as an option)", host)
+	}
+	if strings.ContainsAny(h, " \t\r\n") {
+		return fmt.Errorf("invalid ssh host %q: must not contain whitespace", host)
+	}
 	return nil
 }
 
 // sshBaseArgs returns common SSH args for running a raw command on the remote.
 func (r *SSHRunner) sshBaseArgs(remoteCmd string) []string {
 	dest, port := splitSSHHostPort(r.Host)
-	args := []string{
-		"-o", "ConnectTimeout=10",
-		"-o", "BatchMode=yes",
-	}
-	if runtime.GOOS != "windows" {
-		args = append(args,
-			"-o", "ControlMaster=auto",
-			"-o", "ControlPath="+sshControlDir+"/%r@%h:%p",
-			"-o", "ControlPersist=600",
-		)
-	}
+	args := append([]string{}, r.sshConnOpts()...)
 	if port != "" {
 		args = append(args, "-p", port)
 	}
-	args = append(args, dest, remoteCmd)
-	return args
+	return append(args, dest, remoteCmd)
+}
+
+// buildAttachArgs builds the ssh argv for an interactive attach. It shares
+// sshConnOpts() with every other path so the host-key/BatchMode stance is
+// identical (#1206 regression: Attach() previously omitted BatchMode and
+// ConnectTimeout, so an unknown host key could hang on a prompt instead of
+// failing fast). "-tt" forces a remote PTY.
+func (r *SSHRunner) buildAttachArgs(sessionID string) []string {
+	remoteCmd := r.buildRemoteCommand("session", "attach", sessionID)
+	return r.buildAttachArgsForRemoteCommand(remoteCmd)
+}
+
+func (r *SSHRunner) buildAttachArgsForRemoteCommand(remoteCmd string) []string {
+	dest, port := splitSSHHostPort(r.Host)
+	args := append([]string{"-tt"}, r.sshConnOpts()...)
+	if port != "" {
+		args = append(args, "-p", port)
+	}
+	return append(args, dest, remoteCmd)
+}
+
+func (r *SSHRunner) windowsAttachArgs(remoteCmd string) []string {
+	return r.buildAttachArgsForRemoteCommand(remoteCmd)
+}
+
+func splitSSHHostPort(host string) (dest, port string) {
+	dest = strings.TrimSpace(host)
+	if dest == "" {
+		return "", ""
+	}
+
+	if bracketStart := strings.LastIndex(dest, "["); bracketStart >= 0 {
+		bracketEnd := strings.LastIndex(dest, "]")
+		if bracketEnd > bracketStart {
+			if bracketEnd == len(dest)-1 {
+				return dest, ""
+			}
+			if bracketEnd+1 < len(dest) && dest[bracketEnd+1] == ':' {
+				candidatePort := dest[bracketEnd+2:]
+				if candidatePort != "" {
+					if _, err := strconv.Atoi(candidatePort); err == nil {
+						return dest[:bracketEnd+1], candidatePort
+					}
+				}
+			}
+			return dest, ""
+		}
+	}
+
+	at := strings.LastIndex(dest, "@")
+	colon := strings.LastIndex(dest, ":")
+	if colon <= at || colon == len(dest)-1 {
+		return dest, ""
+	}
+	if strings.Contains(dest[at+1:colon], ":") {
+		return dest, ""
+	}
+
+	candidatePort := dest[colon+1:]
+	if _, err := strconv.Atoi(candidatePort); err != nil {
+		return dest, ""
+	}
+
+	return dest[:colon], candidatePort
 }
 
 // CreateSession creates and starts a new session on the remote, returning its ID.
@@ -526,47 +694,6 @@ type RemoteSessionInfo struct {
 
 	// Set locally, not from JSON
 	RemoteName string `json:"-"`
-}
-
-func splitSSHHostPort(host string) (dest, port string) {
-	dest = strings.TrimSpace(host)
-	if dest == "" {
-		return "", ""
-	}
-
-	if bracketStart := strings.LastIndex(dest, "["); bracketStart >= 0 {
-		bracketEnd := strings.LastIndex(dest, "]")
-		if bracketEnd > bracketStart {
-			if bracketEnd == len(dest)-1 {
-				return dest, ""
-			}
-			if bracketEnd+1 < len(dest) && dest[bracketEnd+1] == ':' {
-				candidatePort := dest[bracketEnd+2:]
-				if candidatePort != "" {
-					if _, err := strconv.Atoi(candidatePort); err == nil {
-						return dest[:bracketEnd+1], candidatePort
-					}
-				}
-			}
-			return dest, ""
-		}
-	}
-
-	at := strings.LastIndex(dest, "@")
-	colon := strings.LastIndex(dest, ":")
-	if colon <= at || colon == len(dest)-1 {
-		return dest, ""
-	}
-	if strings.Contains(dest[at+1:colon], ":") {
-		return dest, ""
-	}
-
-	candidatePort := dest[colon+1:]
-	if _, err := strconv.Atoi(candidatePort); err != nil {
-		return dest, ""
-	}
-
-	return dest[:colon], candidatePort
 }
 
 // RemoteLatency is a live round-trip-time sample for a configured remote.

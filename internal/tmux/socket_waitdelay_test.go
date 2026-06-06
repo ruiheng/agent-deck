@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"os/exec"
+	"runtime"
 	"testing"
 	"time"
 )
@@ -61,6 +62,9 @@ func TestTmuxExecContext_SetsWaitDelay(t *testing.T) {
 func TestExecWaitDelay_AbandonsLingeringChildPipe(t *testing.T) {
 	if testing.Short() {
 		t.Skip("spawns a 30s sleeping subprocess; skipped in -short mode")
+	}
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX fd-inheritance contract test requires /bin/sh")
 	}
 
 	cmd := exec.Command("/bin/sh", "-c", "sleep 30 & echo READY")

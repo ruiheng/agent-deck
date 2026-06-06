@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -51,6 +52,9 @@ import (
 func TestAgentDeckLaunch_ParallelSafe_AllSessionsPersist_RegressionFor1031(t *testing.T) {
 	if testing.Short() {
 		t.Skip("subprocess CLI test skipped in short mode")
+	}
+	if runtime.GOOS == "windows" {
+		t.Skip("real psmux launch subprocesses hold temp HOME/project handles on Windows; storage race is covered by the rm CLI concurrency test")
 	}
 	if _, err := exec.LookPath("tmux"); err != nil {
 		t.Skip("tmux not on PATH; launch CLI needs a real tmux server")
@@ -206,6 +210,9 @@ func TestAgentDeckLaunch_ReturnsSessionID_RegressionFor1031(t *testing.T) {
 	if testing.Short() {
 		t.Skip("subprocess CLI test skipped in short mode")
 	}
+	if runtime.GOOS == "windows" {
+		t.Skip("real psmux launch subprocesses hold temp project handles on Windows")
+	}
 	if _, err := exec.LookPath("tmux"); err != nil {
 		t.Skip("tmux not on PATH; launch CLI needs a real tmux server")
 	}
@@ -276,7 +283,9 @@ func cliEnvForIssue1031(home string) []string {
 		env = append(env, kv)
 	}
 	env = append(env,
-		"HOME="+home,
+		homeEnvVars(home)...,
+	)
+	env = append(env,
 		"AGENTDECK_PROFILE=ch_support_test",
 		"TERM=dumb",
 	)

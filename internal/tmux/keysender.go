@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"io"
 	"os/exec"
+	"runtime"
 	"strings"
 	"sync"
 )
@@ -56,6 +57,9 @@ type localKeySender struct {
 func OpenKeySender(socket, target string) (KeySender, error) {
 	if strings.TrimSpace(target) == "" {
 		return nil, fmt.Errorf("keysender: target required")
+	}
+	if runtime.GOOS == "windows" {
+		return nil, fmt.Errorf("keysender: persistent tmux control-mode send is not supported on Windows")
 	}
 	// Go through the sanctioned tmuxExec factory — it's the one place in
 	// the codebase that knows how to assemble a tmux argv with the `-L

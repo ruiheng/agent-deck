@@ -13,6 +13,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"sync"
 	"testing"
 )
@@ -151,7 +152,11 @@ func buildAgentDeck() (string, error) {
 			buildErr = fmt.Errorf("tempdir: %w", err)
 			return
 		}
-		out := filepath.Join(dir, "agent-deck")
+		binName := "agent-deck"
+		if runtime.GOOS == "windows" {
+			binName += ".exe"
+		}
+		out := filepath.Join(dir, binName)
 
 		root, err := repoRoot()
 		if err != nil {

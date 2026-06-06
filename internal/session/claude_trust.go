@@ -149,7 +149,7 @@ func findChildClaudeMD(parentDir, repoName string) string {
 	}
 	for _, rel := range candidates {
 		if _, err := os.Stat(filepath.Join(parentDir, rel)); err == nil {
-			return rel
+			return filepath.ToSlash(rel)
 		}
 	}
 	return ""

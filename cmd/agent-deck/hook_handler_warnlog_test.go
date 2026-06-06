@@ -1,8 +1,10 @@
 package main
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -38,7 +40,7 @@ func TestWriteHookStatus_WarnsOnMkdirError(t *testing.T) {
 	logDir := initTestLogging(t)
 
 	home := t.TempDir()
-	t.Setenv("HOME", home)
+	setHomeForTest(t, home)
 
 	// Place a regular file where the hooks directory should be, so MkdirAll
 	// fails with "not a directory".
@@ -69,11 +71,14 @@ func TestWriteHookStatus_WarnsOnWriteFileError(t *testing.T) {
 	if os.Getuid() == 0 {
 		t.Skip("permission test requires non-root")
 	}
+	if runtime.GOOS == "windows" {
+		t.Skip("chmod read-only directory behavior is not a reliable WriteFile failure on Windows")
+	}
 
 	logDir := initTestLogging(t)
 
 	home := t.TempDir()
-	t.Setenv("HOME", home)
+	setHomeForTest(t, home)
 
 	hooksDir := filepath.Join(home, ".agent-deck", "hooks")
 	if err := os.MkdirAll(hooksDir, 0o755); err != nil {
@@ -100,7 +105,7 @@ func TestWriteCostEvent_WarnsOnMkdirError(t *testing.T) {
 	logDir := initTestLogging(t)
 
 	home := t.TempDir()
-	t.Setenv("HOME", home)
+	setHomeForTest(t, home)
 
 	// Stage a valid Claude transcript so writeCostEvent gets past the
 	// transcript-path validation and reaches the MkdirAll(costDir) call.
@@ -123,7 +128,13 @@ func TestWriteCostEvent_WarnsOnMkdirError(t *testing.T) {
 		t.Fatalf("create blocker file: %v", err)
 	}
 
-	stopPayload := []byte(`{"hook_event_name":"Stop","transcript_path":"` + transcript + `"}`)
+	stopPayload, err := json.Marshal(map[string]string{
+		"hook_event_name": "Stop",
+		"transcript_path": transcript,
+	})
+	if err != nil {
+		t.Fatalf("marshal stop payload: %v", err)
+	}
 	writeCostEvent("inst-cost", stopPayload)
 
 	logging.Shutdown()

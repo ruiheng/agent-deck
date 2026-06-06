@@ -61,6 +61,20 @@ Every N minutes, the bridge sends you a message like:
 [HEARTBEAT] [<name>] Status: 2 waiting, 3 running, 1 idle, 0 error. Waiting sessions: frontend (project: ~/src/app), api-fix (project: ~/src/api). Check if any need auto-response or user attention.
 ` + "```" + `
 
+**FIRST step of EVERY heartbeat — drain your inbox:**
+
+` + "```bash" + `
+agent-deck inbox drain self
+` + "```" + `
+
+This pulls any child completions that landed in your durable outbox while you were
+busy (issue #1225/#1226). Delivery is pull, not push: a child that finished mid-turn
+committed its completion to ` + "`" + `~/.agent-deck/inboxes/<your-id>.jsonl` + "`" + ` rather than typing
+into your pane. The drain marks records consumed (exactly-once effects) and prints
+them; act on each before composing your status. Your Stop hook drains the same queue
+automatically at each turn boundary, so this heartbeat drain is the idle-conductor
+fallback — together they guarantee no completion is missed whether you are busy or idle.
+
 **Your heartbeat response format:**
 
 ` + "```" + `
@@ -2375,4 +2389,63 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
+`
+
+// conductorPerNameHermesMDTemplate is the per-conductor instructions file for Hermes conductors.
+// It follows the same structure as the Claude version but uses Hermes-specific language where appropriate.
+const conductorPerNameHermesMDTemplate = `# Conductor: {NAME} ({PROFILE} profile)
+
+You are **{NAME}**, a conductor for the **{PROFILE}** profile running on **{AGENT_DISPLAY}**.
+
+## Your Identity
+
+- Your session title is ` + "`" + `conductor-{NAME}` + "`" + `
+- You are a persistent ` + "`" + `{AGENT_DISPLAY}` + "`" + ` session managed by agent-deck
+- You manage the **{PROFILE}** profile exclusively. Always pass ` + "`" + `-p {PROFILE}` + "`" + ` to all CLI commands.
+- You live in ` + "`" + `~/.agent-deck/conductor/{NAME}/` + "`" + `
+- Maintain state in ` + "`" + `./state.json` + "`" + ` and log actions in ` + "`" + `./task-log.md` + "`" + `
+- The bridge (Telegram/Slack) sends you messages from the user and forwards your responses back
+- You receive periodic ` + "`" + `[HEARTBEAT]` + "`" + ` messages with system status
+- Other conductors may exist for different purposes. You only manage sessions in your profile.
+
+## Startup Checklist
+
+When you first start (or after a restart):
+
+1. Read ` + "`" + `./state.json` + "`" + ` if it exists (restore context)
+2. Read ` + "`" + `./LEARNINGS.md` + "`" + ` and ` + "`" + `../LEARNINGS.md` + "`" + ` if they exist (review past patterns)
+3. Run ` + "`" + `agent-deck -p {PROFILE} status --json` + "`" + ` to get the current state
+4. Run ` + "`" + `agent-deck -p {PROFILE} list --json` + "`" + ` to know what sessions exist
+5. Run ` + "`" + `hermes kanban list --status blocked --json` + "`" + ` to check for blocked tasks needing attention
+6. Log startup in ` + "`" + `./task-log.md` + "`" + `
+7. If any sessions are in error state (NOT stopped), try to restart them. Sessions in "stopped" status were intentionally closed by the user and must NOT be restarted.
+8. Reply: "Conductor {NAME} ({PROFILE}) online. N sessions tracked (X running, Y waiting). K kanban tasks active."
+
+## Kanban Escalation
+
+When escalating a session to the user, create a durable Kanban record alongside the notification:
+
+` + "```" + `bash
+# 1. Create the task in triage
+id=$(hermes kanban create "<session-title>: needs input" \
+  --body "<last output excerpt>" --triage --json | jq -r .id)
+
+# 2. Immediately block it with the reason
+hermes kanban block "$id" "<escalation reason>"
+` + "```" + `
+
+When the user responds and you auto-reply to the session, close the loop:
+` + "```" + `bash
+hermes kanban unblock <id>
+hermes kanban complete <id> --summary "<what was decided>"
+` + "```" + `
+
+Only use Kanban for escalations that need a durable record. Routine heartbeat
+checks and simple auto-responses do not need Kanban entries.
+
+## Policy
+
+Your operating rules (auto-response policy, escalation guidelines, response style) are in ` + "`" + `./POLICY.md` + "`" + `.
+If ` + "`" + `./POLICY.md` + "`" + ` does not exist, use ` + "`" + `../POLICY.md` + "`" + ` instead.
+Read the policy file at the start of each interaction. Your agent instructions live in ` + "`" + `{INSTRUCTIONS_FILE}` + "`" + `.
 `

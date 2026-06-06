@@ -214,7 +214,9 @@ func cliEnvForIssue961(home string) []string {
 		env = append(env, kv)
 	}
 	env = append(env,
-		"HOME="+home,
+		homeEnvVars(home)...,
+	)
+	env = append(env,
 		"AGENTDECK_PROFILE=ch_support_test",
 		"TERM=dumb",
 	)

@@ -21,6 +21,7 @@ const (
 	projectSkillsManifest    = "skills.toml"
 	projectClaudeSkillsDir   = ".claude/skills"
 	projectAgentsSkillsDir   = ".agents/skills"
+	projectHermesSkillsDir   = ".hermes/skills"
 	defaultSkillSourcePool   = "pool"
 	defaultSkillSourceClaude = "claude-global"
 )
@@ -73,15 +74,21 @@ type SkillCandidate struct {
 }
 
 // ProjectSkillAttachment is persisted in .agent-deck/skills.toml.
+//
+// The json tags are required for the web API: without them encoding/json
+// ignores the toml tags and falls back to the exported field names, emitting
+// PascalCase (`Name`) instead of the `name` the frontend + e2e tests read.
+// Tag style mirrors the sibling SkillCandidate so both skill types serialize
+// consistently across the /api/skills surface.
 type ProjectSkillAttachment struct {
-	ID         string `toml:"id"`
-	Name       string `toml:"name"`
-	Source     string `toml:"source"`
-	SourcePath string `toml:"source_path"`
-	EntryName  string `toml:"entry_name"`
-	TargetPath string `toml:"target_path"` // relative to project path
-	Mode       string `toml:"mode,omitempty"`
-	AttachedAt string `toml:"attached_at,omitempty"`
+	ID         string `toml:"id" json:"id"`
+	Name       string `toml:"name" json:"name"`
+	Source     string `toml:"source" json:"source"`
+	SourcePath string `toml:"source_path" json:"source_path"`
+	EntryName  string `toml:"entry_name" json:"entry_name"`
+	TargetPath string `toml:"target_path" json:"target_path"` // relative to project path
+	Mode       string `toml:"mode,omitempty" json:"mode,omitempty"`
+	AttachedAt string `toml:"attached_at,omitempty" json:"attached_at,omitempty"`
 }
 
 // ProjectSkillsManifest is the project-local attachment state.
@@ -116,7 +123,7 @@ func skillIDForAttachment(a ProjectSkillAttachment) string {
 }
 
 func knownProjectSkillsDirs() []string {
-	return []string{projectClaudeSkillsDir, projectAgentsSkillsDir}
+	return []string{projectClaudeSkillsDir, projectAgentsSkillsDir, projectHermesSkillsDir}
 }
 
 // SupportsProjectSkills reports whether the runtime supports project skill materialization.
@@ -128,7 +135,7 @@ func SupportsProjectSkills(tool string) bool {
 // ShouldRestartProjectSkills reports whether agent-deck should auto-restart the session
 // after project skill changes for this runtime.
 func ShouldRestartProjectSkills(tool string) bool {
-	return IsClaudeCompatible(tool) || tool == "gemini" || tool == "codex"
+	return IsClaudeCompatible(tool) || tool == "gemini" || tool == "codex" || tool == "hermes"
 }
 
 // GetProjectSkillsDir returns the runtime-managed project skill directory.
@@ -138,6 +145,8 @@ func GetProjectSkillsDir(tool string) (string, bool) {
 		return projectClaudeSkillsDir, true
 	case tool == "gemini" || tool == "codex" || tool == "pi":
 		return projectAgentsSkillsDir, true
+	case tool == "hermes":
+		return projectHermesSkillsDir, true
 	default:
 		return "", false
 	}
@@ -908,8 +917,20 @@ func resolveTargetPath(projectPath, targetPath string) string {
 }
 
 func removeAttachmentTarget(projectPath string, attachment ProjectSkillAttachment) error {
-	targetPath := resolveTargetPath(projectPath, attachment.TargetPath)
-	skillDir, ok := managedProjectSkillsDirForTarget(attachment.TargetPath)
+	return safeRemoveManagedTarget(projectPath, attachment.TargetPath)
+}
+
+// safeRemoveManagedTarget removes targetRel (resolved against projectPath) only
+// when it is contained in a managed project-skills dir, then RemoveAll's it.
+// A non-managed, absolute, or "../"-escaping target is REFUSED and never removed
+// — the same containment guard #1200 added for worktree deletion. Every
+// os.RemoveAll that operates on a manifest-derived TargetPath (attach detach +
+// the migration branches in attachSkillCandidate / reconcileProjectSkills) must
+// route through here so a tampered manifest can't trigger deletion outside the
+// project skills dir. Audit M3.
+func safeRemoveManagedTarget(projectPath, targetRel string) error {
+	targetPath := resolveTargetPath(projectPath, targetRel)
+	skillDir, ok := managedProjectSkillsDirForTarget(targetRel)
 	if !ok {
 		return fmt.Errorf("refusing to remove path outside managed project skills dirs: %s", targetPath)
 	}
@@ -917,10 +938,7 @@ func removeAttachmentTarget(projectPath string, attachment ProjectSkillAttachmen
 	if !isContainedIn(base, targetPath) {
 		return fmt.Errorf("refusing to remove path outside project skills dir: %s", targetPath)
 	}
-	if err := os.RemoveAll(targetPath); err != nil {
-		return err
-	}
-	return nil
+	return os.RemoveAll(targetPath)
 }
 
 func buildAttachment(tool string, candidate SkillCandidate, mode string) ProjectSkillAttachment {
@@ -1044,8 +1062,10 @@ func attachSkillCandidate(projectPath, tool string, candidate SkillCandidate) (*
 			if err != nil {
 				return nil, err
 			}
-			if err := os.RemoveAll(currentTargetPath); err != nil {
-				_ = os.RemoveAll(desiredTargetPath)
+			// Audit M3: guard the manifest-derived currentTargetPath removal so a
+			// tampered TargetPath can't delete outside the project skills dir.
+			if err := safeRemoveManagedTarget(projectPath, existing.TargetPath); err != nil {
+				_ = safeRemoveManagedTarget(projectPath, desiredTargetRel)
 				return nil, err
 			}
 			existing.TargetPath = desiredTargetRel
@@ -1310,8 +1330,9 @@ func ApplyProjectSkills(projectPath, tool string, desired []SkillCandidate) erro
 					if err != nil {
 						return err
 					}
-					if err := os.RemoveAll(currentTargetPath); err != nil {
-						_ = os.RemoveAll(desiredTargetPath)
+					// Audit M3: guard the manifest-derived currentTargetPath removal.
+					if err := safeRemoveManagedTarget(projectPath, current.TargetPath); err != nil {
+						_ = safeRemoveManagedTarget(projectPath, desiredTargetRel)
 						return err
 					}
 					current.TargetPath = desiredTargetRel

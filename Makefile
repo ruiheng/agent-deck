@@ -11,7 +11,7 @@ TAILWIND_VERSION=v4.2.2
 TAILWIND_BIN=$(HOME)/.local/bin/tailwindcss
 
 # Pin Go toolchain to match go.mod and CI.
-export GOTOOLCHAIN=go1.25.10
+export GOTOOLCHAIN=go1.25.11
 
 # Build the binary (requires compiled CSS via `make css`)
 build: css
@@ -99,14 +99,24 @@ build-codex-notify-fanout:
 
 # Install to /usr/local/bin (requires sudo)
 install: build
+	sudo rm -f /usr/local/bin/$(BINARY_NAME)
 	sudo cp $(BUILD_DIR)/$(BINARY_NAME) /usr/local/bin/$(BINARY_NAME)
+	@# macOS (Apple Silicon) SIGKILLs a binary whose ad-hoc signature was
+	@# invalidated by an in-place overwrite. rm+cp gives a fresh inode and the
+	@# re-sign guarantees a valid signature. No-op on other platforms.
+	@if [ "$$(uname)" = "Darwin" ]; then sudo codesign --force --sign - /usr/local/bin/$(BINARY_NAME); fi
 	@echo "✅ Installed to /usr/local/bin/$(BINARY_NAME)"
 	@echo "Run 'agent-deck' to start"
 
 # Install to user's local bin (no sudo required)
 install-user: build
 	mkdir -p $(HOME)/.local/bin
+	rm -f $(HOME)/.local/bin/$(BINARY_NAME)
 	cp $(BUILD_DIR)/$(BINARY_NAME) $(HOME)/.local/bin/$(BINARY_NAME)
+	@# macOS (Apple Silicon) SIGKILLs a binary whose ad-hoc signature was
+	@# invalidated by an in-place overwrite. rm+cp gives a fresh inode and the
+	@# re-sign guarantees a valid signature. No-op on other platforms.
+	@if [ "$$(uname)" = "Darwin" ]; then codesign --force --sign - $(HOME)/.local/bin/$(BINARY_NAME); fi
 	@echo "✅ Installed to $(HOME)/.local/bin/$(BINARY_NAME)"
 	@echo "Make sure $(HOME)/.local/bin is in your PATH"
 	@echo "Run 'agent-deck' to start"
@@ -149,10 +159,14 @@ test:
 
 # Run hard-gated walltime regression tests (Track B). Honors PERF_BUDGET_MULTIPLIER
 # (default 1.0 locally; CI sets 2.0). See docs/perf-budget-suite.md.
+#
+# ./... (not just ./cmd/agent-deck/...) so Tier 1 TestPerf_* added in any
+# package — internal/statedb, internal/session — are exercised locally, matching
+# the perf-smoke.yml CI gate which already runs the whole module.
 test-perf:
 	PERF_BUDGET_MULTIPLIER=$${PERF_BUDGET_MULTIPLIER:-1.0} \
 		go test -run '^TestPerf_' -race -v -count=1 -timeout 120s \
-		./cmd/agent-deck/...
+		./...
 
 # Run advisory benchmarks (Track A). No -race — race overhead distorts ns/op.
 # Output is for trending; not a CI gate.

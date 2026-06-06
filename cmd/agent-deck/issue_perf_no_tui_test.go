@@ -122,7 +122,16 @@ func TestWebCommand_NoTuiFlag_SkipsBubbleteaBoot(t *testing.T) {
 		t.Cleanup(func() {
 			if cmd.Process != nil {
 				_ = processutil.TerminateProcessTree(cmd.Process)
-				_, _ = cmd.Process.Wait()
+				_ = cmd.Process.Kill()
+				done := make(chan struct{})
+				go func() {
+					_, _ = cmd.Process.Wait()
+					close(done)
+				}()
+				select {
+				case <-done:
+				case <-time.After(2 * time.Second):
+				}
 			}
 		})
 

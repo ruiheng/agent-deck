@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -46,6 +47,9 @@ const (
 func TestPerf_ColdStart_Help(t *testing.T) {
 	testutil.SkipIfShort(t)
 	budget := testutil.ColdBudget(t, coldStartHelpBase)
+	if runtime.GOOS == "windows" {
+		budget = testutil.ColdBudget(t, 25*time.Millisecond)
+	}
 	sb := harness.NewSandbox(t)
 	env := perfEnv(sb)
 
@@ -65,6 +69,9 @@ func TestPerf_ColdStart_Help(t *testing.T) {
 func TestPerf_ColdStart_Version(t *testing.T) {
 	testutil.SkipIfShort(t)
 	budget := testutil.ColdBudget(t, coldStartVersionBase)
+	if runtime.GOOS == "windows" {
+		budget = testutil.ColdBudget(t, 25*time.Millisecond)
+	}
 	sb := harness.NewSandbox(t)
 	env := perfEnv(sb)
 
@@ -144,7 +151,11 @@ func BenchmarkColdStart_Help(b *testing.B) {
 func buildBinaryForBench(b *testing.B) string {
 	b.Helper()
 	dir := b.TempDir()
-	bin := filepath.Join(dir, "agent-deck")
+	binName := "agent-deck"
+	if runtime.GOOS == "windows" {
+		binName += ".exe"
+	}
+	bin := filepath.Join(dir, binName)
 	cmd := exec.Command("go", "build", "-o", bin, "./cmd/agent-deck")
 	cmd.Dir = repoRootForBench(b)
 	if out, err := cmd.CombinedOutput(); err != nil {

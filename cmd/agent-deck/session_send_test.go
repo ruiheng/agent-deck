@@ -66,7 +66,7 @@ func TestShouldSkipConductorHeartbeatSend_UsesHeartbeatPrefixOnlyForConductors(t
 
 func TestShouldSkipConductorHeartbeatSend_ZeroLastActivitySends(t *testing.T) {
 	tmpHome := t.TempDir()
-	t.Setenv("HOME", tmpHome)
+	setHomeForTest(t, tmpHome)
 
 	if err := session.SaveConductorMeta(&session.ConductorMeta{
 		Name:                 "ops",
@@ -83,6 +83,7 @@ func TestShouldSkipConductorHeartbeatSend_ZeroLastActivitySends(t *testing.T) {
 	if err != nil {
 		t.Fatalf("setup storage: %v", err)
 	}
+	t.Cleanup(func() { _ = storage.Close() })
 	conductor := session.NewInstance("conductor-ops", "/tmp")
 	conductor.IsConductor = true
 	if err := storage.Save([]*session.Instance{conductor}); err != nil {
@@ -120,7 +121,7 @@ func writeHookStatusForTest(t *testing.T, instanceID string, age time.Duration) 
 // heartbeat MUST be suppressed.
 func TestShouldSkipConductorHeartbeatSend_SkipsWhenIdleExceeded(t *testing.T) {
 	tmpHome := t.TempDir()
-	t.Setenv("HOME", tmpHome)
+	setHomeForTest(t, tmpHome)
 
 	if err := session.SaveConductorMeta(&session.ConductorMeta{
 		Name:                 "ops",
@@ -137,6 +138,7 @@ func TestShouldSkipConductorHeartbeatSend_SkipsWhenIdleExceeded(t *testing.T) {
 	if err != nil {
 		t.Fatalf("setup storage: %v", err)
 	}
+	t.Cleanup(func() { _ = storage.Close() })
 
 	conductor := session.NewInstance("conductor-ops", "/tmp")
 	conductor.IsConductor = true
@@ -163,7 +165,7 @@ func TestShouldSkipConductorHeartbeatSend_SkipsWhenIdleExceeded(t *testing.T) {
 // "fire never".
 func TestShouldSkipConductorHeartbeatSend_DoesNotSkipWithinIdleWindow(t *testing.T) {
 	tmpHome := t.TempDir()
-	t.Setenv("HOME", tmpHome)
+	setHomeForTest(t, tmpHome)
 
 	if err := session.SaveConductorMeta(&session.ConductorMeta{
 		Name:                 "ops",
@@ -180,6 +182,7 @@ func TestShouldSkipConductorHeartbeatSend_DoesNotSkipWithinIdleWindow(t *testing
 	if err != nil {
 		t.Fatalf("setup storage: %v", err)
 	}
+	t.Cleanup(func() { _ = storage.Close() })
 
 	conductor := session.NewInstance("conductor-ops", "/tmp")
 	conductor.IsConductor = true
@@ -202,7 +205,7 @@ func TestShouldSkipConductorHeartbeatSend_DoesNotSkipWithinIdleWindow(t *testing
 // last activity is far older than any plausible threshold.
 func TestShouldSkipConductorHeartbeatSend_DisabledThresholdNeverSkips(t *testing.T) {
 	tmpHome := t.TempDir()
-	t.Setenv("HOME", tmpHome)
+	setHomeForTest(t, tmpHome)
 
 	if err := session.SaveConductorMeta(&session.ConductorMeta{
 		Name:                 "ops",
@@ -219,6 +222,7 @@ func TestShouldSkipConductorHeartbeatSend_DisabledThresholdNeverSkips(t *testing
 	if err != nil {
 		t.Fatalf("setup storage: %v", err)
 	}
+	t.Cleanup(func() { _ = storage.Close() })
 
 	conductor := session.NewInstance("conductor-ops", "/tmp")
 	conductor.IsConductor = true
@@ -1445,7 +1449,26 @@ func TestSessionOutput_RefreshesSessionID(t *testing.T) {
 	})
 
 	t.Run("best-effort returns graceful empty when disk scan cannot recover", func(t *testing.T) {
-		inst := session.NewInstance("output-disk-fallback", projectPath)
+		// Isolate this subtest in its own empty config dir. The parent test seeds
+		// the shared projects dir with a "Hi there!" transcript, which the #1237
+		// disk-scan recovery in GetLastResponseBestEffort would correctly find.
+		// To genuinely exercise the "disk scan CANNOT recover -> graceful empty"
+		// path, point CLAUDE_CONFIG_DIR at a fresh tempdir with no JSONL files for
+		// this project, so the disk scan has nothing to recover.
+		isolatedDir := t.TempDir()
+		isolatedProjectPath := "/test/output-disk-fallback-isolated"
+		isolatedProjectsDir := filepath.Join(isolatedDir, "projects", session.ConvertToClaudeDirName(isolatedProjectPath))
+		if err := os.MkdirAll(isolatedProjectsDir, 0755); err != nil {
+			t.Fatalf("failed to create isolated projects dir: %v", err)
+		}
+		os.Setenv("CLAUDE_CONFIG_DIR", isolatedDir)
+		session.ClearUserConfigCache()
+		t.Cleanup(func() {
+			os.Setenv("CLAUDE_CONFIG_DIR", tmpDir)
+			session.ClearUserConfigCache()
+		})
+
+		inst := session.NewInstance("output-disk-fallback", isolatedProjectPath)
 		inst.Tool = "claude"
 		inst.ClaudeSessionID = "totally-bogus-id"
 

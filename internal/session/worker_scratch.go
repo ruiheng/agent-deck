@@ -371,15 +371,31 @@ func (i *Instance) EnsureWorkerScratchConfigDir(sourceProfileDir string) (string
 	return scratch, nil
 }
 
+// credentialsFileName is the profile's OAuth credentials file. It is the one
+// scratch entry that must be RE-ASSERTED (not merely left alone) on every
+// seeding — see reassertCredentialSymlink and issue #1222.
+const credentialsFileName = ".credentials.json"
+
 // mirrorProfileEntries ensures every top-level entry in source (except
-// settings.json) is reachable from dest. Symlinks are left alone because they
-// stay live; copied fallback entries are refreshed on every Ensure call so a
-// reused scratch dir still mirrors source profile updates.
+// settings.json) is reachable from dest. Symlink mirrors are left alone because
+// they stay live; copied fallback entries are refreshed on every Ensure call so
+// a reused scratch dir still mirrors source profile updates.
+//
+// `.credentials.json` is the exception. It is handled by
+// reassertCredentialSymlink, which heals the issue #1222 clobber: running
+// `/login` inside a managed session replaces the scratch symlink with a
+// real-file COPY of the OAuth token. Anthropic rotates the refresh token on
+// each refresh, so that stale copy 401s on the next rotation while the fresh
+// token is stranded in scratch. Re-asserting the symlink (and promoting a
+// fresh in-session login to canonical first) restores the single-source-of-
+// truth invariant on the next start/restart/resume.
 func mirrorProfileEntries(dest, source string) error {
 	entries, err := os.ReadDir(source)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return nil
+			// Source absent: still re-assert credentials in case scratch
+			// holds a stranded in-session login to promote (no canonical).
+			return reassertCredentialSymlink(dest, source)
 		}
 		return fmt.Errorf("read source profile: %w", err)
 	}
@@ -394,7 +410,10 @@ func mirrorProfileEntries(dest, source string) error {
 
 	for _, entry := range entries {
 		name := entry.Name()
-		if name == "settings.json" {
+		// settings.json is OWNED (copied + mutated) by the scratch seeding;
+		// .credentials.json is re-asserted explicitly below. Both are skipped
+		// from the generic leave-alone mirror.
+		if name == "settings.json" || name == credentialsFileName {
 			continue
 		}
 		linkPath := filepath.Join(dest, name)
@@ -410,6 +429,98 @@ func mirrorProfileEntries(dest, source string) error {
 		if err := mirrorProfileEntry(target, linkPath); err != nil {
 			return fmt.Errorf("mirror %s: %w", name, err)
 		}
+	}
+	return reassertCredentialSymlink(dest, source)
+}
+
+// reassertCredentialSymlink guarantees dest/.credentials.json is a clean symlink
+// to source/.credentials.json (the single canonical profile credentials),
+// healing the in-session `/login` clobber described in issue #1222.
+//
+//   - dest entry is the correct symlink → left untouched (idempotent).
+//   - dest entry is absent → symlinked to canonical (when canonical exists).
+//   - dest entry is a symlink to the WRONG target → repointed to canonical.
+//   - dest entry is a REAL FILE (the `/login` clobber, or any diverged copy) →
+//     force-replaced with a symlink to canonical, regardless of mtime.
+//     Canonical is NEVER overwritten.
+//   - dest entry is a real file but canonical is ABSENT → left intact, so the
+//     only token copy is not stranded behind a dangling symlink. The next
+//     start, once canonical exists, replaces it with the symlink.
+//
+// Why no mtime-promote (removed; see the OAuth root-cause memo and the
+// disassembly of Claude v2.1.159 in /tmp/oauth-fix/SUBSCRIPTION-FIX.md):
+// Anthropic OAuth uses single-use ROTATING refresh tokens, so a scratch copy's
+// mtime is NOT a "this token is newer/valid" signal. The previous code promoted
+// a strictly-newer scratch real-file to canonical, which could overwrite a good
+// canonical with a stale (or already-rotated-out) scratch token and fork a
+// second rotation chain — re-introducing the `invalid_grant` /login race for
+// every session sharing that profile. Claude re-reads .credentials.json on
+// expiry and serializes refreshes on a cross-process lock keyed by
+// realpath(); collapsing every scratch to ONE canonical symlink is what makes
+// that lock actually serialize the workers. The load-bearing invariant is
+// therefore "the scratch credentials must always be a symlink to the one
+// canonical file, never a real file", and we enforce it on every
+// spawn/start/restart here.
+//
+// WARNING for operators: do NOT run `/login` inside a managed agent-deck
+// session — it writes a real file that diverges from canonical until the next
+// restart relinks it (the in-session token is dropped, NOT promoted). Log in
+// once in the canonical profile (e.g. `CLAUDE_CONFIG_DIR=~/.claude claude` →
+// /login) and every session inherits it through this symlink.
+func reassertCredentialSymlink(dest, source string) error {
+	target := filepath.Join(source, credentialsFileName)
+	linkPath := filepath.Join(dest, credentialsFileName)
+
+	li, lerr := os.Lstat(linkPath)
+	switch {
+	case lerr != nil && os.IsNotExist(lerr):
+		// Nothing in scratch yet — link to canonical when it exists.
+		if _, terr := os.Stat(target); terr == nil {
+			return symlinkReplace(target, linkPath)
+		}
+		return nil
+	case lerr != nil:
+		return fmt.Errorf("lstat scratch credentials: %w", lerr)
+	}
+
+	if li.Mode()&os.ModeSymlink != 0 {
+		// Already a symlink — leave it iff it points at canonical.
+		if cur, rerr := os.Readlink(linkPath); rerr == nil && cur == target {
+			return nil
+		}
+		// Wrong/stale symlink → repoint (only meaningful if canonical exists).
+		if _, terr := os.Stat(target); terr != nil {
+			return nil
+		}
+		return symlinkReplace(target, linkPath)
+	}
+
+	// dest is a REAL FILE — the `/login` clobber, or a diverged copy. Always
+	// force-replace it with a clean symlink to canonical; NEVER promote its
+	// contents (mtime is not a valid-token signal for rotating tokens).
+	if _, terr := os.Stat(target); terr != nil {
+		if os.IsNotExist(terr) {
+			// No canonical to point at — leave the only token copy intact
+			// rather than stranding it behind a dangling symlink. Once the
+			// user logs in to canonical, the next start relinks this.
+			return nil
+		}
+		return fmt.Errorf("stat canonical credentials: %w", terr)
+	}
+	return symlinkReplace(target, linkPath)
+}
+
+// symlinkReplace atomically points linkPath at target, removing any existing
+// entry first. An EEXIST from a concurrent creator is benign.
+func symlinkReplace(target, linkPath string) error {
+	if err := os.Remove(linkPath); err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("remove stale credentials entry: %w", err)
+	}
+	if err := os.Symlink(target, linkPath); err != nil {
+		if os.IsExist(err) {
+			return nil
+		}
+		return fmt.Errorf("symlink credentials: %w", err)
 	}
 	return nil
 }

@@ -18,6 +18,7 @@ import (
 const (
 	ConductorAgentClaude = "claude"
 	ConductorAgentCodex  = "codex"
+	ConductorAgentHermes = "hermes"
 
 	ConductorSessionTitlePrefix     = "conductor-"
 	ConductorHeartbeatMessagePrefix = "Heartbeat:"
@@ -52,6 +53,13 @@ var conductorAgentSpecs = map[string]ConductorAgentSpec{
 		DefaultCommand:         "codex",
 		InstructionsFileName:   "AGENTS.md",
 		SupportsClearOnCompact: false,
+	},
+	ConductorAgentHermes: {
+		Agent:                  ConductorAgentHermes,
+		DisplayName:            "Hermes",
+		DefaultCommand:         "hermes",
+		InstructionsFileName:   "HERMES.md",
+		SupportsClearOnCompact: true,
 	},
 }
 
@@ -174,7 +182,9 @@ func (m *ConductorMeta) GetAgent() string {
 	return ConductorAgentClaude
 }
 
-// GetClearOnCompact returns whether to block compaction and send /clear instead, defaulting to true
+// GetClearOnCompact returns whether to block compaction and send /clear instead, defaulting to true.
+// For Hermes conductors, this enables context clearing on compaction (similar to Claude),
+// as Hermes does not perform automatic summarization like Claude does.
 func (m *ConductorMeta) GetClearOnCompact() bool {
 	spec, _ := GetConductorAgentSpec(m.GetAgent())
 	if !spec.SupportsClearOnCompact {
@@ -220,7 +230,7 @@ func GetConductorAgentSpec(agent string) (ConductorAgentSpec, error) {
 	normalized := normalizeConductorAgent(agent)
 	spec, ok := conductorAgentSpecs[normalized]
 	if !ok {
-		return ConductorAgentSpec{}, fmt.Errorf("unsupported conductor agent %q (supported: %s, %s)", agent, ConductorAgentClaude, ConductorAgentCodex)
+		return ConductorAgentSpec{}, fmt.Errorf("unsupported conductor agent %q (supported: %s, %s, %s)", agent, ConductorAgentClaude, ConductorAgentCodex, ConductorAgentHermes)
 	}
 	return spec, nil
 }
@@ -619,7 +629,13 @@ func SetupConductorWithAgent(name, profile, agent string, heartbeatEnabled bool,
 		}
 	} else if info, err := os.Lstat(targetPath); err != nil || info.Mode()&os.ModeSymlink == 0 {
 		// No custom path - write default template (but preserve existing symlink)
-		content := renderConductorInstructionsTemplate(conductorPerNameClaudeMDTemplate, name, profile, spec)
+		var perNameTemplate string
+		if spec.Agent == ConductorAgentHermes {
+			perNameTemplate = conductorPerNameHermesMDTemplate
+		} else {
+			perNameTemplate = conductorPerNameClaudeMDTemplate
+		}
+		content := renderConductorInstructionsTemplate(perNameTemplate, name, profile, spec)
 		if err := os.WriteFile(targetPath, []byte(content), 0o644); err != nil {
 			return fmt.Errorf("failed to write %s: %w", spec.InstructionsFileName, err)
 		}
@@ -1587,6 +1603,12 @@ Environment=HOME=__HOME__
 WantedBy=default.target
 `
 
+// systemdTransitionNotifierServiceTemplate runs the always-on completion
+// notifier. RuntimeMaxSec (issue #1214 STEP 1) bounds how long any single
+// daemon process can live: combined with Restart=always it forces a periodic
+// recycle onto the current binary, so the daemon can never run stale code even
+// if the in-process version watcher is somehow bypassed. The watcher recycles
+// promptly on upgrade; this is the backstop.
 const systemdTransitionNotifierServiceTemplate = `[Unit]
 Description=Agent Deck Transition Notifier
 After=network.target
@@ -1596,6 +1618,7 @@ Type=simple
 ExecStart=__AGENT_DECK__ notify-daemon
 Restart=always
 RestartSec=5
+RuntimeMaxSec=86400
 WorkingDirectory=__HOME__
 StandardOutput=append:__LOG_PATH__
 StandardError=append:__LOG_PATH__
