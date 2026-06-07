@@ -19,7 +19,18 @@ $TailwindVersionStamp = Join-Path $LocalBin "tailwindcss.version"
 $StylesSrc = Join-Path $RepoRoot "internal\web\static\styles.src.css"
 $StylesOut = Join-Path $RepoRoot "internal\web\static\styles.css"
 $TailwindAllowlist = Join-Path $RepoRoot "internal\web\static\.tailwind-allowlist.txt"
-$GoToolchainVersion = "go1.25.10"
+
+function Get-GoToolchainVersion {
+    $goMod = Join-Path $RepoRoot "go.mod"
+    foreach ($line in Get-Content -LiteralPath $goMod) {
+        if ($line -match '^go\s+([0-9]+\.[0-9]+(?:\.[0-9]+)?)\s*$') {
+            return "go$($Matches[1])"
+        }
+    }
+    throw "could not find Go version in $goMod"
+}
+
+$GoToolchainVersion = Get-GoToolchainVersion
 
 function Assert-Go {
     if (-not $GoExe) {
