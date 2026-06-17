@@ -3,15 +3,15 @@
 // `.field` / `.seg-row` / `.btn` classes from app.css.
 import { html } from 'htm/preact'
 import { useState } from 'preact/hooks'
-import { createSessionDialogSignal, mutationsEnabledSignal } from './state.js'
+import {
+  createSessionDialogSignal, mutationsEnabledSignal,
+  toolFilterFallbackSignal, pickerToolsSignal,
+} from './state.js'
 import { Icon, ICONS } from './icons.js'
 import { apiFetch } from './api.js'
+import { displayLabelForTool, resolveCreateSessionPickerTools } from './pickerTools.js'
 
-const TOOLS = ['claude', 'codex', 'gemini', 'opencode', 'shell']
 const CUSTOM_MODEL = '__custom__'
-const TOOL_LABELS = {
-  codex: 'ChatGPT',
-}
 
 const MODEL_ID_CATALOG = {
   claude: [
@@ -118,6 +118,7 @@ export function CreateSessionDialog() {
   const close = () => (createSessionDialogSignal.value = false)
   const handleBackdropClick = (e) => { if (e.target === e.currentTarget) close() }
   const modelIDs = modelIDsForTool(tool)
+  const shownTools = resolveCreateSessionPickerTools(pickerToolsSignal.value)
   const needsCustomModel = modelId === CUSTOM_MODEL
   const submitDisabled = submitting || !title || !path || (needsCustomModel && !customModel.trim())
 
@@ -143,12 +144,18 @@ export function CreateSessionDialog() {
           <div class="field">
             <label>TOOL</label>
             <div class="seg-row">
-              ${TOOLS.map(t => html`
+              ${shownTools.map(t => html`
                 <button type="button" key=${t}
                         class=${`seg-btn ${tool === t ? 'on' : ''}`}
-                        onClick=${() => selectTool(t)}>${TOOL_LABELS[t] || t}</button>
+                        onClick=${() => selectTool(t)}>${displayLabelForTool(t)}</button>
               `)}
             </div>
+            ${toolFilterFallbackSignal.value && html`
+              <div style="font-family: var(--mono); font-size: 11px; color: var(--tn-comment, #888);
+                          margin-top: 6px;">
+                No tools matched PATH; showing all. Set <code>show_only_installed_tools = false</code> to silence.
+              </div>
+            `}
           </div>
           ${modelIDs.length > 0 && html`
             <div class="field">

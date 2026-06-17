@@ -5,10 +5,10 @@ package session
 // Before this file, the built-in list lived split across two hand-synced
 // functions (issue #1258):
 //   - detectTool()        in cmd/agent-deck/main.go  — the strings.Contains
-//                          heuristic dispatcher (command string -> tool name).
+//     heuristic dispatcher (command string -> tool name).
 //   - isBuiltinToolName()  in internal/session/userconfig.go — the strict
-//                          allowlist used to stop custom [tools.<name>] entries
-//                          from shadowing a built-in.
+//     allowlist used to stop custom [tools.<name>] entries
+//     from shadowing a built-in.
 //
 // Both are now derived from the single builtinTools() slice below.
 //
@@ -33,6 +33,13 @@ type builtinTool struct {
 	// for short ambiguous names like "pi" where Contains would false-match
 	// "epic"/"tapioca". Mirrors detectTool()'s hasCommandToken() arm.
 	detectTokens []string
+
+	// Installed reports whether this tool's command resolved on the host PATH at
+	// registry-init time. It is ONLY populated when the show_only_installed_tools
+	// filter is on (issue #1259); with the filter off the probe is skipped
+	// entirely and this stays false (unused), so the default path is byte-identical
+	// to before. "shell" is always marked installed regardless of the probe.
+	Installed bool
 }
 
 // builtinTools returns the canonical built-ins in the EXACT precedence order of

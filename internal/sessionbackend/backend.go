@@ -3,6 +3,8 @@ package sessionbackend
 import (
 	"context"
 	"time"
+
+	"github.com/asheshgoplani/agent-deck/internal/tmux"
 )
 
 // SessionBackend is the minimal session/runtime seam needed to decouple the
@@ -19,6 +21,7 @@ type SessionBackend interface {
 
 	Exists() bool
 	Attach(ctx context.Context, detachByte ...byte) error
+	AttachWithOptions(ctx context.Context, opts tmux.AttachOptions) (tmux.SwitchIntent, error)
 	AttachWindow(ctx context.Context, windowIndex int, detachByte ...byte) error
 
 	SetEnvironment(key, value string) error

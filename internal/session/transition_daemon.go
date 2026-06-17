@@ -45,19 +45,34 @@ type TransitionDaemon struct {
 	// across polls — or a later identical Stop — does not re-fire.
 	lastDone map[string]map[string]DoneSignal
 
+	// lastDoneScan tracks, per (profile, instance), the hook-status timestamp
+	// whose pending transcript rescan (issue #1186 flush race) reached a
+	// conclusive answer — assistant record flushed, sentinel present or not.
+	// It stops the daemon from re-reading the transcript tail every poll for
+	// the rest of the freshness window once the scan has resolved; an
+	// UNRESOLVED (still-unflushed) scan is deliberately not recorded so the
+	// next poll retries.
+	lastDoneScan map[string]map[string]time.Time
+
 	// lastInboxTTLSweep tracks the most recent SweepInboxByTTL call so
 	// the daemon runs it at most once per inboxTTLSweepInterval. Zero
 	// means "never run" — the first SyncOnce pass will perform it.
 	lastInboxTTLSweep time.Time
+
+	// selfheal holds the per-profile observe-only self-heal engines (lazily
+	// created). Driven by this poll loop — NOT a new daemon (F3: no watchdog
+	// stacking). nil until the first enabled pass.
+	selfheal *selfHealRegistry
 }
 
 func NewTransitionDaemon() *TransitionDaemon {
 	return &TransitionDaemon{
-		notifier:    NewTransitionNotifier(),
-		storages:    map[string]*Storage{},
-		lastStatus:  map[string]map[string]string{},
-		initialized: map[string]bool{},
-		lastDone:    map[string]map[string]DoneSignal{},
+		notifier:     NewTransitionNotifier(),
+		storages:     map[string]*Storage{},
+		lastStatus:   map[string]map[string]string{},
+		initialized:  map[string]bool{},
+		lastDone:     map[string]map[string]DoneSignal{},
+		lastDoneScan: map[string]map[string]time.Time{},
 	}
 }
 
@@ -191,7 +206,18 @@ func (d *TransitionDaemon) syncProfile(profile string) time.Duration {
 		byID[inst.ID] = inst
 		if IsClaudeCompatible(inst.Tool) || inst.Tool == "codex" || inst.Tool == "gemini" {
 			if hs := d.hookStatusForInstance(inst.ID); hs != nil {
-				inst.UpdateHookStatus(hs)
+				// Issue #1349: only let a hook status rebind the session id when
+				// the instance is actually LIVE (running/waiting/idle with a real
+				// tmux session). A stopped/removed session keeps a stale
+				// SessionEnd hook file for up to 24h; without this gate the daemon
+				// rebinds its session id every poll cycle from that stale record,
+				// colliding two ids onto one session-id and corrupting routing
+				// (wrong transcript, dropped completions, mis-delivered input).
+				// Done-signal / transition-candidate handling stays unguarded so
+				// terminal completions are still observed.
+				if isLiveSessionStatus(inst.Status) && inst.Exists() {
+					inst.UpdateHookStatus(hs)
+				}
 				hookStatuses[inst.ID] = hs
 				if candidate, ok := terminalHookTransitionCandidate(inst.Tool, hs); ok {
 					hookCandidates[inst.ID] = candidate
@@ -234,6 +260,13 @@ func (d *TransitionDaemon) syncProfile(profile string) time.Duration {
 		}
 	}
 
+	// Self-heal Stage 1 (observe-only): evaluate every instance through the
+	// profile's observe engine, logging what it WOULD do and taking ZERO action.
+	// Runs every poll (including the first) so the dwell/confirm clocks start
+	// immediately. Reuses the instances/hookStatuses already loaded above — no
+	// extra capture, no new goroutine (F3). Disabled-by-config → cheap no-op.
+	d.runSelfHealObservePass(profile, instances, statuses, hookStatuses, db, time.Now().UTC())
+
 	if !d.initialized[profile] {
 		// Cover fast transitions that completed before we observed a running snapshot.
 		d.emitHookTransitionCandidates(profile, byID, nil, statuses, hookCandidates)
@@ -262,6 +295,12 @@ func (d *TransitionDaemon) syncProfile(profile string) time.Duration {
 			ToStatus:       to,
 			Timestamp:      time.Now(),
 			LastOutputHash: transitionEventOutputHash(inst),
+			// Honest Status v2 observability hook: stamp the additive substate so
+			// the emitted transition event is structured + substate-bearing. Use
+			// the CACHED value (no pane capture) — the daemon's own status poll
+			// just refreshed it, and an extra capture per transition would make
+			// this hot path heavier than the transcript-stat dedup signal above.
+			Substate: string(inst.CachedSubstate()),
 		}
 		_ = d.notifier.NotifyTransition(event)
 	}
@@ -279,33 +318,21 @@ func (d *TransitionDaemon) syncProfile(profile string) time.Duration {
 // later identical Stop — fires at most once. A genuinely new completion
 // (different status/summary) fires again. Stale hook files (older than
 // hookFreshWindow) are ignored so a daemon restart doesn't replay a long-dead
-// completion.
+// completion. When the hook's own scan was inconclusive (transcript not
+// flushed at Stop time), the hook file carries the transcript path instead of
+// done fields and the daemon finishes the scan here — see doneSignalFor.
 func (d *TransitionDaemon) emitDoneSignals(profile string, byID map[string]*Instance, hookStatuses map[string]*HookStatus) {
 	if len(hookStatuses) == 0 {
 		return
 	}
 	notifyEnabled := GetNotificationsSettings().GetTransitionEventsEnabled()
 	for id, hs := range hookStatuses {
-		if hs == nil || strings.TrimSpace(hs.DoneStatus) == "" {
+		if hs == nil {
 			continue
 		}
-		// Issue #1214: a task worker run one-shot under the completion wrapper
-		// owns its own done signal via the kernel-exit path (cmd.Wait ->
-		// durable record -> active wake). Stand down from poll-inference for it
-		// — the freshness window + lastDone dedup that simulate exactly-once
-		// over a polled file are exactly what the kernel exit replaces. The
-		// claim record exists for the whole run, so this also wins the race
-		// against the worker's own Stop hook. Interactive sessions (no record)
-		// keep the path below unchanged.
-		if CompletionRecordExists(profile, id) {
+		sig, ok := d.doneSignalFor(profile, id, hs)
+		if !ok {
 			continue
-		}
-		if !hs.UpdatedAt.IsZero() && time.Since(hs.UpdatedAt) > hookFreshWindow {
-			continue
-		}
-		sig := DoneSignal{
-			Status:  strings.ToLower(strings.TrimSpace(hs.DoneStatus)),
-			Summary: strings.TrimSpace(hs.DoneSummary),
 		}
 		if prev, ok := d.lastDone[profile][id]; ok && prev == sig {
 			continue // already emitted this exact completion
@@ -331,6 +358,84 @@ func (d *TransitionDaemon) emitDoneSignals(profile string, byID map[string]*Inst
 		}
 		d.lastDone[profile][id] = sig
 	}
+}
+
+// doneSignalFor resolves a hook status into a completion sentinel, or reports
+// none (ok=false). Two sources, in order:
+//
+//  1. Done fields persisted by the Stop hook's own scan — the common path.
+//  2. A pending transcript rescan (issue #1186 flush race): Claude Code can
+//     fire the Stop hook BEFORE appending the turn's final assistant record,
+//     and the hook — synchronous since #1225, Claude blocks on its exit —
+//     must not sleep waiting for the flush. The hook persists the validated
+//     transcript path instead, and the daemon's poll loop is the retry: each
+//     pass re-scans the tail until the record lands (typically the very next
+//     poll) or the hook file ages out of hookFreshWindow.
+//
+// Both sources respect the #1214 completion-wrapper ownership gate and the
+// freshness window exactly like the pre-existing done-fields path.
+func (d *TransitionDaemon) doneSignalFor(profile, id string, hs *HookStatus) (DoneSignal, bool) {
+	fresh := hs.UpdatedAt.IsZero() || time.Since(hs.UpdatedAt) <= hookFreshWindow
+
+	if strings.TrimSpace(hs.DoneStatus) != "" {
+		// Issue #1214: a task worker run one-shot under the completion wrapper
+		// owns its own done signal via the kernel-exit path (cmd.Wait ->
+		// durable record -> active wake). Stand down from poll-inference for it
+		// — the freshness window + lastDone dedup that simulate exactly-once
+		// over a polled file are exactly what the kernel exit replaces. The
+		// claim record exists for the whole run, so this also wins the race
+		// against the worker's own Stop hook. Interactive sessions (no record)
+		// keep the path below unchanged.
+		if CompletionRecordExists(profile, id) {
+			return DoneSignal{}, false
+		}
+		if !fresh {
+			return DoneSignal{}, false
+		}
+		return DoneSignal{
+			Status:  strings.ToLower(strings.TrimSpace(hs.DoneStatus)),
+			Summary: strings.TrimSpace(hs.DoneSummary),
+		}, true
+	}
+
+	// Pending rescan path. Freshness uses a hard zero-check here (unlike the
+	// done-fields path, which tolerates a zero UpdatedAt for legacy files):
+	// the window is the only bound on the retry loop.
+	if strings.TrimSpace(hs.TranscriptPath) == "" {
+		return DoneSignal{}, false
+	}
+	if hs.UpdatedAt.IsZero() || !fresh {
+		return DoneSignal{}, false
+	}
+	// Already reached a conclusive scan for this Stop edge — don't re-read
+	// the transcript every poll for the rest of the freshness window. (Hook
+	// timestamps have second granularity; two Stop edges inside the same
+	// second could collide here, which degrades to the pre-#1186 waiting
+	// transition — turns take seconds, so this is acceptable.)
+	if resolved, ok := d.lastDoneScan[profile][id]; ok && !hs.UpdatedAt.After(resolved) {
+		return DoneSignal{}, false
+	}
+	if CompletionRecordExists(profile, id) {
+		return DoneSignal{}, false
+	}
+	cleanPath, ok := ValidateTranscriptPath(hs.TranscriptPath)
+	if !ok {
+		d.markDoneScanResolved(profile, id, hs.UpdatedAt)
+		return DoneSignal{}, false
+	}
+	sig, found, pending := ScanTranscriptTailForDone(cleanPath)
+	if pending {
+		return DoneSignal{}, false // record still unflushed: retry next poll
+	}
+	d.markDoneScanResolved(profile, id, hs.UpdatedAt)
+	return sig, found
+}
+
+func (d *TransitionDaemon) markDoneScanResolved(profile, id string, at time.Time) {
+	if d.lastDoneScan[profile] == nil {
+		d.lastDoneScan[profile] = map[string]time.Time{}
+	}
+	d.lastDoneScan[profile][id] = at
 }
 
 func (d *TransitionDaemon) getStorage(profile string) *Storage {
@@ -440,12 +545,13 @@ func readHookStatusFile(instanceID string) *HookStatus {
 		return nil
 	}
 	var raw struct {
-		Status      string `json:"status"`
-		SessionID   string `json:"session_id"`
-		Event       string `json:"event"`
-		Timestamp   int64  `json:"ts"`
-		DoneStatus  string `json:"done_status"`
-		DoneSummary string `json:"done_summary"`
+		Status         string `json:"status"`
+		SessionID      string `json:"session_id"`
+		Event          string `json:"event"`
+		Timestamp      int64  `json:"ts"`
+		DoneStatus     string `json:"done_status"`
+		DoneSummary    string `json:"done_summary"`
+		TranscriptPath string `json:"transcript_path"`
 	}
 	if err := json.Unmarshal(data, &raw); err != nil {
 		return nil
@@ -458,12 +564,13 @@ func readHookStatusFile(instanceID string) *HookStatus {
 		updatedAt = time.Unix(raw.Timestamp, 0)
 	}
 	return &HookStatus{
-		Status:      raw.Status,
-		SessionID:   raw.SessionID,
-		Event:       raw.Event,
-		UpdatedAt:   updatedAt,
-		DoneStatus:  raw.DoneStatus,
-		DoneSummary: raw.DoneSummary,
+		Status:         raw.Status,
+		SessionID:      raw.SessionID,
+		Event:          raw.Event,
+		UpdatedAt:      updatedAt,
+		DoneStatus:     raw.DoneStatus,
+		DoneSummary:    raw.DoneSummary,
+		TranscriptPath: raw.TranscriptPath,
 	}
 }
 
@@ -491,7 +598,16 @@ func (d *TransitionDaemon) emitHookTransitionCandidates(
 		}
 
 		to := normalizeStatusString(candidate.ToStatus)
-		if curr := normalizeStatusString(current[id]); curr != "" {
+		// A live TUI heartbeat routes `current` through DB status rows. A TUI
+		// that holds the heartbeat without refreshing its rows (orphaned tab,
+		// or sessions created after it loaded its list) leaves rows frozen at
+		// `running`, and letting that stale row override a FRESH terminal hook
+		// status drops the child's completion entirely — no transition event,
+		// no log line. The hook file is the child's own runtime asserting its
+		// state; only defer to the row when the row itself is notify-terminal
+		// (it may be MORE final, e.g. error). A non-terminal row never vetoes
+		// a fresh terminal hook status.
+		if curr := normalizeStatusString(current[id]); curr != "" && isNotifyTerminalStatus(curr) {
 			to = curr
 		}
 		if !isNotifyTerminalStatus(to) {
@@ -551,6 +667,30 @@ func terminalHookTransitionCandidate(tool string, hs *HookStatus) (hookTransitio
 		}
 	}
 	return hookTransitionCandidate{}, false
+}
+
+// isTerminalHookEvent reports whether a hook event name denotes session/thread
+// termination (issue #1349). It mirrors the allowlist in
+// cmd/agent-deck/hook_handler.go:isTerminalHookEvent (kept in the main package
+// for the hook writer); this copy lets the session package refuse to bind a
+// session id from a terminal payload. A SessionEnd record must never be a bind
+// source — by the time it fires the session is gone, so its session_id is at
+// best stale and at worst belongs to a different live session after id reuse.
+func isTerminalHookEvent(event string) bool {
+	norm := strings.ToLower(strings.TrimSpace(event))
+	if norm == "" {
+		return false
+	}
+	norm = strings.NewReplacer(".", "", "-", "", "_", "", "/", "", " ", "").Replace(norm)
+	switch norm {
+	case "sessionend", "sessionended", "sessionclose", "sessionclosed", "sessiondone", "sessionexit", "sessionexited",
+		"onsessionend",
+		"threadend", "threadended", "threadterminate", "threadterminated", "threadclose", "threadclosed",
+		"threaddone", "threadexit", "threadexited":
+		return true
+	default:
+		return false
+	}
 }
 
 func isCodexTerminalHookEvent(event string) bool {

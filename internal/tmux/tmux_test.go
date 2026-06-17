@@ -2302,10 +2302,11 @@ func TestSpikeDetectionWindowExpiry(t *testing.T) {
 }
 
 func TestSessionLogFile(t *testing.T) {
+	_, data := isolateTmuxXDGPaths(t)
 	sess := NewSession("test-log", t.TempDir())
 
-	logFile := filepath.ToSlash(sess.LogFile())
-	assert.Contains(t, logFile, ".agent-deck/logs/")
+	logFile := sess.LogFile()
+	assert.Equal(t, filepath.Join(data, "agent-deck", "logs", sess.Name+".log"), logFile)
 	assert.Contains(t, logFile, "agentdeck_test-log")
 	assert.True(t, strings.HasSuffix(logFile, ".log"))
 }

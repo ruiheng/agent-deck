@@ -373,14 +373,19 @@ func TestGroupNav_EvalHarness_RendersAndLandsOnRightSession(t *testing.T) {
 
 // ---------- First-launch nav-hint (discoverability) ----------
 
+func TestNavHint_RemoteSessionNotApplicable(t *testing.T) {
+	t.Skip("RemoteSession N/A: nav hint is global first-launch HOME/XDG sentinel state, not a row action or session-type branch")
+}
+
 // TestNavHint_ShownOnFirstLaunch_DismissedAfterKeypress exercises the
 // discoverability path end-to-end: sentinel absent -> hint shows -> first
 // keypress dismisses and leaves a sentinel file so it never shows again.
 func TestNavHint_ShownOnFirstLaunch_DismissedAfterKeypress(t *testing.T) {
 	// Isolate HOME and disable the test-profile bypass so the hint code runs.
 	tmpHome := t.TempDir()
-	origProfile := os.Getenv("AGENTDECK_PROFILE")
 	setUITestHome(t, tmpHome)
+	origProfile := os.Getenv("AGENTDECK_PROFILE")
+	os.Setenv("XDG_DATA_HOME", filepath.Join(tmpHome, ".local", "share"))
 	os.Unsetenv("AGENTDECK_PROFILE")
 	t.Cleanup(func() {
 		os.Setenv("AGENTDECK_PROFILE", origProfile)
@@ -405,7 +410,7 @@ func TestNavHint_ShownOnFirstLaunch_DismissedAfterKeypress(t *testing.T) {
 
 	// Sentinel should already be written (write-through on display, so the
 	// hint never repeats even if the TUI crashes before first keypress).
-	sentinel := filepath.Join(tmpHome, ".agent-deck", ".nav-hint-v1760-shown")
+	sentinel := filepath.Join(tmpHome, ".local", "share", "agent-deck", ".nav-hint-v1760-shown")
 	if _, err := os.Stat(sentinel); err != nil {
 		t.Fatalf("sentinel not written at %s: %v", sentinel, err)
 	}
@@ -425,18 +430,20 @@ func TestNavHint_ShownOnFirstLaunch_DismissedAfterKeypress(t *testing.T) {
 // on subsequent launches (sentinel already present).
 func TestNavHint_SkippedWhenSentinelExists(t *testing.T) {
 	tmpHome := t.TempDir()
-	origProfile := os.Getenv("AGENTDECK_PROFILE")
 	setUITestHome(t, tmpHome)
+	origProfile := os.Getenv("AGENTDECK_PROFILE")
+	os.Setenv("XDG_DATA_HOME", filepath.Join(tmpHome, ".local", "share"))
 	os.Unsetenv("AGENTDECK_PROFILE")
 	t.Cleanup(func() {
 		os.Setenv("AGENTDECK_PROFILE", origProfile)
 	})
 
 	// Pre-seed sentinel.
-	if err := os.MkdirAll(filepath.Join(tmpHome, ".agent-deck"), 0o755); err != nil {
+	sentinel := filepath.Join(tmpHome, ".local", "share", "agent-deck", ".nav-hint-v1760-shown")
+	if err := os.MkdirAll(filepath.Dir(sentinel), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(tmpHome, ".agent-deck", ".nav-hint-v1760-shown"), []byte("seeded\n"), 0o644); err != nil {
+	if err := os.WriteFile(sentinel, []byte("seeded\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 

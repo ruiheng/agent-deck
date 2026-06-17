@@ -1244,7 +1244,7 @@ func TestPersistence_CustomCommandResumesFromLatestJSONL(t *testing.T) {
 		olderUUID = "11111111-1111-1111-1111-111111111111"
 		newerUUID = "22222222-2222-2222-2222-222222222222"
 	)
-	projectDir := filepath.Join(home, ".claude", "projects", ConvertToClaudeDirName(inst.ProjectPath))
+	projectDir := claudeProjectDirForTest(t, filepath.Join(home, ".claude"), inst.ProjectPath)
 	if err := os.MkdirAll(projectDir, 0o755); err != nil {
 		t.Fatalf("mkdir projectDir: %v", err)
 	}
@@ -1321,7 +1321,7 @@ func TestPersistence_DiscoverLatestClaudeJSONL_Unit(t *testing.T) {
 
 	stage := func(t *testing.T, home, name string, mtime time.Time) {
 		t.Helper()
-		dir := filepath.Join(home, ".claude", "projects", ConvertToClaudeDirName(projectPath))
+		dir := claudeProjectDirForTest(t, filepath.Join(home, ".claude"), projectPath)
 		if err := os.MkdirAll(dir, 0o755); err != nil {
 			t.Fatalf("mkdir %s: %v", dir, err)
 		}
@@ -1474,7 +1474,7 @@ func TestEnsureClaudeSessionIDFromDisk_NewSessionSkipsDiscovery(t *testing.T) {
 	t.Setenv("CLAUDE_CONFIG_DIR", "")
 
 	// Stage a JSONL from an existing session in this directory.
-	dir := filepath.Join(home, ".claude", "projects", ConvertToClaudeDirName(projectPath))
+	dir := claudeProjectDirForTest(t, filepath.Join(home, ".claude"), projectPath)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatalf("mkdir: %v", err)
 	}
@@ -1514,7 +1514,7 @@ func TestEnsureClaudeSessionIDFromDisk_RestartDoesDiscovery(t *testing.T) {
 	t.Setenv("CLAUDE_CONFIG_DIR", "")
 
 	// Stage a JSONL from this session's previous run.
-	dir := filepath.Join(home, ".claude", "projects", ConvertToClaudeDirName(projectPath))
+	dir := claudeProjectDirForTest(t, filepath.Join(home, ".claude"), projectPath)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatalf("mkdir: %v", err)
 	}

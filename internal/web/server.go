@@ -107,6 +107,8 @@ type SessionMutator interface {
 	// CloseSession stops the session process while keeping its metadata
 	// in storage (TUI Shift+D — non-destructive close).
 	CloseSession(sessionID string) error
+	ArchiveSession(sessionID string) error
+	UnarchiveSession(sessionID string) error
 	ForkSession(sessionID string) (string, error)
 	// UndoDelete restores the most-recently deleted session if it was
 	// deleted within the implementation's undo window. Returns the
@@ -170,11 +172,17 @@ func NewServer(cfg Config) *Server {
 		menuData = NewSessionDataService(cfg.Profile)
 	}
 
+	mutationLimiter := rate.NewLimiter(rate.Limit(20), 40) // 20 req/s, burst 40
+	if cfg.Profile == "fixture" {
+		// Playwright e2e hammers mutations across 400+ serial cases on one
+		// process; production limits would flake skills/mcps/session specs.
+		mutationLimiter = rate.NewLimiter(rate.Inf, 0)
+	}
 	s := &Server{
 		cfg:              cfg,
 		menuData:         menuData,
 		menuSubscribers:  make(map[chan struct{}]struct{}),
-		mutationLimiter:  rate.NewLimiter(rate.Limit(20), 40), // 20 req/s, burst 40
+		mutationLimiter:  mutationLimiter,
 		hookStatusLoader: defaultLoadHookStatuses,
 	}
 	s.baseCtx, s.cancelBase = context.WithCancel(context.Background())
@@ -221,6 +229,7 @@ func NewServer(cfg Config) *Server {
 	// ServeMux precedence routes it cleanly instead of treating
 	// "undelete" as a sessionID.
 	mux.HandleFunc("POST /api/sessions/undelete", s.handleSessionUndelete)
+	mux.HandleFunc("/api/sessions/archived", s.handleArchivedSessions)
 	mux.HandleFunc("/api/sessions/", s.handleSessionByAction)
 	mux.HandleFunc("/api/groups", s.handleGroupsCollection)
 	mux.HandleFunc("/api/groups/", s.handleGroupByPath)
@@ -232,6 +241,13 @@ func NewServer(cfg Config) *Server {
 	mux.HandleFunc("/api/push/presence", s.handlePushPresence)
 	mux.HandleFunc("/events/menu", s.handleMenuEvents)
 	mux.HandleFunc("/ws/session/", s.handleSessionWS)
+
+	// Command Center (the embedded live fleet god-view — see
+	// conductor/agent-deck/COMMAND-CENTER-DESIGN.md). Two read endpoints and
+	// one write endpoint, all behind the existing authorize/CSRF/mutation gates.
+	mux.HandleFunc("/api/command-center/status", s.handleCommandCenterStatus)
+	mux.HandleFunc("/events/command-center", s.handleCommandCenterEvents)
+	mux.HandleFunc("POST /api/command-center/ask", s.handleCommandCenterAsk)
 
 	mux.HandleFunc("/api/costs/summary", s.handleCostsSummary)
 	mux.HandleFunc("/api/costs/daily", s.handleCostsDaily)

@@ -31,9 +31,13 @@
 package main
 
 import (
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -60,6 +64,97 @@ func mustExtractHandleSessionFork(t *testing.T) string {
 		t.Fatalf("could not extract handleSessionFork body — file layout changed?")
 	}
 	return body
+}
+
+func mustParseHandleSessionFork(t *testing.T) (*token.FileSet, *ast.FuncDecl) {
+	t.Helper()
+	src, err := os.ReadFile("session_cmd.go")
+	if err != nil {
+		t.Fatalf("read session_cmd.go: %v", err)
+	}
+	fset := token.NewFileSet()
+	file, err := parser.ParseFile(fset, "session_cmd.go", src, 0)
+	if err != nil {
+		t.Fatalf("parse session_cmd.go: %v", err)
+	}
+	for _, decl := range file.Decls {
+		fn, ok := decl.(*ast.FuncDecl)
+		if ok && fn.Name.Name == "handleSessionFork" {
+			return fset, fn
+		}
+	}
+	t.Fatal("handleSessionFork function not declared in session_cmd.go")
+	return nil, nil
+}
+
+func isSelectorCall(call *ast.CallExpr, receiver, method string) bool {
+	sel, ok := call.Fun.(*ast.SelectorExpr)
+	if !ok || sel.Sel.Name != method {
+		return false
+	}
+	ident, ok := sel.X.(*ast.Ident)
+	return ok && ident.Name == receiver
+}
+
+func isIdentArg(expr ast.Expr, name string) bool {
+	ident, ok := expr.(*ast.Ident)
+	return ok && ident.Name == name
+}
+
+func isBoolArg(expr ast.Expr, want bool) bool {
+	ident, ok := expr.(*ast.Ident)
+	if !ok {
+		return false
+	}
+	if want {
+		return ident.Name == "true"
+	}
+	return ident.Name == "false"
+}
+
+func stringLiteralArg(expr ast.Expr) (string, bool) {
+	lit, ok := expr.(*ast.BasicLit)
+	if !ok || lit.Kind != token.STRING {
+		return "", false
+	}
+	s, err := strconv.Unquote(lit.Value)
+	if err != nil {
+		return "", false
+	}
+	return s, true
+}
+
+func isRemoveWorktreeCleanupCall(call *ast.CallExpr) bool {
+	return isSelectorCall(call, "git", "RemoveWorktree") &&
+		len(call.Args) == 3 &&
+		isIdentArg(call.Args[0], "repoRoot") &&
+		isIdentArg(call.Args[1], "worktreePath") &&
+		isBoolArg(call.Args[2], true)
+}
+
+func isGitWorktreeRemoveExecCommand(call *ast.CallExpr) bool {
+	if !isSelectorCall(call, "exec", "Command") {
+		return false
+	}
+	if len(call.Args) == 0 {
+		return false
+	}
+	first, ok := stringLiteralArg(call.Args[0])
+	if !ok || first != "git" {
+		return false
+	}
+	previousWasWorktree := false
+	for _, arg := range call.Args[1:] {
+		value, ok := stringLiteralArg(arg)
+		if !ok {
+			continue
+		}
+		if previousWasWorktree && value == "remove" {
+			return true
+		}
+		previousWasWorktree = value == "worktree"
+	}
+	return false
 }
 
 func initGitRepoForForkStateTest(t *testing.T, dir string) {
@@ -323,6 +418,37 @@ func TestSessionFork_WithState_RefusesMidOpWithActionableHint_StructuralGuard(t 
 	}
 }
 
+// TestSessionFork_WithStateCleanupUsesGitRemoveWorktree pins N1: the
+// fork-with-state CLI cleanup path must use the centralized git.RemoveWorktree
+// helper instead of shelling out directly to `git worktree remove --force`.
+// The helper owns force-mode fallback cleanup, prune, and data-loss guards.
+func TestSessionFork_WithStateCleanupUsesGitRemoveWorktree(t *testing.T) {
+	fset, fn := mustParseHandleSessionFork(t)
+
+	foundRemoveWorktree := false
+	var rawWorktreeRemoveCalls []token.Position
+	ast.Inspect(fn.Body, func(n ast.Node) bool {
+		call, ok := n.(*ast.CallExpr)
+		if !ok {
+			return true
+		}
+		if isRemoveWorktreeCleanupCall(call) {
+			foundRemoveWorktree = true
+		}
+		if isGitWorktreeRemoveExecCommand(call) {
+			rawWorktreeRemoveCalls = append(rawWorktreeRemoveCalls, fset.Position(call.Pos()))
+		}
+		return true
+	})
+
+	if !foundRemoveWorktree {
+		t.Error("handleSessionFork materialization cleanup must call git.RemoveWorktree(repoRoot, worktreePath, true)")
+	}
+	for _, pos := range rawWorktreeRemoveCalls {
+		t.Errorf("handleSessionFork materialization cleanup must not shell out directly to git worktree remove; found raw call at %s", pos)
+	}
+}
+
 // TestSessionForkBeforeStartHook_NilInProduction is a belt-and-braces check:
 // the production binary must leave the hook nil so accidental test imports
 // can't inject behavior into a real fork. Tests that need the hook assign
@@ -355,5 +481,153 @@ func TestBranchCleanupHint_ShellQuotesPathAndBranch(t *testing.T) {
 	}
 	if !strings.Contains(got, "'feature/has space'") {
 		t.Errorf("expected branch name single-quoted, got %q", got)
+	}
+}
+
+func initJJRepoWithWIPForForkStateTest(t *testing.T, dir string) {
+	t.Helper()
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("mkdir repo: %v", err)
+	}
+	run := func(args ...string) {
+		cmd := exec.Command("jj", args...)
+		cmd.Dir = dir
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("jj %v: %v\n%s", args, err, out)
+		}
+	}
+	run("git", "init", "--colocate")
+	if err := os.WriteFile(filepath.Join(dir, "tracked.txt"), []byte("base\n"), 0o644); err != nil {
+		t.Fatalf("write tracked: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, ".gitignore"), []byte("ign/\n"), 0o644); err != nil {
+		t.Fatalf("write gitignore: %v", err)
+	}
+	run("describe", "-m", "base")
+	run("new", "-m", "wip")
+	// Uncommitted working-copy state to carry into the fork.
+	if err := os.WriteFile(filepath.Join(dir, "tracked.txt"), []byte("base\nWIP\n"), 0o644); err != nil {
+		t.Fatalf("write tracked wip: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(dir, "ign"), 0o755); err != nil {
+		t.Fatalf("mkdir ign: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "ign", "secret.env"), []byte("secret=1\n"), 0o644); err != nil {
+		t.Fatalf("write secret: %v", err)
+	}
+}
+
+// TestSessionFork_WithState_JujutsuMaterializesWorkspace is the end-to-end BUG-03
+// guard: `agent-deck session fork --with-state-and-gitignored` on a colocated jj
+// repo must create a new jj workspace whose working copy carries the parent's
+// uncommitted tracked + gitignored changes (no "git only" rejection).
+func TestSessionFork_WithState_JujutsuMaterializesWorkspace(t *testing.T) {
+	if _, err := exec.LookPath("jj"); err != nil {
+		t.Skip("jj not on PATH")
+	}
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	jjCfg := filepath.Join(t.TempDir(), "jjconfig.toml")
+	if err := os.WriteFile(jjCfg, []byte("[user]\nname = \"Test User\"\nemail = \"test@example.com\"\n"), 0o644); err != nil {
+		t.Fatalf("write jj config: %v", err)
+	}
+	t.Setenv("JJ_CONFIG", jjCfg)
+	session.ClearUserConfigCache()
+	t.Cleanup(session.ClearUserConfigCache)
+
+	configDir := filepath.Join(home, ".agent-deck")
+	if err := os.MkdirAll(configDir, 0o755); err != nil {
+		t.Fatalf("mkdir config dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(configDir, "config.toml"), []byte("[worktree]\nbranch_prefix = \"\"\ndefault_location = \"sibling\"\n"), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	session.ClearUserConfigCache()
+
+	repo := filepath.Join(home, "repo")
+	initJJRepoWithWIPForForkStateTest(t, repo)
+
+	parent := session.NewInstanceWithGroupAndTool("parent", repo, "grp", "claude")
+	parent.ClaudeSessionID = "00000000-0000-4000-8000-000000000001"
+	parent.ClaudeDetectedAt = time.Now()
+
+	profile := "fork_state_jj"
+	storage, err := session.NewStorageWithProfile(profile)
+	if err != nil {
+		t.Fatalf("NewStorageWithProfile: %v", err)
+	}
+	if err := storage.SaveWithGroups([]*session.Instance{parent}, session.NewGroupTreeWithGroups([]*session.Instance{parent}, nil)); err != nil {
+		t.Fatalf("SaveWithGroups: %v", err)
+	}
+
+	var capturedFork *session.Instance
+	oldHook := sessionForkBeforeStartHook
+	sessionForkBeforeStartHook = func(_ *session.Instance, forked *session.Instance, _ git.WorktreeStateOptions) {
+		capturedFork = forked
+	}
+	t.Cleanup(func() { sessionForkBeforeStartHook = oldHook })
+
+	handleSessionFork(profile, []string{
+		"parent",
+		"--with-state-and-gitignored",
+		"-w", "fork/jj-state",
+		"-t", "forked",
+	})
+
+	if capturedFork == nil {
+		t.Fatal("hook did not capture forked instance — jj with-state fork did not reach the pre-start hook")
+	}
+	ws := capturedFork.WorktreePath
+	if ws == "" {
+		t.Fatal("forked instance has no WorktreePath")
+	}
+	got, err := os.ReadFile(filepath.Join(ws, "tracked.txt"))
+	if err != nil {
+		t.Fatalf("read forked tracked.txt: %v", err)
+	}
+	if string(got) != "base\nWIP\n" {
+		t.Fatalf("forked tracked.txt = %q, want parent WIP carried", string(got))
+	}
+	if _, err := os.Stat(filepath.Join(ws, "ign", "secret.env")); err != nil {
+		t.Fatalf("gitignored secret.env must carry with --with-state-and-gitignored: %v", err)
+	}
+}
+
+// TestSessionFork_WithState_RoutesJujutsu pins BUG-03: the CLI must no longer
+// reject --with-state outright on a jujutsu backend, and must route it through
+// the jj-native materialization (parity with the TUI's forkWithStateWorkspaceJJ).
+func TestSessionFork_WithState_RoutesJujutsu(t *testing.T) {
+	body := mustExtractHandleSessionFork(t)
+	folded := foldSpaces(body)
+
+	if strings.Contains(folded, "--with-state is only supported for git repositories") {
+		t.Error("with-state must no longer be rejected outright on non-git backends; jujutsu is supported (BUG-03)")
+	}
+	for _, m := range []string{
+		"jujutsu.WorkingCopyParentRevision(inst.ProjectPath)",
+		"jujutsu.CreateWorkspaceAtRevision(repoRoot, worktreePath, wtBranch",
+		"jujutsu.MaterializeWipFromParent(inst.ProjectPath, worktreePath, *withStateGitignored)",
+	} {
+		if !strings.Contains(folded, m) {
+			t.Errorf("handleSessionFork must wire jj with-state materialization: missing %q", m)
+		}
+	}
+	// The git path's markers must still be present (parity, not replacement).
+	if !strings.Contains(folded, "git.MaterializeWipFromParent(inst.ProjectPath, worktreePath, *withStateGitignored)") {
+		t.Error("git with-state materialization must remain for git backends")
+	}
+}
+
+func TestSessionFork_AdmitsOpenCode(t *testing.T) {
+	src, err := os.ReadFile("session_cmd.go")
+	if err != nil {
+		t.Fatalf("read session_cmd.go: %v", err)
+	}
+	s := string(src)
+	if !strings.Contains(s, `isOpenCodeFork := inst.Tool == "opencode"`) {
+		t.Fatal("fork gate must recognize opencode")
+	}
+	if !strings.Contains(s, "CreateForkedInstanceForTool") {
+		t.Fatal("fork dispatch must route through the shared cross-tool create method")
 	}
 }

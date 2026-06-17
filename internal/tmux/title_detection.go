@@ -193,15 +193,26 @@ func RefreshPaneInfoCache() {
 // GetCachedPaneInfo returns cached pane info for a session.
 // Returns (info, true) if found and cache is fresh, (zero, false) otherwise.
 func GetCachedPaneInfo(sessionName string) (PaneInfo, bool) {
+	info, _, ok := GetCachedPaneInfoSnapshot(sessionName)
+	return info, ok
+}
+
+// GetCachedPaneInfoSnapshot is GetCachedPaneInfo plus the time the cache
+// snapshot was taken. Callers that promote state based on pane info (e.g. the
+// shell foreground running indicator) use the snapshot time to reject entries
+// that predate an event of interest — a pane snapshot taken before a session
+// was (re)started describes the previous same-name session, not the current
+// one. The same 4s freshness window applies (2 refresh ticks).
+func GetCachedPaneInfoSnapshot(sessionName string) (PaneInfo, time.Time, bool) {
 	paneCacheMu.RLock()
 	defer paneCacheMu.RUnlock()
 
 	if paneCacheData == nil || time.Since(paneCacheTime) > 4*time.Second {
-		return PaneInfo{}, false
+		return PaneInfo{}, time.Time{}, false
 	}
 
 	info, ok := paneCacheData[sessionName]
-	return info, ok
+	return info, paneCacheTime, ok
 }
 
 // AnalyzePaneTitle determines session state from the pane title.
@@ -229,6 +240,32 @@ func AnalyzePaneTitle(title, _ string) TitleState {
 	}
 
 	return TitleStateUnknown
+}
+
+// CleanPaneTitle strips spinner/done-marker characters from a tmux pane title
+// and returns the task description. Returns "" for empty or generic tool titles
+// ("Claude Code", "Gemini CLI", "Codex CLI").
+//
+// This is the canonical implementation shared by internal/ui (TUI) and
+// internal/web (web server). Both packages import internal/tmux, so placing
+// the logic here avoids a circular dependency.
+func CleanPaneTitle(title string) string {
+	if title == "" {
+		return ""
+	}
+	// Strip known spinner/done-marker runes (·✳✽✶✻✢ and braille ⠋⠙⠹…).
+	cleaned := StripSpinnerRunes(title)
+	// Also strip any remaining Braille characters (U+2800-28FF) that Claude Code
+	// may use as spinner frames beyond the canonical set.
+	cleaned = strings.TrimLeftFunc(cleaned, func(r rune) bool {
+		return r >= 0x2800 && r <= 0x28FF
+	})
+	cleaned = strings.TrimSpace(cleaned)
+	switch cleaned {
+	case "", "Claude Code", "Gemini CLI", "Codex CLI":
+		return ""
+	}
+	return cleaned
 }
 
 // containsBrailleChar returns true if the string contains any Unicode Braille

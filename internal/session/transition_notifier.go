@@ -45,6 +45,14 @@ type TransitionNotificationEvent struct {
 	ToStatus       string    `json:"to_status"`
 	Timestamp      time.Time `json:"timestamp"`
 
+	// Substate is the additive Honest-Status-v2 refinement of ToStatus
+	// (model-unavailable, auth-401, idle-at-empty-prompt, running). It makes
+	// each status-transition event structured and substate-bearing so fleet
+	// telemetry (a future operational-KG sink) can distinguish a dead-model
+	// no-op loop from a genuinely-running session. Empty when no refinement
+	// applies. Observability hook only — does not affect delivery/dedup.
+	Substate string `json:"substate,omitempty"`
+
 	// LastOutputHash is a cheap stable signal (e.g. SHA-1 of the last N
 	// bytes of the child's tmux pane at transition time) used by the
 	// notifier's #1142 dedup to suppress repeated [EVENT] notifications
@@ -598,35 +606,35 @@ func (n *TransitionNotifier) logMissed(event TransitionNotificationEvent, reason
 // --- paths -------------------------------------------------------------------
 
 func transitionNotifyStatePath() string {
-	dir, err := GetAgentDeckDir()
+	path, err := runtimeDataPath("transition-notify-state.json")
 	if err != nil {
-		return filepath.Join(os.TempDir(), ".agent-deck", "runtime", "transition-notify-state.json")
+		return tempAgentDeckPath("runtime", "transition-notify-state.json")
 	}
-	return filepath.Join(dir, "runtime", "transition-notify-state.json")
+	return path
 }
 
 func transitionNotifyLogPath() string {
-	dir, err := GetAgentDeckDir()
+	path, err := logDataPath("transition-notifier.log")
 	if err != nil {
-		return filepath.Join(os.TempDir(), ".agent-deck", "logs", "transition-notifier.log")
+		return tempAgentDeckPath("logs", "transition-notifier.log")
 	}
-	return filepath.Join(dir, "logs", "transition-notifier.log")
+	return path
 }
 
 func transitionNotifierMissedPath() string {
-	dir, err := GetAgentDeckDir()
+	path, err := logDataPath("notifier-missed.log")
 	if err != nil {
-		return filepath.Join(os.TempDir(), ".agent-deck", "logs", "notifier-missed.log")
+		return tempAgentDeckPath("logs", "notifier-missed.log")
 	}
-	return filepath.Join(dir, "logs", "notifier-missed.log")
+	return path
 }
 
 func transitionNotifierOrphanLogPath() string {
-	dir, err := GetAgentDeckDir()
+	path, err := logDataPath("notifier-orphans.log")
 	if err != nil {
-		return filepath.Join(os.TempDir(), ".agent-deck", "logs", "notifier-orphans.log")
+		return tempAgentDeckPath("logs", "notifier-orphans.log")
 	}
-	return filepath.Join(dir, "logs", "notifier-orphans.log")
+	return path
 }
 
 // --- orphan WARN -------------------------------------------------------------

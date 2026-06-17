@@ -56,24 +56,32 @@ type MenuGroup struct {
 
 // MenuSession contains metadata for a session item.
 type MenuSession struct {
-	ID              string         `json:"id"`
-	Title           string         `json:"title"`
-	Tool            string         `json:"tool"`
-	ModelID         string         `json:"modelId,omitempty"`
-	Model           string         `json:"model,omitempty"`
-	ModelVersion    string         `json:"modelVersion,omitempty"`
-	Status          session.Status `json:"status"`
-	GroupPath       string         `json:"groupPath"`
-	ProjectPath     string         `json:"projectPath"`
-	ParentSessionID string         `json:"parentSessionId,omitempty"`
-	Order           int            `json:"order"`
-	TmuxSession     string         `json:"tmuxSession,omitempty"`
+	ID           string         `json:"id"`
+	Title        string         `json:"title"`
+	Tool         string         `json:"tool"`
+	ModelID      string         `json:"modelId,omitempty"`
+	Model        string         `json:"model,omitempty"`
+	ModelVersion string         `json:"modelVersion,omitempty"`
+	CanFork      bool           `json:"canFork"`
+	Status       session.Status `json:"status"`
+	// Substate is the additive Honest-Status-v2 refinement of Status
+	// (e.g. "model-unavailable", "auth-401", "idle-at-empty-prompt"). It
+	// explains WHY a session is in its coarse status so consumers like the
+	// Command Center can surface model-unavailable/401 distinctly instead of
+	// hiding them as plain "running". Empty when there is no refinement.
+	Substate        string `json:"substate,omitempty"`
+	GroupPath       string `json:"groupPath"`
+	ProjectPath     string `json:"projectPath"`
+	ParentSessionID string `json:"parentSessionId,omitempty"`
+	Order           int    `json:"order"`
+	TmuxSession     string `json:"tmuxSession,omitempty"`
 	// TmuxSocketName is the tmux -L selector captured at session creation
 	// (Instance.TmuxSocketName). Surfaced so the web PTY bridge can reach
 	// sessions running on an isolated socket (issue #687, v1.7.50).
 	TmuxSocketName string    `json:"tmuxSocketName,omitempty"`
 	CreatedAt      time.Time `json:"createdAt"`
 	LastAccessedAt time.Time `json:"lastAccessedAt,omitempty"`
+	ArchivedAt     time.Time `json:"archivedAt,omitempty"`
 
 	// Fields below mirror *session.Instance state visible in the TUI
 	// EditSessionDialog. Promoted from MISSING in tests/web/PARITY_MATRIX.md
@@ -186,7 +194,34 @@ func (s *SessionDataService) LoadMenuSnapshot() (*MenuSnapshot, error) {
 		s.refreshStatuses(instances)
 	}
 
-	return BuildMenuSnapshot(s.profile, instances, groupsData, s.now()), nil
+	active := session.FilterInstancesByArchive(instances, false)
+	return BuildMenuSnapshot(s.profile, active, groupsData, s.now()), nil
+}
+
+// LoadArchivedMenuSnapshot returns a menu containing only archived sessions.
+func (s *SessionDataService) LoadArchivedMenuSnapshot() (*MenuSnapshot, error) {
+	if s == nil {
+		return nil, fmt.Errorf("session data service is nil")
+	}
+	if s.openStorage == nil {
+		return nil, fmt.Errorf("storage opener is not configured")
+	}
+	if s.now == nil {
+		s.now = time.Now
+	}
+
+	storage, err := s.openStorage(s.profile)
+	if err != nil {
+		return nil, fmt.Errorf("open storage for profile %q: %w", s.profile, err)
+	}
+	defer func() { _ = storage.Close() }()
+
+	instances, groupsData, err := storage.LoadWithGroups()
+	if err != nil {
+		return nil, fmt.Errorf("load sessions for profile %q: %w", s.profile, err)
+	}
+	archived := session.FilterInstancesByArchive(instances, true)
+	return BuildMenuSnapshot(s.profile, archived, groupsData, s.now()), nil
 }
 
 func toMenuSession(inst *session.Instance) *MenuSession {
@@ -203,7 +238,9 @@ func toMenuSession(inst *session.Instance) *MenuSession {
 		ModelID:            modelInfo.ModelID,
 		Model:              modelInfo.Model,
 		ModelVersion:       modelInfo.Version,
+		CanFork:            inst.CanFork(),
 		Status:             inst.GetStatusThreadSafe(),
+		Substate:           string(inst.CachedSubstate()),
 		GroupPath:          inst.GroupPath,
 		ProjectPath:        inst.ProjectPath,
 		ParentSessionID:    inst.ParentSessionID,
@@ -212,6 +249,7 @@ func toMenuSession(inst *session.Instance) *MenuSession {
 		TmuxSocketName:     inst.TmuxSocketName,
 		CreatedAt:          inst.CreatedAt,
 		LastAccessedAt:     inst.LastAccessedAt,
+		ArchivedAt:         inst.ArchivedAt,
 		IsConductor:        inst.IsConductor,
 		ClaudeSessionID:    inst.ClaudeSessionID,
 		GeminiSessionID:    inst.GeminiSessionID,

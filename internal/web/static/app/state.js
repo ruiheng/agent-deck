@@ -2,9 +2,13 @@
 // Vanilla JS imports these and sets .value on SSE updates.
 // Preact components import these and read .value reactively.
 import { signal } from '@preact/signals'
+import { apiFetch } from './api.js'
 
 // Session data from SSE snapshot
 export const sessionsSignal = signal([])
+
+// Archived sessions from GET /api/sessions/archived
+export const archivedSessionsSignal = signal([])
 
 // Currently selected session ID
 export const selectedIdSignal = signal(null)
@@ -139,6 +143,18 @@ export const toastHistoryOpenSignal = signal(false)
 // /api/settings and assigns the real value.
 export const mutationsEnabledSignal = signal(true)
 
+// show_only_installed_tools filter (issue #1259), hydrated from /api/settings
+// alongside webMutations. toolFilterSignal: the flag is on. visibleToolsSignal:
+// the set of tool names that resolved on PATH; the new-session dialog intersects
+// its static tool list against this when the filter is on. toolFilterFallback:
+// nothing but shell resolved, so the dialog shows all tools plus a hint. Defaults
+// keep the dialog showing every tool until the real values arrive.
+export const toolFilterSignal = signal(false)
+export const visibleToolsSignal = signal([])
+export const toolFilterFallbackSignal = signal(false)
+export const hiddenToolsSignal = signal([])
+export const pickerToolsSignal = signal([])
+
 // POL-1 (Phase 9, plan 01): sidebar load state for skeleton render gate.
 // Initialized false; flipped to true on the first /api/menu response OR the
 // first SSE `menu` snapshot in main.js. Never flips back — once the sidebar
@@ -157,3 +173,19 @@ export const profilesSignal = signal(null)
 // this for live CPU / memory / network indicators. Defaults to null until
 // the first poll lands; consumers handle the null case.
 export const systemStatsSignal = signal(null)
+
+// Command Center snapshot from the /events/command-center SSE feed (the
+// embedded live fleet god-view — see COMMAND-CENTER-DESIGN.md). Shape:
+// { profile, generatedAt, conductors[], totals, decisionsWaiting[],
+//   recentlyCompleted[], askTargets[] }. Defaults to null until the first
+// SSE snapshot lands; the pane handles the null case with a skeleton.
+export const commandCenterSignal = signal(null)
+
+export async function loadArchivedSessions() {
+  try {
+    const data = await apiFetch('GET', '/api/sessions/archived')
+    archivedSessionsSignal.value = data.sessions || []
+  } catch (_) {
+    archivedSessionsSignal.value = []
+  }
+}

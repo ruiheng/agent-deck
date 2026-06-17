@@ -101,16 +101,13 @@ func TestBuildBashExportPrefix_ConfigDirIsShellQuoted(t *testing.T) {
 	_ = os.Setenv("HOME", tmpHome)
 	_ = os.Unsetenv("CLAUDE_CONFIG_DIR")
 	_ = os.Unsetenv("AGENTDECK_PROFILE")
+	isolateConfigHomeXDG(t)
 
-	agentDeckDir := filepath.Join(tmpHome, ".agent-deck")
-	if err := os.MkdirAll(agentDeckDir, 0o700); err != nil {
-		t.Fatalf("mkdir: %v", err)
-	}
 	// Explicit config_dir whose path contains a shell metacharacter; the
 	// installer/user could legally have such a directory. Without quoting the
 	// `;` (or `$()`) injects into the bash -c payload.
-	cfg := "[claude]\nconfig_dir = \"~/.claude;touch_pwned\"\n"
-	if err := os.WriteFile(filepath.Join(agentDeckDir, "config.toml"), []byte(cfg), 0o600); err != nil {
+	cfg := &UserConfig{Claude: ClaudeSettings{ConfigDir: "~/.claude;touch_pwned"}}
+	if err := SaveUserConfig(cfg); err != nil {
 		t.Fatalf("write config: %v", err)
 	}
 	ClearUserConfigCache()

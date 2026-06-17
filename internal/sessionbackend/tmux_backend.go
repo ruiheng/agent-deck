@@ -42,6 +42,10 @@ func (b *TmuxBackend) Attach(ctx context.Context, detachByte ...byte) error {
 	return b.session.Attach(ctx, detachByte...)
 }
 
+func (b *TmuxBackend) AttachWithOptions(ctx context.Context, opts tmux.AttachOptions) (tmux.SwitchIntent, error) {
+	return b.session.AttachWithOptions(ctx, opts)
+}
+
 func (b *TmuxBackend) AttachWindow(ctx context.Context, windowIndex int, detachByte ...byte) error {
 	return b.session.AttachWindow(ctx, windowIndex, detachByte...)
 }

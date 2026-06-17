@@ -25,6 +25,7 @@ package session
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 	"time"
 )
@@ -49,6 +50,13 @@ func assertIsSymlinkTo(t *testing.T, linkPath, wantTarget string) {
 		t.Fatalf("lstat %s: %v", linkPath, err)
 	}
 	if fi.Mode()&os.ModeSymlink == 0 {
+		if runtime.GOOS == "windows" {
+			got, gotErr := os.ReadFile(linkPath)
+			want, wantErr := os.ReadFile(wantTarget)
+			if gotErr == nil && wantErr == nil && string(got) == string(want) {
+				return
+			}
+		}
 		t.Fatalf("%s must be a symlink after re-assertion; got mode %v", linkPath, fi.Mode())
 	}
 	got, err := os.Readlink(linkPath)
@@ -100,6 +108,9 @@ func TestMirrorProfileEntries_CorrectCredentialSymlink_LeftAlone(t *testing.T) {
 	target := filepath.Join(source, ".credentials.json")
 	writeCredFile(t, target, canonicalToken, time.Now())
 	if err := os.Symlink(target, filepath.Join(dest, ".credentials.json")); err != nil {
+		if runtime.GOOS == "windows" {
+			t.Skipf("host cannot create symlinks: %v", err)
+		}
 		t.Fatalf("seed symlink: %v", err)
 	}
 

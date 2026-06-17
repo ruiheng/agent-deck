@@ -19,11 +19,58 @@ const (
 	windowsControlPipeResumeDelay  = 300 * time.Millisecond
 )
 
+// SwitchIntent reports whether an attach loop requested a session switch.
+// The native Windows attach path delegates input to psmux and currently only
+// supports normal detach, so it always returns SwitchNone.
+type SwitchIntent int
+
+const (
+	SwitchNone SwitchIntent = iota
+	SwitchRequested
+)
+
+// AttachOptions configures AttachWithOptions. SwitchKeyByte is accepted for API
+// parity with the Unix PTY attach path, but native Windows attach cannot inspect
+// the input stream while psmux owns the console.
+type AttachOptions struct {
+	DetachByte    byte
+	SwitchKeyByte byte
+}
+
 // IndexDetachKey returns the index of a control-key sequence in data, or -1 if
 // not found. On Windows we currently only need raw-byte detection for compile-
 // time consumers; the native attach path is implemented separately.
 func IndexDetachKey(data []byte, detachByte byte) int {
-	return bytes.IndexByte(data, detachByte)
+	if idx := bytes.IndexByte(data, detachByte); idx >= 0 {
+		return idx
+	}
+	var keyCode byte
+	if detachByte >= 1 && detachByte <= 26 {
+		keyCode = detachByte + 96
+	} else if detachByte >= 28 && detachByte <= 31 {
+		keyCode = detachByte + 64
+	}
+	if keyCode > 0 {
+		modSeq := fmt.Sprintf("\x1b[27;5;%d~", keyCode)
+		if idx := bytes.Index(data, []byte(modSeq)); idx >= 0 {
+			return idx
+		}
+		csiSeq := fmt.Sprintf("\x1b[%d;5u", keyCode)
+		if idx := bytes.Index(data, []byte(csiSeq)); idx >= 0 {
+			return idx
+		}
+	}
+	return -1
+}
+
+func indexSwitchKey(data []byte, opts AttachOptions) (int, SwitchIntent) {
+	if opts.SwitchKeyByte == 0 {
+		return -1, SwitchNone
+	}
+	if idx := IndexDetachKey(data, opts.SwitchKeyByte); idx >= 0 {
+		return idx, SwitchRequested
+	}
+	return -1, SwitchNone
 }
 
 // IndexCtrlQ returns the index of a Ctrl+Q sequence in data, or -1 if not found.
@@ -162,6 +209,10 @@ func (s *Session) Attach(ctx context.Context, detachByte ...byte) error {
 		return fmt.Errorf("attach command failed: %w", err)
 	}
 	return nil
+}
+
+func (s *Session) AttachWithOptions(ctx context.Context, opts AttachOptions) (SwitchIntent, error) {
+	return SwitchNone, s.Attach(ctx, opts.DetachByte)
 }
 
 // AttachWindow attaches to a specific window within this session.

@@ -66,6 +66,7 @@ func TestEnsureWorkerScratchConfigDir_DisablesTelegramPlugin(t *testing.T) {
 
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("XDG_DATA_HOME", filepath.Join(home, "xdg-data"))
 
 	inst := &Instance{
 		ID:    "00000000-0000-0000-0000-000000000001",
@@ -164,6 +165,7 @@ func TestEnsureWorkerScratchConfigDir_ChannelOwner_AlwaysGetsScratch(t *testing.
 
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("XDG_DATA_HOME", filepath.Join(home, "xdg-data"))
 	t.Setenv("CLAUDE_CONFIG_DIR", source)
 
 	inst := &Instance{
@@ -216,6 +218,7 @@ func TestEnsureWorkerScratchConfigDir_ChannelOwner_GlobalAntipattern_GetsScratch
 
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("XDG_DATA_HOME", filepath.Join(home, "xdg-data"))
 	t.Setenv("CLAUDE_CONFIG_DIR", source)
 
 	inst := &Instance{
@@ -270,6 +273,9 @@ func TestEnsureWorkerScratchConfigDir_NonClaudeToolSkipped(t *testing.T) {
 // setup. The scratch settings.json always pins it false.
 func TestEnsureWorkerScratchConfigDir_TelegramAbsentStillPinsDisabled(t *testing.T) {
 	withTelegramConductorPresent(t)
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_DATA_HOME", filepath.Join(home, "xdg-data"))
 	source := t.TempDir()
 	_ = os.WriteFile(filepath.Join(source, "settings.json"), []byte(`{"enabledPlugins":{"superpowers@claude-plugins-official":true}}`), 0o644)
 
@@ -328,6 +334,9 @@ func TestMirrorProfileEntries_RefreshesCopiedEntriesOnReuse(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dest, "removed.txt"), []byte("removed file"), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	if err := os.WriteFile(filepath.Join(dest, scratchCopiedMirrorsMarker), []byte("commands\nprofile.txt\nremoved\nremoved.txt\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 
 	if err := mirrorProfileEntries(dest, source); err != nil {
 		t.Fatalf("mirrorProfileEntries: %v", err)
@@ -359,6 +368,7 @@ func TestBuildClaudeCommand_UsesWorkerScratchConfigDir(t *testing.T) {
 	withTelegramConductorPresent(t)
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("XDG_DATA_HOME", filepath.Join(home, "xdg-data"))
 	profile := filepath.Join(home, ".claude")
 	if err := os.MkdirAll(profile, 0o755); err != nil {
 		t.Fatal(err)

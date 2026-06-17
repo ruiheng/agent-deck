@@ -319,7 +319,7 @@ func TestWriteCostEvent_AllowsCustomClaudeConfigDir(t *testing.T) {
 	payload := []byte(fmt.Sprintf(`{"hook_event_name":"Stop","transcript_path":%q}`, transcriptPath))
 	writeCostEvent("inst-custom-claude-dir", payload)
 
-	entries, err := os.ReadDir(filepath.Join(tmpHome, ".agent-deck", "cost-events"))
+	entries, err := os.ReadDir(getCostEventsDir())
 	if err != nil {
 		t.Fatalf("read cost events dir: %v", err)
 	}

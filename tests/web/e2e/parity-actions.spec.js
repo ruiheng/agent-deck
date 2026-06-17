@@ -18,7 +18,7 @@ const MATRIX = loadMatrix()
 
 // Pinned row counts. If the matrix grows or shrinks, these MUST be updated
 // in the same PR — the failure is the point.
-const EXPECTED_ACTION_ROWS = 48
+const EXPECTED_ACTION_ROWS = 51
 // Probeable = MISSING rows that inferMissingProbe() maps to a URL. Decremented
 // as endpoints land and their matrix rows flip MISSING → Present:
 //   15 (PR-A #804) → 9 (#1124 skills+MCP, 6 closed) → 7 (#1129 Close + Undo
@@ -258,6 +258,12 @@ test.describe('parity: settings + degraded-mode endpoints', () => {
       webMutations: true,
     })
     expect(body.version).toBeTruthy()
+    expect(Array.isArray(body.hiddenTools)).toBe(true)
+    expect(Array.isArray(body.pickerTools)).toBe(true)
+    expect(body.pickerTools).toContain('shell')
+    for (const hidden of body.hiddenTools) {
+      expect(body.pickerTools).not.toContain(hidden)
+    }
   })
 
   // Costs + push handlers are wired and reachable but the in-memory fixture

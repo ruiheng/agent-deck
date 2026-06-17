@@ -7,9 +7,10 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
-	"time"
 
 	"gopkg.in/yaml.v3"
+
+	"github.com/asheshgoplani/agent-deck/internal/atomicfile"
 )
 
 // hermesConfigMu serializes mutations to a given Hermes config.yaml within
@@ -64,16 +65,6 @@ func acquireHermesConfigLock(configPath string) (*hermesConfigLock, error) {
 		return nil, fmt.Errorf("flock hermes config: %w", err)
 	}
 	return &hermesConfigLock{inProc: m, file: f}, nil
-}
-
-// uniqueHermesConfigTmpPath returns a per-writer temp filename so two
-// concurrent writers can't rename-clobber each other's in-flight payload even
-// if the locking layer above is bypassed for any reason. PID + nanosecond
-// timestamp is sufficient: only one writer in any given process can be at this
-// point at a time (we hold the in-process mutex), and nanosecond timestamps
-// don't collide across processes within a 1ns window in practice.
-func uniqueHermesConfigTmpPath(target string) string {
-	return fmt.Sprintf("%s.%d.%d.tmp", target, os.Getpid(), time.Now().UnixNano())
 }
 
 // agentDeckHermesHookCommand is the exact command string we write into
@@ -155,13 +146,8 @@ func InjectHermesHooks(configDir string) (bool, error) {
 		return false, fmt.Errorf("marshal config.yaml: %w", err)
 	}
 
-	tmpPath := uniqueHermesConfigTmpPath(configPath)
-	if err := os.WriteFile(tmpPath, out, 0600); err != nil {
-		return false, fmt.Errorf("write config.yaml tmp: %w", err)
-	}
-	if err := os.Rename(tmpPath, configPath); err != nil {
-		_ = os.Remove(tmpPath)
-		return false, fmt.Errorf("rename config.yaml: %w", err)
+	if err := atomicfile.WriteFile(configPath, out, 0600); err != nil {
+		return false, fmt.Errorf("write config.yaml: %w", err)
 	}
 
 	sessionLog.Info("hermes_hooks_installed", slog.String("config_dir", configDir))
@@ -263,13 +249,8 @@ func RemoveHermesHooks(configDir string) (bool, error) {
 		return false, fmt.Errorf("marshal config.yaml: %w", err)
 	}
 
-	tmpPath := uniqueHermesConfigTmpPath(configPath)
-	if err := os.WriteFile(tmpPath, out, 0600); err != nil {
-		return false, fmt.Errorf("write config.yaml tmp: %w", err)
-	}
-	if err := os.Rename(tmpPath, configPath); err != nil {
-		_ = os.Remove(tmpPath)
-		return false, fmt.Errorf("rename config.yaml: %w", err)
+	if err := atomicfile.WriteFile(configPath, out, 0600); err != nil {
+		return false, fmt.Errorf("write config.yaml: %w", err)
 	}
 
 	sessionLog.Info("hermes_hooks_removed", slog.String("config_dir", configDir))

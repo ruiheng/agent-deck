@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -12,10 +13,51 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
+
+	"github.com/asheshgoplani/agent-deck/internal/safeio"
 
 	_ "modernc.org/sqlite"
 )
+
+// ErrRefusingEmptySweep is returned by SaveInstances when it is asked to
+// persist an EMPTY instance set while the instances table still holds rows.
+//
+// S1 data-loss safeguard (added after the 2026-06-04 incident, the third of
+// its class): SaveInstances' DELETE+re-insert sweep used to run an
+// unconditional `DELETE FROM instances` for an empty payload, so a stray
+// SaveInstances([]) wiped the live profile index. Refusing the destructive
+// empty sweep turns silent data loss into a loud, recoverable error. Callers
+// that genuinely intend to empty the table must use ClearAllInstances.
+var ErrRefusingEmptySweep = errors.New("statedb: refusing to wipe populated instances table with an empty SaveInstances payload (use ClearAllInstances to intentionally clear)")
+
+// backupDBFile copies the live SQLite database file to "<path>.bak" so a
+// destructive sweep is recoverable (S2 data-loss safeguard, 2026-06-04
+// incident). It is best-effort: a failed backup must NOT abort the save (the
+// save is the operation the caller actually asked for; the backup is an
+// insurance copy). To capture a consistent snapshot we checkpoint the WAL into
+// the main file first, then copy. Errors are returned so callers can log them,
+// but the only current caller intentionally ignores the error.
+//
+// No-op (nil) when path is empty (in-memory DB) — there is no file to copy.
+func (s *StateDB) backupDBFile() error {
+	if s.path == "" {
+		return nil
+	}
+	// Fold the WAL back into the main db file so the .bak is self-contained and
+	// doesn't depend on a sidecar -wal that the next write will overwrite.
+	_, _ = s.db.Exec("PRAGMA wal_checkpoint(TRUNCATE)")
+
+	// safeio.Backup performs the shared read → temp-write → rename copy (no torn
+	// .bak, 0600 to keep the snapshot as private as the original). The
+	// sqlite-specific WAL checkpoint above stays here; the copy itself is the
+	// generic primitive. A missing source returns ("", nil) — a benign no-op.
+	if _, err := safeio.Backup(s.path); err != nil {
+		return err
+	}
+	return nil
+}
 
 // withBusyRetry runs op with linear backoff (10ms, 20ms, 30ms, 40ms, 50ms;
 // ~150ms total) when op fails with SQLITE_BUSY. Non-BUSY errors are returned
@@ -54,7 +96,7 @@ func withBusyRetry(op func() error) error {
 
 // SchemaVersion tracks the current database schema version.
 // Bump this when adding migrations.
-const SchemaVersion = 9
+const SchemaVersion = 13
 
 // StateDB wraps a SQLite database for session/group persistence.
 // Thread-safe for concurrent use from multiple goroutines within one process.
@@ -62,7 +104,21 @@ const SchemaVersion = 9
 type StateDB struct {
 	db  *sql.DB
 	pid int
+	// path is the on-disk path of the SQLite database file. Retained so
+	// destructive write paths can snapshot the file to "<path>.bak" before a
+	// large DELETE+re-insert sweep (S2 data-loss safeguard, 2026-06-04
+	// incident). Empty for in-memory databases (no file to back up).
+	path string
 }
+
+// backupRowDropThreshold is the minimum number of rows a single
+// saveInstancesOnce sweep must DELETE before it is worth snapshotting the DB
+// file to "<path>.bak". A sweep that drops one or two rows is routine session
+// churn (a session was removed/renamed); backing the file up on every such save
+// would thrash the disk. The 2026-06-04 incident wiped the entire populated
+// table at once, so a meaningful-drop gate catches the catastrophic case while
+// staying quiet during normal operation.
+const backupRowDropThreshold = 3
 
 // InstanceRow represents a session row in the database.
 type InstanceRow struct {
@@ -86,16 +142,56 @@ type InstanceRow struct {
 	// after upgrade.
 	TmuxSocketName string
 	// TitleLocked blocks Claude session-name sync into Title (v1.7.52+, issue #697).
-	TitleLocked    bool
-	WorktreePath   string
-	WorktreeRepo   string
-	WorktreeBranch string
+	TitleLocked bool
+	// AutoName marks Title as a machine-generated quick-session handle (v12).
+	// AutoNameDescription holds the last captured Claude task description so an
+	// auto-named session can show its meaningful name on reopen even when
+	// stopped/idle (no live pane title). Both default to zero for legacy rows.
+	AutoName            bool
+	AutoNameDescription string
+	WorktreePath        string
+	WorktreeRepo        string
+	WorktreeBranch      string
 	// Account is the per-session named account (v1.9.22+, issue #924). Maps to
 	// `[profiles.<account>.claude].config_dir` at spawn time and becomes the
 	// most-specific level in the CLAUDE_CONFIG_DIR resolution chain. Empty
 	// means "fall through to conductor/group/env/profile/global/default".
-	Account  string
+	Account string
+	// Pin anchors the session to the top/bottom of its group (pin-sessions
+	// feature). "", "top", or "bottom"; empty (the column default) means not
+	// pinned, so legacy rows need no backfill.
+	Pin      string
 	ToolData json.RawMessage // JSON blob for tool-specific data
+	// ArchivedAt is non-zero when the session is archived (hidden from active lists).
+	ArchivedAt time.Time
+}
+
+type existingAutoNameFields struct {
+	found       bool
+	autoName    bool
+	description string
+}
+
+func mergeAutoNameFields(inst *InstanceRow, existing existingAutoNameFields) (bool, string) {
+	if !existing.found {
+		return inst.AutoName, inst.AutoNameDescription
+	}
+
+	autoName := inst.AutoName
+	if !existing.autoName && inst.AutoName {
+		// A stale full-row save must not resurrect AutoName after a newer writer
+		// cleared it through an explicit rename/title sync.
+		autoName = false
+	}
+
+	description := inst.AutoNameDescription
+	if description == "" && existing.description != "" {
+		// The capture path writes non-empty descriptions with a targeted UPDATE.
+		// Keep that fresher value when a stale snapshot still has the old empty
+		// column value.
+		description = existing.description
+	}
+	return autoName, description
 }
 
 // WatcherRow represents a watcher row in the database.
@@ -228,7 +324,7 @@ func Open(dbPath string) (*StateDB, error) {
 		return nil, fmt.Errorf("statedb: wal mode: %w", err)
 	}
 
-	return &StateDB{db: db, pid: os.Getpid()}, nil
+	return &StateDB{db: db, pid: os.Getpid(), path: dbPath}, nil
 }
 
 // Close checkpoints WAL and closes the database.
@@ -285,6 +381,11 @@ func (s *StateDB) Migrate() error {
 			worktree_repo     TEXT NOT NULL DEFAULT '',
 			worktree_branch   TEXT NOT NULL DEFAULT '',
 			account           TEXT NOT NULL DEFAULT '',
+			archived_at       INTEGER NOT NULL DEFAULT 0,
+			auto_name              INTEGER NOT NULL DEFAULT 0,
+			auto_name_description  TEXT NOT NULL DEFAULT '',
+			pin             TEXT NOT NULL DEFAULT '',
+			last_sent_at    INTEGER NOT NULL DEFAULT 0,
 			tool_data       TEXT NOT NULL DEFAULT '{}',
 			acknowledged    INTEGER NOT NULL DEFAULT 0
 		)
@@ -437,6 +538,25 @@ func (s *StateDB) Migrate() error {
 		// the pre-v1.9.22 behavior for legacy rows (fall through to
 		// conductor/group/env/profile/global/default).
 		"ALTER TABLE instances ADD COLUMN account TEXT NOT NULL DEFAULT ''",
+		// v10 (archive-sessions): ArchivedAt timestamp. Default 0 means
+		// "not archived" for all pre-existing rows.
+		"ALTER TABLE instances ADD COLUMN archived_at INTEGER NOT NULL DEFAULT 0",
+		// v11 (pin-sessions): per-session pin to top/bottom of group. Default ''
+		// means "not pinned" for all pre-existing rows.
+		"ALTER TABLE instances ADD COLUMN pin TEXT NOT NULL DEFAULT ''",
+		// v12 (quick-session Claude-name display): AutoName flag + the last
+		// captured task description. Defaults (0, '') keep legacy rows showing
+		// their handle until they are recreated as quick sessions.
+		"ALTER TABLE instances ADD COLUMN auto_name INTEGER NOT NULL DEFAULT 0",
+		"ALTER TABLE instances ADD COLUMN auto_name_description TEXT NOT NULL DEFAULT ''",
+		// v13 (self-heal Stage 1, #1457-followup): the "we talked to it" clock.
+		// Set by the keysender on every delivered injection. The self-heal stuck
+		// predicate measures the idle_at_empty_prompt dwell from this timestamp:
+		// a session is only stuck at an empty prompt if WE sent it something and
+		// nothing happened. Default 0 ("never sent") preserves legacy rows as
+		// deliberate-idle (never a self-heal candidate). Additive + targeted-write
+		// only (WriteLastSentAt); never part of a whole-row REPLACE/SaveInstances.
+		"ALTER TABLE instances ADD COLUMN last_sent_at INTEGER NOT NULL DEFAULT 0",
 	}
 	for _, stmt := range alterMigrations {
 		if _, err := tx.Exec(stmt); err != nil {
@@ -497,6 +617,42 @@ func (s *StateDB) Migrate() error {
 				}
 			}
 		}
+		if oldVer < 10 {
+			if _, err := tx.Exec(`ALTER TABLE instances ADD COLUMN archived_at INTEGER NOT NULL DEFAULT 0`); err != nil {
+				if !strings.Contains(err.Error(), "duplicate column") {
+					return fmt.Errorf("statedb: migrate v10 archived_at: %w", err)
+				}
+			}
+		}
+		if oldVer < 11 {
+			if _, err := tx.Exec(`ALTER TABLE instances ADD COLUMN pin TEXT NOT NULL DEFAULT ''`); err != nil {
+				if !strings.Contains(err.Error(), "duplicate column") {
+					return fmt.Errorf("statedb: migrate v11 pin: %w", err)
+				}
+			}
+		}
+		if oldVer < 12 {
+			if _, err := tx.Exec(`ALTER TABLE instances ADD COLUMN auto_name INTEGER NOT NULL DEFAULT 0`); err != nil {
+				if !strings.Contains(err.Error(), "duplicate column") {
+					return fmt.Errorf("statedb: migrate v12 auto_name: %w", err)
+				}
+			}
+			if _, err := tx.Exec(`ALTER TABLE instances ADD COLUMN auto_name_description TEXT NOT NULL DEFAULT ''`); err != nil {
+				if !strings.Contains(err.Error(), "duplicate column") {
+					return fmt.Errorf("statedb: migrate v12 auto_name_description: %w", err)
+				}
+			}
+		}
+		if oldVer < 13 {
+			// Self-heal Stage 1: the last_sent_at clock. Default 0 = "never sent",
+			// so every legacy row reads as deliberate-idle (never a self-heal
+			// candidate) until the keysender stamps it.
+			if _, err := tx.Exec(`ALTER TABLE instances ADD COLUMN last_sent_at INTEGER NOT NULL DEFAULT 0`); err != nil {
+				if !strings.Contains(err.Error(), "duplicate column") {
+					return fmt.Errorf("statedb: migrate v13 last_sent_at: %w", err)
+				}
+			}
+		}
 		if _, err := tx.Exec(`
 			UPDATE metadata SET value = ? WHERE key = 'schema_version'
 		`, schemaVersion); err != nil {
@@ -519,6 +675,13 @@ func (s *StateDB) IsEmpty() (bool, error) {
 
 // --- Instance CRUD ---
 
+func archivedAtUnix(t time.Time) int64 {
+	if t.IsZero() {
+		return 0
+	}
+	return t.UTC().Unix()
+}
+
 // SaveInstance inserts or replaces a single instance.
 func (s *StateDB) SaveInstance(inst *InstanceRow) error {
 	toolData := inst.ToolData
@@ -530,8 +693,14 @@ func (s *StateDB) SaveInstance(inst *InstanceRow) error {
 	// manually-set clear_on_compact). Without this merge, every
 	// INSERT OR REPLACE silently drops user-managed extras.
 	var existingToolData []byte
+	existingAutoName := existingAutoNameFields{}
 	if err := s.db.QueryRow("SELECT tool_data FROM instances WHERE id = ?", inst.ID).Scan(&existingToolData); err == nil {
 		toolData = MergeToolDataExtras(json.RawMessage(existingToolData), toolData)
+	}
+	var existingAutoNameInt int
+	if err := s.db.QueryRow("SELECT auto_name, auto_name_description FROM instances WHERE id = ?", inst.ID).Scan(&existingAutoNameInt, &existingAutoName.description); err == nil {
+		existingAutoName.found = true
+		existingAutoName.autoName = existingAutoNameInt != 0
 	}
 
 	isConductorInt := 0
@@ -546,6 +715,11 @@ func (s *StateDB) SaveInstance(inst *InstanceRow) error {
 	if inst.TitleLocked {
 		titleLockedInt = 1
 	}
+	autoName, autoNameDescription := mergeAutoNameFields(inst, existingAutoName)
+	autoNameInt := 0
+	if autoName {
+		autoNameInt = 1
+	}
 	_, err := s.db.Exec(`
 		INSERT OR REPLACE INTO instances (
 			id, title, project_path, group_path, sort_order,
@@ -553,15 +727,15 @@ func (s *StateDB) SaveInstance(inst *InstanceRow) error {
 			created_at, last_accessed,
 			parent_session_id, is_conductor, no_transition_notify,
 			worktree_path, worktree_repo, worktree_branch, account,
-			tool_data, title_locked
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			archived_at, tool_data, title_locked, auto_name, auto_name_description, pin
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`,
 		inst.ID, inst.Title, inst.ProjectPath, inst.GroupPath, inst.Order,
 		inst.Command, inst.Wrapper, inst.Tool, inst.Status, inst.TmuxSession, inst.TmuxSocketName,
 		inst.CreatedAt.Unix(), inst.LastAccessed.Unix(),
 		inst.ParentSessionID, isConductorInt, noTransitionNotifyInt,
 		inst.WorktreePath, inst.WorktreeRepo, inst.WorktreeBranch, inst.Account,
-		string(toolData), titleLockedInt,
+		archivedAtUnix(inst.ArchivedAt), string(toolData), titleLockedInt, autoNameInt, autoNameDescription, inst.Pin,
 	)
 	return err
 }
@@ -581,11 +755,9 @@ func (s *StateDB) SaveInstances(insts []*InstanceRow) error {
 }
 
 func (s *StateDB) saveInstancesOnce(insts []*InstanceRow) error {
-	// Pre-fetch existing tool_data per instance ID so we can preserve any
-	// keys not modeled by the typed schema (e.g., manually-set
-	// clear_on_compact). Without this merge, every INSERT OR REPLACE
-	// silently drops user-managed extras. One batch SELECT instead of N
-	// individual reads.
+	// Pre-fetch existing mutable columns per instance ID so we can preserve state
+	// written by targeted UPDATE paths. Without this merge, every INSERT OR
+	// REPLACE can silently drop fresher data from another process.
 	//
 	// IMPORTANT: this read runs OUTSIDE the write transaction below.
 	// In SQLite WAL mode, beginning a transaction with a read and then
@@ -597,6 +769,7 @@ func (s *StateDB) saveInstancesOnce(insts []*InstanceRow) error {
 	// extras keys are rarely-mutated user-managed flags and the worst-case
 	// outcome is one stale-overlay save, recoverable on next save.
 	existingToolData := make(map[string]json.RawMessage, len(insts))
+	existingAutoNames := make(map[string]existingAutoNameFields, len(insts))
 	if len(insts) > 0 {
 		placeholders := make([]string, len(insts))
 		args := make([]any, len(insts))
@@ -606,17 +779,54 @@ func (s *StateDB) saveInstancesOnce(insts []*InstanceRow) error {
 		}
 		// #nosec G202 -- placeholders is a fixed sequence of "?" tokens generated
 		// from len(insts); all values flow through args[], never the SQL string.
-		query := "SELECT id, tool_data FROM instances WHERE id IN (" + strings.Join(placeholders, ",") + ")"
+		query := "SELECT id, tool_data, auto_name, auto_name_description FROM instances WHERE id IN (" + strings.Join(placeholders, ",") + ")"
 		rows, queryErr := s.db.Query(query, args...)
 		if queryErr == nil {
 			for rows.Next() {
 				var id string
 				var td []byte
-				if scanErr := rows.Scan(&id, &td); scanErr == nil {
+				var autoNameInt int
+				var autoNameDescription string
+				if scanErr := rows.Scan(&id, &td, &autoNameInt, &autoNameDescription); scanErr == nil {
 					existingToolData[id] = json.RawMessage(td)
+					existingAutoNames[id] = existingAutoNameFields{
+						found:       true,
+						autoName:    autoNameInt != 0,
+						description: autoNameDescription,
+					}
 				}
 			}
 			_ = rows.Close()
+		}
+	}
+
+	// S2 data-loss safeguard (2026-06-04 incident): for a NON-empty payload,
+	// the sweep below DELETEs every on-disk row whose id is absent from the new
+	// set. Count that drop FIRST (on the raw handle, before opening the write
+	// transaction — running a wal_checkpoint backup inside an open tx on the
+	// same pool would deadlock). When the drop is meaningful
+	// (>= backupRowDropThreshold), snapshot the DB file to "<path>.bak" so a
+	// buggy-but-non-empty replace (the incident dropped most of the table at
+	// once) stays recoverable. S1 already refuses the fully-empty sweep; S2
+	// covers the large-but-not-empty replaces S1 cannot catch. The backup is
+	// best-effort: a failed copy is logged, never fatal — the caller asked to
+	// save, and the insurance copy must not become a new failure mode.
+	if len(insts) > 0 && s.path != "" {
+		placeholders := make([]string, len(insts))
+		args := make([]any, len(insts))
+		for i, inst := range insts {
+			placeholders[i] = "?"
+			args[i] = inst.ID
+		}
+		var dropCount int
+		// #nosec G202 -- placeholders is a fixed sequence of "?" tokens generated
+		// from len(insts); all values flow through args[], never the SQL string.
+		countQuery := "SELECT COUNT(*) FROM instances WHERE id NOT IN (" + strings.Join(placeholders, ",") + ")"
+		if err := s.db.QueryRow(countQuery, args...).Scan(&dropCount); err == nil && dropCount >= backupRowDropThreshold {
+			if bErr := s.backupDBFile(); bErr != nil {
+				slog.Warn("statedb: pre-sweep backup failed (continuing with save)",
+					"path", s.path, "drop_count", dropCount, "err", bErr)
+			}
 		}
 	}
 
@@ -628,9 +838,21 @@ func (s *StateDB) saveInstancesOnce(insts []*InstanceRow) error {
 
 	// Delete rows not in the new list to prevent deleted sessions from reappearing.
 	if len(insts) == 0 {
-		if _, err := tx.Exec("DELETE FROM instances"); err != nil {
+		// S1 guard: an empty payload would `DELETE FROM instances`, wiping the
+		// whole table. If rows already exist this is almost certainly a bug in
+		// the caller (a stray empty save), not an intentional clear — refuse it
+		// rather than silently destroying the index. Intentional clears go
+		// through ClearAllInstances. An empty payload on an already-empty table
+		// is a benign no-op.
+		var existing int
+		if err := tx.QueryRow("SELECT COUNT(*) FROM instances").Scan(&existing); err != nil {
 			return err
 		}
+		if existing > 0 {
+			return ErrRefusingEmptySweep
+		}
+		// Already empty: nothing to delete, nothing to insert.
+		return tx.Commit()
 	} else {
 		placeholders := make([]string, len(insts))
 		args := make([]any, len(insts))
@@ -653,8 +875,8 @@ func (s *StateDB) saveInstancesOnce(insts []*InstanceRow) error {
 			created_at, last_accessed,
 			parent_session_id, is_conductor, no_transition_notify,
 			worktree_path, worktree_repo, worktree_branch, account,
-			tool_data, title_locked
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			archived_at, tool_data, title_locked, auto_name, auto_name_description, pin
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`)
 	if err != nil {
 		return err
@@ -681,19 +903,36 @@ func (s *StateDB) saveInstancesOnce(insts []*InstanceRow) error {
 		if inst.TitleLocked {
 			titleLockedInt = 1
 		}
+		autoName, autoNameDescription := mergeAutoNameFields(inst, existingAutoNames[inst.ID])
+		autoNameInt := 0
+		if autoName {
+			autoNameInt = 1
+		}
 		if _, err := stmt.Exec(
 			inst.ID, inst.Title, inst.ProjectPath, inst.GroupPath, inst.Order,
 			inst.Command, inst.Wrapper, inst.Tool, inst.Status, inst.TmuxSession, inst.TmuxSocketName,
 			inst.CreatedAt.Unix(), inst.LastAccessed.Unix(),
 			inst.ParentSessionID, isConductorInt, noTransitionNotifyInt,
 			inst.WorktreePath, inst.WorktreeRepo, inst.WorktreeBranch, inst.Account,
-			string(toolData), titleLockedInt,
+			archivedAtUnix(inst.ArchivedAt), string(toolData), titleLockedInt, autoNameInt, autoNameDescription, inst.Pin,
 		); err != nil {
 			return err
 		}
 	}
 
 	return tx.Commit()
+}
+
+// ClearAllInstances is the explicit escape hatch for intentionally emptying the
+// instances table. SaveInstances([]) refuses to wipe a populated table (S1
+// data-loss safeguard, ErrRefusingEmptySweep); callers that truly mean to clear
+// every row must call this method so the destructive intent is unambiguous and
+// greppable. It is a no-op on an already-empty table.
+func (s *StateDB) ClearAllInstances() error {
+	return withBusyRetry(func() error {
+		_, err := s.db.Exec("DELETE FROM instances")
+		return err
+	})
 }
 
 // LoadInstances returns all instances ordered by sort_order.
@@ -704,7 +943,7 @@ func (s *StateDB) LoadInstances() ([]*InstanceRow, error) {
 			created_at, last_accessed,
 			parent_session_id, is_conductor, no_transition_notify,
 			worktree_path, worktree_repo, worktree_branch, account,
-			tool_data, title_locked
+			archived_at, tool_data, title_locked, auto_name, auto_name_description, pin
 		FROM instances ORDER BY sort_order
 	`)
 	if err != nil {
@@ -715,16 +954,16 @@ func (s *StateDB) LoadInstances() ([]*InstanceRow, error) {
 	var result []*InstanceRow
 	for rows.Next() {
 		r := &InstanceRow{}
-		var createdUnix, accessedUnix int64
+		var createdUnix, accessedUnix, archivedUnix int64
 		var toolDataStr string
-		var isConductorInt, noTransitionNotifyInt, titleLockedInt int
+		var isConductorInt, noTransitionNotifyInt, titleLockedInt, autoNameInt int
 		if err := rows.Scan(
 			&r.ID, &r.Title, &r.ProjectPath, &r.GroupPath, &r.Order,
 			&r.Command, &r.Wrapper, &r.Tool, &r.Status, &r.TmuxSession, &r.TmuxSocketName,
 			&createdUnix, &accessedUnix,
 			&r.ParentSessionID, &isConductorInt, &noTransitionNotifyInt,
 			&r.WorktreePath, &r.WorktreeRepo, &r.WorktreeBranch, &r.Account,
-			&toolDataStr, &titleLockedInt,
+			&archivedUnix, &toolDataStr, &titleLockedInt, &autoNameInt, &r.AutoNameDescription, &r.Pin,
 		); err != nil {
 			return nil, err
 		}
@@ -732,9 +971,13 @@ func (s *StateDB) LoadInstances() ([]*InstanceRow, error) {
 		if accessedUnix > 0 {
 			r.LastAccessed = time.Unix(accessedUnix, 0)
 		}
+		if archivedUnix > 0 {
+			r.ArchivedAt = time.Unix(archivedUnix, 0).UTC()
+		}
 		r.IsConductor = isConductorInt != 0
 		r.NoTransitionNotify = noTransitionNotifyInt != 0
 		r.TitleLocked = titleLockedInt != 0
+		r.AutoName = autoNameInt != 0
 		r.ToolData = json.RawMessage(toolDataStr)
 		result = append(result, r)
 	}
@@ -855,6 +1098,131 @@ func (s *StateDB) WriteStatus(id, status, tool string) error {
 			status, tool, status, id,
 		)
 		return err
+	})
+}
+
+// WriteAutoNameDescription persists the latest Claude task description for an
+// auto-named session into the auto_name_description column without a whole-row
+// INSERT OR REPLACE. The background status loop captures the live pane title on
+// its own cadence; none of those ticks run a full Save, so without this targeted
+// write the description would only reach disk on the next user-triggered save —
+// and an app exit before then would lose the name on reopen (the bug this fixes).
+//
+// Wrapped in withBusyRetry for the same reason as WriteStatus: SQLite serializes
+// writers, so under contention a transient SQLITE_BUSY would otherwise silently
+// drop the update.
+func (s *StateDB) WriteAutoNameDescription(id, description string) error {
+	return withBusyRetry(func() error {
+		_, err := s.db.Exec(
+			`UPDATE instances SET auto_name_description = ? WHERE id = ?`,
+			description, id,
+		)
+		return err
+	})
+}
+
+// WriteLastSentAt persists the "we talked to it" clock (Unix seconds) for a
+// session into the last_sent_at column with a targeted single-column UPDATE —
+// never a whole-row INSERT OR REPLACE and never SaveInstances. The keysender
+// stamps this on every delivered injection; the self-heal predicate reads it to
+// measure the idle_at_empty_prompt dwell (#1457-followup, self-heal Stage 1).
+//
+// Like WriteAutoNameDescription this touches ONLY its own column, so a concurrent
+// writer's edits to any other field of the same row are preserved (no data-loss
+// surface), and it is wrapped in withBusyRetry for the same SQLITE_BUSY reason.
+func (s *StateDB) WriteLastSentAt(id string, unixSeconds int64) error {
+	return withBusyRetry(func() error {
+		_, err := s.db.Exec(
+			`UPDATE instances SET last_sent_at = ? WHERE id = ?`,
+			unixSeconds, id,
+		)
+		return err
+	})
+}
+
+// ReadLastSentAt returns the last_sent_at clock (Unix seconds, 0 if never sent)
+// for a session. Read-only; used by the self-heal detection pass.
+func (s *StateDB) ReadLastSentAt(id string) (int64, error) {
+	var ts int64
+	err := s.db.QueryRow(`SELECT last_sent_at FROM instances WHERE id = ?`, id).Scan(&ts)
+	if err == sql.ErrNoRows {
+		return 0, nil
+	}
+	return ts, err
+}
+
+// InstanceStatusUpdate is one targeted status mutation for
+// PersistInstanceStatusesTx: set instances.status = Status WHERE id = ID.
+// No other column is touched, so a concurrent writer's edits to any other
+// field of the same row are preserved.
+type InstanceStatusUpdate struct {
+	ID     string
+	Status string
+}
+
+// PersistInstanceStatusesTx applies a batch of targeted status updates inside a
+// SINGLE transaction. It is the persistence primitive for `session revive`.
+//
+// Why a dedicated primitive (two independent guarantees):
+//
+//  1. ATOMICITY / no partial write. All rows commit together or none do. A
+//     mid-loop failure on `revive --all` rolls the whole batch back instead of
+//     leaving the table half-healed (some rows StatusRunning, some still
+//     StatusError). Per-row INSERT-OR-REPLACE outside a tx could not promise
+//     this.
+//
+//  2. NO clobber of concurrent edits. Each row is written with a TARGETED
+//     `UPDATE instances SET status = ? WHERE id = ?` — only the single column
+//     revive owns (see Reviver.defaultReviveAction, which mutates nothing but
+//     Instance.Status). It deliberately does NOT use INSERT OR REPLACE of the
+//     whole row: a full-row write would overwrite every other column from
+//     revive's stale in-memory snapshot, clobbering any field (title, group,
+//     tool_data, last_accessed, …) a concurrent process edited between
+//     revive's load and its save. Mirrors WriteStatus / WriteClaudeSessionBinding,
+//     which target single columns for exactly this reason.
+//
+// There is NO DELETE sweep here — a row absent from `updates` is left entirely
+// untouched, so revive can never drop a session a concurrent `add` inserted
+// after revive loaded its snapshot (the lost-update race this fixes). Rows
+// whose id no longer exists (removed concurrently) simply match zero rows; the
+// UPDATE is a benign no-op, never a resurrection.
+//
+// The acknowledged-reset mirrors WriteStatus: flipping a row to "running"
+// clears its acknowledged flag so the TUI re-surfaces the freshly-revived
+// session. Wrapped in withBusyRetry because the whole batch is idempotent
+// (targeted UPDATEs to fixed ids), matching SaveInstances' retry rationale.
+func (s *StateDB) PersistInstanceStatusesTx(updates []InstanceStatusUpdate) error {
+	if len(updates) == 0 {
+		return nil
+	}
+	return withBusyRetry(func() error {
+		tx, err := s.db.Begin()
+		if err != nil {
+			return err
+		}
+		defer func() { _ = tx.Rollback() }()
+
+		stmt, err := tx.Prepare(
+			`UPDATE instances
+			   SET status = ?,
+			       acknowledged = CASE WHEN ? = 'running' THEN 0 ELSE acknowledged END
+			 WHERE id = ?`,
+		)
+		if err != nil {
+			return err
+		}
+		defer stmt.Close()
+
+		for _, u := range updates {
+			if _, err := stmt.Exec(u.Status, u.Status, u.ID); err != nil {
+				return err
+			}
+		}
+		if err := tx.Commit(); err != nil {
+			return err
+		}
+		_ = s.Touch()
+		return nil
 	})
 }
 
@@ -1040,7 +1408,7 @@ func (s *StateDB) ElectPrimary(timeout time.Duration) (bool, error) {
 		return false, fmt.Errorf("statedb: clear stale primary: %w", err)
 	}
 
-	// Check if any alive instance already has is_primary=1
+	// Find a candidate primary that is still fresh by heartbeat.
 	var existingPID int
 	err = tx.QueryRow(
 		"SELECT pid FROM instance_heartbeats WHERE is_primary = 1 AND heartbeat >= ? LIMIT 1",
@@ -1048,14 +1416,32 @@ func (s *StateDB) ElectPrimary(timeout time.Duration) (bool, error) {
 	).Scan(&existingPID)
 
 	if err == nil {
-		// An alive primary exists
-		if err := tx.Commit(); err != nil {
-			return false, fmt.Errorf("statedb: commit elect: %w", err)
+		// A fresh-by-heartbeat primary row exists. Trust it as a live owner only
+		// if it is our own process OR the recorded PID is actually alive. A row
+		// left behind by an unclean exit (SIGKILL, OOM, terminal force-close,
+		// crash/panic) never ran ResignPrimary, so its heartbeat can stay within
+		// `timeout` for up to the full window after the process is gone. Without
+		// the liveness check, the next start sees that ghost as a live primary
+		// and exits "already running" — which is why users had to pkill (or wait
+		// out the window) before a restart would take. Verifying liveness here
+		// reclaims a dead primary immediately. The time-based clear above remains
+		// as a safety net against PID reuse.
+		if existingPID == s.pid || pidAlive(existingPID) {
+			if err := tx.Commit(); err != nil {
+				return false, fmt.Errorf("statedb: commit elect: %w", err)
+			}
+			return existingPID == s.pid, nil
 		}
-		return existingPID == s.pid, nil
+		// Dead primary: clear its flag and fall through to claim.
+		if _, err := tx.Exec(
+			"UPDATE instance_heartbeats SET is_primary = 0 WHERE pid = ?",
+			existingPID,
+		); err != nil {
+			return false, fmt.Errorf("statedb: clear dead primary: %w", err)
+		}
 	}
 
-	// No alive primary exists: claim it
+	// No live primary exists: claim it
 	if _, err := tx.Exec(
 		"UPDATE instance_heartbeats SET is_primary = 1 WHERE pid = ?",
 		s.pid,
@@ -1067,6 +1453,23 @@ func (s *StateDB) ElectPrimary(timeout time.Duration) (bool, error) {
 		return false, fmt.Errorf("statedb: commit elect: %w", err)
 	}
 	return true, nil
+}
+
+// pidAlive reports whether pid refers to a live process on this host. It uses
+// the kill -0 idiom (signal 0 performs permission/existence checks only and is
+// never delivered), mirroring filterAliveOurProcesses in
+// internal/tmux/ensure_pids_dead.go. A dead or reaped PID returns false so a
+// crashed primary is reclaimed immediately by ElectPrimary instead of lingering
+// for the full heartbeat-staleness window.
+func pidAlive(pid int) bool {
+	if pid <= 0 {
+		return false
+	}
+	proc, err := os.FindProcess(pid)
+	if err != nil {
+		return false
+	}
+	return proc.Signal(syscall.Signal(0)) == nil
 }
 
 // ResignPrimary clears the is_primary flag for this process.

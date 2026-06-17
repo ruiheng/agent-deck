@@ -16,7 +16,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/asheshgoplani/agent-deck/internal/session"
+	"github.com/asheshgoplani/agent-deck/internal/agentpaths"
 )
 
 const (
@@ -40,11 +40,33 @@ var apiBaseURL = "https://api.github.com"
 // detectHomebrewManagedInstall is a test seam for self-update install paths.
 var detectHomebrewManagedInstall = DetectHomebrewManagedInstall
 
+// bridgeScriptInstaller refreshes the conductor bridge script. It is injected
+// by the CLI layer so this package stays independent of internal/session.
+var bridgeScriptInstaller func() error
+
+// conductorDirResolver resolves the base conductor directory, honoring the
+// [conductor].dir config override. It is injected by the CLI layer (same
+// pattern as bridgeScriptInstaller) so this package stays independent of
+// internal/session and avoids an import cycle. When nil (non-CLI callers),
+// UpdateBridgePy falls back to the default XDG/legacy resolution.
+var conductorDirResolver func() (string, error)
+
 // SetCheckInterval sets the update check interval from config
 func SetCheckInterval(hours int) {
 	if hours > 0 {
 		checkInterval = time.Duration(hours) * time.Hour
 	}
+}
+
+// SetBridgeScriptInstaller configures the bridge.py installer used after updates.
+func SetBridgeScriptInstaller(installer func() error) {
+	bridgeScriptInstaller = installer
+}
+
+// SetConductorDirResolver configures the resolver used to locate the base
+// conductor directory (honoring the [conductor].dir override) after updates.
+func SetConductorDirResolver(resolver func() (string, error)) {
+	conductorDirResolver = resolver
 }
 
 // Release represents a GitHub release
@@ -113,11 +135,7 @@ func isUpdateCheckSkipped() bool {
 
 // getCacheDir returns the cache directory path
 func getCacheDir() (string, error) {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return "", err
-	}
-	return filepath.Join(home, ".agent-deck"), nil
+	return agentpaths.CacheDir()
 }
 
 // loadCache loads the update cache from disk
@@ -854,18 +872,39 @@ func extractBinaryFromTarGzReader(r io.Reader) ([]byte, error) {
 // UpdateBridgePy refreshes the installed bridge.py from the embedded runtime template.
 // This keeps bridge behavior in sync with the currently running binary.
 func UpdateBridgePy() error {
-	// Get the conductor directory
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return fmt.Errorf("failed to get home directory: %w", err)
+	// Resolve the conductor dir via the injected resolver so the existence
+	// guard, the .backup, and the refresh all target the [conductor].dir
+	// override when set. Fall back to the default XDG/legacy path only for
+	// non-CLI callers that never injected a resolver.
+	var conductorDir string
+	var err error
+	if conductorDirResolver != nil {
+		conductorDir, err = conductorDirResolver()
+	} else {
+		conductorDir, err = agentpaths.EffectiveDataPath("conductor", "conductor")
 	}
-
-	conductorDir := filepath.Join(home, ".agent-deck", "conductor")
+	if err != nil {
+		return fmt.Errorf("failed to resolve conductor directory: %w", err)
+	}
 	bridgePath := filepath.Join(conductorDir, "bridge.py")
 
 	// Check if conductor directory exists
 	if _, err := os.Stat(conductorDir); os.IsNotExist(err) {
 		// Conductor not installed, skip update
+		return nil
+	}
+
+	// No-op guard MUST run before any side effect (Blocker 3 fix).
+	//
+	// The installer is injected by the CLI layer (initUpdateSettings) to keep
+	// this package independent of internal/session. Non-CLI callers (watchers,
+	// library consumers) won't have injected it. Rather than hard-failing and
+	// aborting the surrounding update flow, gracefully no-op with a clear log.
+	// This early return guarantees the advertised contract: when there is no
+	// installer, the existing bridge.py AND its .backup are left untouched (we
+	// neither print "Updating", nor read, nor overwrite bridge.py.backup).
+	if bridgeScriptInstaller == nil {
+		fmt.Println("⚠ bridge.py installer not configured (non-CLI caller); skipping bridge.py refresh.")
 		return nil
 	}
 
@@ -883,7 +922,7 @@ func UpdateBridgePy() error {
 	}
 
 	// Install latest bridge template from embedded runtime.
-	if err := session.InstallBridgeScript(); err != nil {
+	if err := bridgeScriptInstaller(); err != nil {
 		return fmt.Errorf("failed to install bridge.py: %w", err)
 	}
 

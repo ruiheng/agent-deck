@@ -60,7 +60,33 @@ const (
 	StatusQueued Status = "queued"
 )
 
+// Substate is the additive Honest-Status-v2 refinement of a session's coarse
+// status (see tmux.Substate). It explains WHY a session is in its status
+// (model-unavailable, auth-401, idle-at-empty-prompt, running) without altering
+// the byte-stable canonical status. Re-exported here so the CLI/TUI can consume
+// it without importing the tmux package directly.
+type Substate = tmux.Substate
+
+const (
+	SubstateNone              = tmux.SubstateNone
+	SubstateRunning           = tmux.SubstateRunning
+	SubstateIdleAtEmptyPrompt = tmux.SubstateIdleAtEmptyPrompt
+	SubstateModelUnavailable  = tmux.SubstateModelUnavailable
+	SubstateAuth401           = tmux.SubstateAuth401
+)
+
 const wrapperPlaceholder = "{command}"
+
+// PinMode anchors a session to a fixed slot within its group, exempt from the
+// status/recency actionable sort (pin-sessions feature). The empty value is the
+// default so existing rows migrate cleanly through the `pin` column default.
+type PinMode string
+
+const (
+	PinNone   PinMode = ""       // default; not pinned, participates in the normal sort
+	PinTop    PinMode = "top"    // fixed at the top of the group's session list
+	PinBottom PinMode = "bottom" // fixed at the bottom of the group's session list
+)
 
 const (
 	hookFastPathWindow             = 2 * time.Minute
@@ -79,15 +105,18 @@ const (
 
 // Instance represents a single agent/shell session
 type Instance struct {
-	ID                 string `json:"id"`
-	Title              string `json:"title"`
-	ProjectPath        string `json:"project_path"`
-	GroupPath          string `json:"group_path"`                     // e.g., "projects/devops"
-	Order              int    `json:"order"`                          // Position within group (for reorder persistence)
-	ParentSessionID    string `json:"parent_session_id,omitempty"`    // Links to parent session (makes this a sub-session)
-	ParentProjectPath  string `json:"parent_project_path,omitempty"`  // Parent's project path (for --add-dir access)
-	IsConductor        bool   `json:"is_conductor,omitempty"`         // True if this session is a conductor orchestrator
-	NoTransitionNotify bool   `json:"no_transition_notify,omitempty"` // Suppress transition event dispatch for this session
+	ID          string `json:"id"`
+	Title       string `json:"title"`
+	ProjectPath string `json:"project_path"`
+	GroupPath   string `json:"group_path"` // e.g., "projects/devops"
+	Order       int    `json:"order"`      // Position within group (for reorder persistence)
+	// Pin anchors this session to the top or bottom of its group, exempt from
+	// the status/recency sort (pin-sessions feature). PinNone is the default.
+	Pin                PinMode `json:"pin,omitempty"`
+	ParentSessionID    string  `json:"parent_session_id,omitempty"`    // Links to parent session (makes this a sub-session)
+	ParentProjectPath  string  `json:"parent_project_path,omitempty"`  // Parent's project path (for --add-dir access)
+	IsConductor        bool    `json:"is_conductor,omitempty"`         // True if this session is a conductor orchestrator
+	NoTransitionNotify bool    `json:"no_transition_notify,omitempty"` // Suppress transition event dispatch for this session
 
 	// TitleLocked, when true, blocks Claude's session name from syncing into
 	// the agent-deck Title (issue #697). Conductors launch workers with a
@@ -95,6 +124,25 @@ type Instance struct {
 	// with its auto-generated summary on the next hook event. Set via
 	// `--title-lock` on add/launch or `session set-title-lock`.
 	TitleLocked bool `json:"title_locked,omitempty"`
+
+	// AutoName, when true, marks Title as a machine-generated adjective-noun
+	// handle (from a --quick / TUI-Q create). The TUI then displays the
+	// session's live Claude task description (tmux pane title) in place of the
+	// handle. Any explicit rename clears this so the user-chosen name is shown
+	// verbatim. See docs/superpowers/specs/2026-06-01-quick-session-claude-name-design.md.
+	// Guarded by i.mu for runtime reads/writes; use GetAutoName/SetAutoName once
+	// an Instance is shared with background workers or the TUI render loop.
+	AutoName bool `json:"auto_name,omitempty"`
+
+	// autoNameDescription is the last non-empty Claude task description (the
+	// cleaned tmux pane title) captured for an AutoName session. It is persisted
+	// via the auto_name_description column so the meaningful name survives an
+	// app reopen even when the session is stopped/idle and no live pane title is
+	// available — render order is live pane title → this saved description →
+	// handle. Guarded by i.mu: written from the background status loop, read
+	// during render. Unexported because persistence flows through InstanceData,
+	// not Instance's own JSON tags.
+	autoNameDescription string
 
 	// Git worktree support
 	WorktreePath     string `json:"worktree_path,omitempty"`      // Path to worktree (if session is in worktree)
@@ -125,6 +173,8 @@ type Instance struct {
 	Status         Status    `json:"status"`
 	CreatedAt      time.Time `json:"created_at"`
 	LastAccessedAt time.Time `json:"last_accessed_at,omitempty"` // When user last attached
+	// ArchivedAt is set when the user archives the session (non-zero = archived).
+	ArchivedAt time.Time `json:"archived_at,omitempty"`
 
 	// LastStartedAt is the wall-clock time of the most recent successful
 	// Start() / StartWithMessage() / Restart() call. Persisted so short-lived
@@ -282,19 +332,22 @@ type Instance struct {
 	// so existing sessions are unaffected on upgrade.
 	IdleTimeoutSecs int64 `json:"idle_timeout_secs,omitempty"`
 
-	// IsForkAwaitingStart signals that this instance was produced by
-	// CreateForkedInstanceWithOptions and holds a pre-built fork command
-	// in Command that must be run verbatim on the first Start() (#745).
-	// Without this flag, Start()'s claude-compatible dispatch sees the
-	// pre-populated ClaudeSessionID (the new fork UUID), routes to
-	// buildClaudeResumeCommand, which fails to find a JSONL for a
-	// brand-new UUID and falls back to a plain --session-id fresh
-	// command — stripping --resume <parent-id> / --fork-session and
-	// dropping all conversation history from the parent. Transient
-	// (json:"-"): persisting this would cause a restart of the forked
-	// session to re-emit --fork-session and double-count the parent
-	// transcript.
+	// IsForkAwaitingStart signals that this instance was produced by a
+	// fork builder and must run a pre-built fork command verbatim on the
+	// first Start() (#745). Claude fork targets usually store that command
+	// in Command. Pi fork targets keep Command as the normal restart
+	// command (so later restarts use --continue) and store the first-start
+	// command in ForkStartCommand instead.
+	//
+	// Transient (json:"-"): persisting this would cause a restart of the
+	// forked session to re-emit the tool-specific fork command and
+	// double-count the parent transcript.
 	IsForkAwaitingStart bool `json:"-"`
+
+	// ForkStartCommand optionally carries the pre-built command to run while
+	// IsForkAwaitingStart is true. When empty, Start() falls back to Command
+	// for backwards compatibility with Claude fork targets.
+	ForkStartCommand string `json:"-"`
 
 	// ExtraArgs are user-supplied claude CLI tokens appended verbatim to every
 	// start/resume/fork command (e.g. ["--agent","reviewer","--model","opus"]).
@@ -360,6 +413,16 @@ type Instance struct {
 	// Used to provide grace period for tmux session creation (prevents error flash)
 	// Not serialized - only relevant for current TUI session
 	lastStartTime time.Time
+
+	// addedThisProcess is true only for instances built by a NewInstance*
+	// constructor in the current process (i.e. just `add`ed), and false for
+	// instances reloaded from storage (built as struct literals). Combined with
+	// a zero lastStartTime it identifies a session that was added but never
+	// started, whose absent tmux is expected (idle), not a fault (error).
+	// Not serialized — a reloaded "never started" row that genuinely ran would
+	// surface a stored non-idle status; a brand-new row reloads as idle and
+	// re-derives correctly once the user starts it.
+	addedThisProcess bool
 
 	// Rate-limits expensive session metadata sync work (Claude/Gemini/Codex)
 	// that runs from UpdateStatus while this instance lock is held.
@@ -540,6 +603,18 @@ func (inst *Instance) GetLastActivityTime() time.Time {
 	return inst.CreatedAt
 }
 
+// LastObservedActivity returns the last time the tmux tracker confirmed a
+// real busy spike for this session, and a bool that is false when no
+// confirmation has happened (the instance has no tmux session, or the
+// tracker has never observed activity). When the bool is false the time
+// value is zero.
+func (inst *Instance) LastObservedActivity() (time.Time, bool) {
+	if inst.tmuxSession == nil {
+		return time.Time{}, false
+	}
+	return inst.tmuxSession.LastObservedActivity()
+}
+
 // GetWaitingSince returns when the session transitioned to waiting status
 // Used for sorting notification bar (newest waiting sessions first)
 func (inst *Instance) GetWaitingSince() time.Time {
@@ -597,16 +672,17 @@ func NewInstance(title, projectPath string) *Instance {
 	tmuxSess.SetTerminalChromeEnabled(GetTerminalSettings().GetITermBadge())
 
 	inst := &Instance{
-		ID:             id,
-		Title:          title,
-		ProjectPath:    projectPath,
-		GroupPath:      extractGroupPath(projectPath), // Auto-assign group from path
-		Tool:           "shell",
-		Status:         StatusIdle,
-		CreatedAt:      time.Now(),
-		TmuxSocketName: socket,
-		tmuxSession:    tmuxSess,
-		backend:        sessionbackend.NewBackend(tmuxSess),
+		ID:               id,
+		Title:            title,
+		ProjectPath:      projectPath,
+		GroupPath:        extractGroupPath(projectPath), // Auto-assign group from path
+		Tool:             "shell",
+		Status:           StatusIdle,
+		CreatedAt:        time.Now(),
+		TmuxSocketName:   socket,
+		tmuxSession:      tmuxSess,
+		backend:          sessionbackend.NewBackend(tmuxSess),
+		addedThisProcess: true,
 	}
 	logSessionCreated(inst)
 	return inst
@@ -676,16 +752,17 @@ func NewInstanceWithTool(title, projectPath, tool string) *Instance {
 	tmuxSess.SetTerminalChromeEnabled(GetTerminalSettings().GetITermBadge())
 
 	inst := &Instance{
-		ID:             id,
-		Title:          title,
-		ProjectPath:    projectPath,
-		GroupPath:      extractGroupPath(projectPath),
-		Tool:           tool,
-		Status:         StatusIdle,
-		CreatedAt:      time.Now(),
-		TmuxSocketName: socket,
-		tmuxSession:    tmuxSess,
-		backend:        sessionbackend.NewBackend(tmuxSess),
+		ID:               id,
+		Title:            title,
+		ProjectPath:      projectPath,
+		GroupPath:        extractGroupPath(projectPath),
+		Tool:             tool,
+		Status:           StatusIdle,
+		CreatedAt:        time.Now(),
+		TmuxSocketName:   socket,
+		tmuxSession:      tmuxSess,
+		backend:          sessionbackend.NewBackend(tmuxSess),
+		addedThisProcess: true,
 	}
 
 	// Claude session ID will be detected from files Claude creates
@@ -737,6 +814,16 @@ func extractGroupPath(projectPath string) string {
 // This ensures we always know the session ID for fork/restart features
 // Respects: CLAUDE_CONFIG_DIR, dangerous_mode from user config, and [shell].env_files
 func (i *Instance) buildClaudeCommand(baseCommand string) string {
+	if !IsClaudeCompatible(i.Tool) {
+		return baseCommand
+	}
+	effectiveCommand := baseCommand
+	if effectiveCommand == "" {
+		effectiveCommand = "claude"
+	}
+	if effectiveCommand != "claude" {
+		return i.buildClaudeCommandWithMessage(baseCommand, "")
+	}
 	envPrefix := i.buildEnvSourceCommand()
 	cmd := i.buildClaudeCommandWithMessage(baseCommand, "")
 	return envPrefix + cmd
@@ -759,6 +846,7 @@ func (i *Instance) buildClaudeCommandWithMessage(baseCommand, message string) st
 	if baseCommand == "" {
 		baseCommand = "claude"
 	}
+	commandPowerShell := i.shouldUsePowerShellCommandShellForCommand(baseCommand)
 
 	// Get the configured Claude command (e.g., "claude", "cdw", "cdp")
 	// If a custom command is set, we skip CLAUDE_CONFIG_DIR prefix since the alias handles it
@@ -766,7 +854,7 @@ func (i *Instance) buildClaudeCommandWithMessage(baseCommand, message string) st
 	hasCustomCommand := claudeCmd != "claude"
 
 	includeConfigDir := !hasCustomCommand && IsClaudeConfigDirExplicitForInstance(i)
-	configDirPrefix := i.buildClaudeInlineEnvPrefix(includeConfigDir)
+	configDirPrefix := i.buildClaudeInlineEnvPrefixForPowerShell(includeConfigDir, commandPowerShell)
 
 	// Get options - either from instance or create defaults from config
 	opts := i.GetClaudeOptions()
@@ -786,7 +874,7 @@ func (i *Instance) buildClaudeCommandWithMessage(baseCommand, message string) st
 	// and non-claude tools (see telegramStateDirStripExpr predicate).
 	execEnvPrefix := ""
 	if strip := telegramStateDirStripExpr(i); strip != "" {
-		if i.shouldUsePowerShellClaudeShell() {
+		if commandPowerShell {
 			execEnvPrefix = strip + "; "
 		} else if flags := telegramExecEnvStripFlags(i); flags != "" {
 			execEnvPrefix = "env " + flags + " "
@@ -816,7 +904,7 @@ func (i *Instance) buildClaudeCommandWithMessage(baseCommand, message string) st
 				// Session was never interacted with - use --session-id with same UUID.
 				// CLAUDE_SESSION_ID is propagated via host-side SyncSessionIDsToTmux after start.
 				launchIncludeConfigDir := includeConfigDir || (runtime.GOOS != "windows" && IsClaudeConfigDirExplicitForInstance(i))
-				bashExportPrefix := i.buildClaudeLaunchPrefix(launchIncludeConfigDir)
+				bashExportPrefix := i.buildClaudeLaunchPrefixForPowerShell(launchIncludeConfigDir, commandPowerShell)
 				return fmt.Sprintf(
 					`%s%s%s --session-id "%s"%s`,
 					bashExportPrefix, execEnvPrefix, claudeCmd, opts.ResumeSessionID, extraFlags)
@@ -835,7 +923,7 @@ func (i *Instance) buildClaudeCommandWithMessage(baseCommand, message string) st
 		// so shell aliases won't work — but real binaries/scripts are fine.
 		//
 		launchIncludeConfigDir := includeConfigDir || (runtime.GOOS != "windows" && IsClaudeConfigDirExplicitForInstance(i))
-		bashExportPrefix := i.buildClaudeLaunchPrefix(launchIncludeConfigDir)
+		bashExportPrefix := i.buildClaudeLaunchPrefixForPowerShell(launchIncludeConfigDir, commandPowerShell)
 
 		// Pre-generate UUID in Go to avoid shell uuidgen (may be absent in Docker sandbox).
 		// CLAUDE_SESSION_ID is also propagated via host-side SetEnvironment after tmux start.
@@ -890,14 +978,26 @@ func (i *Instance) buildClaudeCommandWithMessage(baseCommand, message string) st
 	// the env-source prefix (CFG-03) and the bash export prefix (CFG-02) so
 	// group env_file exports AND CLAUDE_CONFIG_DIR both land in the spawn env
 	// before exec'ing the wrapper.
-	return i.buildEnvSourceCommand() + i.buildBashExportPrefix(IsClaudeConfigDirExplicitForInstance(i)) + baseCommand
+	return i.buildEnvSourceCommandForPowerShell(commandPowerShell) +
+		i.buildClaudeLaunchPrefixForPowerShell(IsClaudeConfigDirExplicitForInstance(i), commandPowerShell) +
+		baseCommand
 }
 
 // buildBashExportPrefix builds the export prefix used in bash -c commands.
-// It always exports AGENTDECK_INSTANCE_ID, and conditionally adds CLAUDE_CONFIG_DIR.
-func (i *Instance) buildBashExportPrefix(includeConfigDir bool) string {
-	prefix := fmt.Sprintf("export AGENTDECK_INSTANCE_ID=%s; ", i.ID)
+// Always exports AGENTDECK_INSTANCE_ID. CLAUDE_CONFIG_DIR is exported only
+// when the user has an explicit config_dir resolved for this instance;
+// when that gate is open, a prepared WorkerScratchConfigDir overrides
+// the resolved value — same priority as buildClaudeCommandWithMessage
+// and buildClaudeResumeCommand. See the comment there (issue #949) for
+// why the gate is required.
+func (i *Instance) buildBashExportPrefix(includeConfigDirOverride ...bool) string {
+	prefix := fmt.Sprintf("export AGENTDECK_INSTANCE_ID=%s; export AGENTDECK_PROFILE=%s; ", i.ID, shellescape.Quote(sessionProfileEnvValue()))
+	includeConfigDir := IsClaudeConfigDirExplicitForInstance(i)
+	if len(includeConfigDirOverride) > 0 {
+		includeConfigDir = includeConfigDirOverride[0]
+	}
 	if includeConfigDir {
+		// Issue #922 (reporter @bautrey): see applyWorkerScratchOverride.
 		configDir := i.applyWorkerScratchOverride(GetClaudeConfigDirForInstance(i))
 		// shellescape: the resolved config_dir lands in the same `bash -c`
 		// payload as the quoted AGENTDECK_RESOLVED_* exports below; a config_dir
@@ -938,6 +1038,40 @@ func (i *Instance) buildResolvedAccountHintEnvCommands(powerShell bool) []string
 	}
 }
 
+// sessionProfileEnvValue returns the effective profile name to inject as
+// AGENTDECK_PROFILE into a spawned session's environment, alongside
+// AGENTDECK_INSTANCE_ID. Without it, a bare `agent-deck` command run *inside* a
+// non-default-profile session has no AGENTDECK_PROFILE in its shell, so
+// GetEffectiveProfile falls through to "default" — resolving the wrong profile
+// and silently orphaning auto-parent routing (resolveAutoParentInstance looks
+// up the caller's instance against the wrong profile's session list). The deck
+// process is single-profile (one Storage, one state.db), so GetEffectiveProfile("")
+// is authoritative here and matches storage.Profile() for every session it
+// manages. We inject it explicitly at each spawn site (rather than relying on
+// shell inheritance) so a child spawned from a child carries its own profile and
+// not a stale inherited one.
+func sessionProfileEnvValue() string {
+	return GetEffectiveProfile("")
+}
+
+// ensureProfileEnv sets AGENTDECK_PROFILE host-side on the instance's tmux
+// session so a bare `agent-deck` command run inside the session resolves the
+// session's own profile rather than falling back to "default". It is the
+// tool-agnostic safety net complementing the inline command-prefix injection in
+// the spawn-command builders (which only some tools carry — e.g. gemini/opencode/
+// generic respawn rebuild a bare resume command with no AGENTDECK_PROFILE prefix).
+// Must run on every spawn/respawn success path, including the Restart()
+// respawn-pane branches that return early before reaching the fallback recreate
+// path. Best-effort: a failure is logged, not fatal.
+func (i *Instance) ensureProfileEnv() {
+	if i.tmuxSession == nil {
+		return
+	}
+	if err := i.tmuxSession.SetEnvironment("AGENTDECK_PROFILE", sessionProfileEnvValue()); err != nil {
+		sessionLog.Warn("set_profile_failed", slog.String("error", err.Error()))
+	}
+}
+
 // logClaudeConfigResolution emits the CFG-07 observability line documenting
 // which priority level resolved CLAUDE_CONFIG_DIR for this session.
 // Owns the single CFG-07 slog message literal for this package.
@@ -959,34 +1093,82 @@ func (i *Instance) logClaudeConfigResolution() {
 	)
 }
 
+// buildClaudeInlineEnvPrefix builds the shell-dialect-specific inline env prefix
+// used by direct Claude launches. Native Windows uses PowerShell assignment
+// commands; POSIX shells use VAR=value prefixes.
 func (i *Instance) buildClaudeInlineEnvPrefix(includeConfigDir bool) string {
-	configDir := i.applyWorkerScratchOverride(GetClaudeConfigDirForInstance(i))
+	return i.buildClaudeInlineEnvPrefixForPowerShell(includeConfigDir, i.shouldUsePowerShellClaudeShell())
+}
 
-	if i.shouldUsePowerShellClaudeShell() {
-		parts := []string{shellSetEnvCommand("AGENTDECK_INSTANCE_ID", i.ID)}
+func (i *Instance) buildClaudeInlineEnvPrefixForPowerShell(includeConfigDir bool, powerShell bool) string {
+	if powerShell {
+		parts := []string{
+			shellSetEnvCommandForPowerShell("AGENTDECK_INSTANCE_ID", i.ID, true),
+			shellSetEnvCommandForPowerShell("AGENTDECK_PROFILE", sessionProfileEnvValue(), true),
+		}
 		if includeConfigDir {
-			parts = append(parts, shellSetEnvCommand("CLAUDE_CONFIG_DIR", configDir))
+			configDir := i.applyWorkerScratchOverride(GetClaudeConfigDirForInstance(i))
+			parts = append(parts, shellSetEnvCommandForPowerShell("CLAUDE_CONFIG_DIR", configDir, true))
 		}
 		parts = append(parts, i.buildResolvedAccountHintEnvCommands(true)...)
-		return strings.Join(parts, shellCommandSeparator()) + shellCommandSeparator()
+		return strings.Join(parts, shellCommandSeparatorForPowerShell(true)) + shellCommandSeparatorForPowerShell(true)
 	}
 
-	prefix := fmt.Sprintf("AGENTDECK_INSTANCE_ID=%s ", i.ID)
+	prefix := fmt.Sprintf("AGENTDECK_INSTANCE_ID=%s AGENTDECK_PROFILE=%s ",
+		shellescape.Quote(i.ID), shellescape.Quote(sessionProfileEnvValue()))
 	if includeConfigDir {
-		prefix += fmt.Sprintf("CLAUDE_CONFIG_DIR=%s ", configDir)
+		configDir := i.applyWorkerScratchOverride(GetClaudeConfigDirForInstance(i))
+		prefix += fmt.Sprintf("CLAUDE_CONFIG_DIR=%s ", shellescape.Quote(configDir))
 	}
 	return prefix
 }
 
 func (i *Instance) buildClaudeLaunchPrefix(includeConfigDir bool) string {
-	if i.shouldUsePowerShellClaudeShell() {
-		return i.buildClaudeInlineEnvPrefix(includeConfigDir)
+	return i.buildClaudeLaunchPrefixForPowerShell(includeConfigDir, i.shouldUsePowerShellClaudeShell())
+}
+
+func (i *Instance) buildClaudeLaunchPrefixForPowerShell(includeConfigDir bool, powerShell bool) string {
+	if powerShell {
+		return i.buildClaudeInlineEnvPrefixForPowerShell(includeConfigDir, true)
 	}
 	return i.buildBashExportPrefix(includeConfigDir)
 }
 
 func (i *Instance) shouldUsePowerShellClaudeShell() bool {
 	return runtime.GOOS == "windows" && !i.IsSSH() && !i.IsSandboxed()
+}
+
+// ValidateClaudeExtraArgToken rejects a single --extra-arg token that looks
+// like a flag mashed together with its value (issue #1431b). Each --extra-arg
+// is shell-quoted as ONE argument, so `--extra-arg "--model opus"` reaches
+// claude as the literal single arg '--model opus' (embedded space) — an
+// unknown flag that makes claude exit on startup and leaves a dead pane the
+// registry still reports as running. A token that starts with '-' AND contains
+// whitespace is almost always two tokens the user meant to pass separately;
+// surfacing it as an error at spawn time beats the silent tmux death. Clean
+// flags ("--model") and clean values ("opus", "be concise") pass.
+func ValidateClaudeExtraArgToken(token string) error {
+	if strings.HasPrefix(token, "-") && strings.ContainsAny(token, " \t\n\r") {
+		return fmt.Errorf(
+			"--extra-arg %q looks like a flag and its value combined; pass them as separate --extra-arg tokens (e.g. --extra-arg \"--model\" --extra-arg \"opus\"), or use the first-class --model flag",
+			token,
+		)
+	}
+	return nil
+}
+
+// extraArgsSupplyModel reports whether the persisted --extra-arg tokens already
+// carry a `--model` override. ValidateClaudeExtraArgToken forces flag and value
+// into separate tokens, so a user-supplied model appears as a bare "--model"
+// (or "--model=..." form) token. When present we must NOT also inject
+// [claude].default_model, or the launch command would carry two --model flags.
+func extraArgsSupplyModel(extraArgs []string) bool {
+	for _, tok := range extraArgs {
+		if tok == "--model" || strings.HasPrefix(tok, "--model=") {
+			return true
+		}
+	}
+	return false
 }
 
 // buildClaudeExtraFlags builds extra command-line flags string from ClaudeOptions
@@ -1020,11 +1202,43 @@ func (i *Instance) buildClaudeExtraFlags(opts *ClaudeOptions) string {
 		}
 	}
 
+	// Launch model resolution (#1431). An explicit per-session opts.Model
+	// wins; otherwise fall back to [claude].default_model. The fallback is the
+	// load-bearing fix: a session that persisted ANY other Claude option
+	// (skip-permissions / chrome / teammate-mode) has a non-nil ClaudeOptions
+	// with an empty Model, which bypasses the NewClaudeOptions default_model
+	// fallback in the callers. Without resolving the default here, both spawn
+	// and restart dropped --model entirely and the child silently booted on
+	// Claude's built-in default (Fable, unavailable account-wide) while the
+	// registry still showed it running. Because every start/restart/resume
+	// command delegates flag assembly here, this single point keeps them all
+	// in lockstep.
+	// A user-supplied --model via --extra-arg (the form the
+	// ValidateClaudeExtraArgToken error message recommends) is an explicit
+	// override that must stand alone: the extra-arg tokens are appended verbatim
+	// below, so emitting any resolved --model here too would produce a duplicate
+	// --model on the command line. claude is last-wins so it would be harmless,
+	// but it is confusing and the operator's intent is unambiguous. Suppress the
+	// resolved model entirely (whether it came from opts.Model, the
+	// NewClaudeOptions default, or [claude].default_model) when extra-args carry
+	// their own.
+	if !extraArgsSupplyModel(i.ExtraArgs) {
+		launchModel := ""
+		if opts != nil {
+			launchModel = opts.Model
+		}
+		if launchModel == "" {
+			if cfg, _ := LoadUserConfig(); cfg != nil {
+				launchModel = cfg.Claude.DefaultModel
+			}
+		}
+		if launchModel != "" {
+			flags = append(flags, "--model "+shellescape.Quote(launchModel))
+		}
+	}
+
 	// Options-level flags
 	if opts != nil {
-		if opts.Model != "" {
-			flags = append(flags, "--model "+shellescape.Quote(opts.Model))
-		}
 		if opts.SkipPermissions {
 			flags = append(flags, "--dangerously-skip-permissions")
 		} else if opts.AutoMode {
@@ -1043,6 +1257,10 @@ func (i *Instance) buildClaudeExtraFlags(opts *ClaudeOptions) string {
 	// Plugin channels: subscribe the claude session to inbound messages from
 	// each listed plugin channel. Persisted on Instance.Channels and refreshed
 	// on every Start/Restart/resume because every command-build flows here.
+	// Heal first: a conductor whose persisted Channels lost the telegram
+	// entry (index wipe, record rebuild) is restored from conductor config
+	// so the wiring can't silently disappear (telegram_reliability.go).
+	reconcileConductorTelegramChannel(i)
 	if len(i.Channels) > 0 {
 		flags = append(flags, "--channels "+shellescape.Quote(strings.Join(i.Channels, ","))) // audit F1
 	}
@@ -1239,23 +1457,15 @@ func (i *Instance) resolveCodexCommand(baseCommand string) string {
 }
 
 func codexHomeFromCommand(command string) string {
-	rest := strings.TrimSpace(command)
-	for rest != "" {
-		token, remainder, ok := nextShellWord(rest)
-		if !ok {
-			return ""
-		}
-		if !isShellEnvAssignment(token) {
-			return ""
-		}
-		key, value, ok := strings.Cut(token, "=")
-		if !ok {
-			return ""
-		}
+	assignments, _, ok := splitLeadingShellEnvAssignments(command)
+	if !ok {
+		return ""
+	}
+	for _, assignment := range assignments {
+		key, value := assignment.key, assignment.value
 		if key == "CODEX_HOME" && strings.TrimSpace(value) != "" {
 			return ExpandPath(strings.TrimSpace(value))
 		}
-		rest = strings.TrimLeft(remainder, " \t\r\n")
 	}
 	return ""
 }
@@ -1278,7 +1488,7 @@ func nextShellWord(s string) (word string, remainder string, ok bool) {
 			case '\'', '"':
 				quote = c
 			case '\\':
-				if i+1 < len(s) {
+				if i+1 < len(s) && isShellEscapableOutsideQuotes(s[i+1]) {
 					i++
 					b.WriteByte(s[i])
 				} else {
@@ -1294,7 +1504,7 @@ func nextShellWord(s string) (word string, remainder string, ok bool) {
 			quote = 0
 			continue
 		}
-		if quote == '"' && c == '\\' && i+1 < len(s) {
+		if quote == '"' && c == '\\' && i+1 < len(s) && isShellEscapableInDoubleQuotes(s[i+1]) {
 			i++
 			b.WriteByte(s[i])
 			continue
@@ -1305,6 +1515,71 @@ func nextShellWord(s string) (word string, remainder string, ok bool) {
 		return "", "", false
 	}
 	return b.String(), "", true
+}
+
+func isShellEscapableOutsideQuotes(c byte) bool {
+	return c == ' ' || c == '\t' || c == '\r' || c == '\n' ||
+		c == '\'' || c == '"' || c == '\\' ||
+		c == '|' || c == '&' || c == ';' || c == '<' || c == '>'
+}
+
+func isShellEscapableInDoubleQuotes(c byte) bool {
+	return c == '"' || c == '\\' || c == '$' || c == '`' || c == '\n'
+}
+
+func shellWords(command string) ([]string, bool) {
+	rest := strings.TrimSpace(command)
+	var words []string
+	for rest != "" {
+		word, remainder, ok := nextShellWord(rest)
+		if !ok {
+			return nil, false
+		}
+		words = append(words, word)
+		rest = strings.TrimLeft(remainder, " \t\r\n")
+	}
+	return words, true
+}
+
+func splitLeadingShellEnvAssignments(command string) ([]envFileEntry, string, bool) {
+	rest := strings.TrimSpace(command)
+	var assignments []envFileEntry
+	for rest != "" {
+		token, remainder, ok := nextShellWord(rest)
+		if !ok {
+			return nil, "", false
+		}
+		if !isShellEnvAssignment(token) {
+			return assignments, rest, true
+		}
+		key, value, ok := strings.Cut(token, "=")
+		if !ok || !isValidEnvKey(key) {
+			return assignments, rest, true
+		}
+		assignments = append(assignments, envFileEntry{key: key, value: value})
+		rest = strings.TrimLeft(remainder, " \t\r\n")
+	}
+	return assignments, "", true
+}
+
+func firstShellCommandToken(command string) (string, []string, bool) {
+	_, rest, ok := splitLeadingShellEnvAssignments(command)
+	if !ok {
+		return "", nil, false
+	}
+	words, ok := shellWords(rest)
+	if !ok || len(words) == 0 {
+		return "", nil, false
+	}
+	return words[0], words[1:], true
+}
+
+func commandBaseToken(token string) string {
+	base := filepath.Base(strings.Trim(token, `"'`))
+	for _, suffix := range []string{".exe", ".EXE", ".cmd", ".CMD", ".bat", ".BAT"} {
+		base = strings.TrimSuffix(base, suffix)
+	}
+	return base
 }
 
 func getCodexHomeDirForCommand(command string) string {
@@ -1330,6 +1605,10 @@ func (i *Instance) buildCodexCommand(baseCommand string) string {
 	}
 
 	plan := i.planCodexLaunch(baseCommand)
+	if !plan.appendResume && !plan.noAltScreen && !plan.foldExtraArgsWrapper {
+		return i.buildCodexEnvPrefix(plan.command) + plan.command
+	}
+
 	yoloFlag := i.resolveCodexYoloFlag()
 	modelFlag := i.resolveCodexModelFlag()
 	launchFlags := yoloFlag + modelFlag
@@ -1360,18 +1639,30 @@ func (i *Instance) buildCodexCommand(baseCommand string) string {
 	}
 
 	if i.CodexSessionID != "" && plan.appendResume {
-		launchCommand := fmt.Sprintf("%s%s resume %s", plan.command, launchFlags, i.CodexSessionID)
 		if plan.shell == codexLaunchShellWindowsCmd {
-			return shellCmdExeWrap(i.buildWindowsCmdCodexEnv(), launchCommand)
+			envParts, command := windowsCmdInlineEnvForCommand(plan.command)
+			launchCommand := fmt.Sprintf("%s%s resume %s", command, launchFlags, i.CodexSessionID)
+			return shellCmdExeWrap(append(i.buildWindowsCmdCodexEnv(plan.command), envParts...), launchCommand)
 		}
+		launchCommand := fmt.Sprintf("%s%s resume %s", plan.command, launchFlags, i.CodexSessionID)
 		return i.buildCodexEnvPrefix(plan.command) + launchCommand
 	}
 
-	launchCommand := plan.command + launchFlags
 	if plan.shell == codexLaunchShellWindowsCmd {
-		return shellCmdExeWrap(i.buildWindowsCmdCodexEnv(), launchCommand)
+		envParts, command := windowsCmdInlineEnvForCommand(plan.command)
+		launchCommand := command + launchFlags
+		return shellCmdExeWrap(append(i.buildWindowsCmdCodexEnv(plan.command), envParts...), launchCommand)
 	}
+	launchCommand := plan.command + launchFlags
 	return i.buildCodexEnvPrefix(plan.command) + launchCommand
+}
+
+// piAgentDeckSessionDirExpr returns a target-shell expression for the Pi session
+// directory Agent Deck owns for an instance. It intentionally uses target-side
+// $HOME rather than resolving the Agent Deck process' home directory, keeping
+// local, SSH, and sandbox launch paths consistent.
+func piAgentDeckSessionDirExpr(instanceID string) string {
+	return "${HOME}/.pi/agent-deck/" + shellescape.Quote(instanceID)
 }
 
 // buildPiCommand builds the command for the Pi CLI.
@@ -1390,17 +1681,56 @@ func (i *Instance) buildPiCommand(baseCommand string) string {
 		cmd = "pi"
 	}
 
-	// Use target-side $HOME rather than resolving the Agent Deck process' home
-	// directory. This keeps local, SSH, and sandbox launch paths consistent.
-	sessionDir := "${HOME}/.pi/agent-deck/" + shellescape.Quote(i.ID)
+	sessionDir := piAgentDeckSessionDirExpr(i.ID)
 	quotedInstanceID := shellescape.Quote(i.ID)
+	quotedProfile := shellescape.Quote(sessionProfileEnvValue())
 
 	return envPrefix + fmt.Sprintf(
-		"session_dir=%s; mkdir -p \"$session_dir\" && AGENTDECK_INSTANCE_ID=%s %s --continue --session-dir \"$session_dir\"",
+		"session_dir=%s; mkdir -p \"$session_dir\" && AGENTDECK_INSTANCE_ID=%s AGENTDECK_PROFILE=%s %s --continue --session-dir \"$session_dir\"",
 		sessionDir,
 		quotedInstanceID,
+		quotedProfile,
 		cmd,
 	)
+}
+
+func (i *Instance) buildPiForkCommandForTarget(target *Instance, baseCommand string) (string, error) {
+	if target == nil {
+		return "", fmt.Errorf("cannot build Pi fork command: target instance is nil")
+	}
+	if !i.CanForkPi() {
+		return "", fmt.Errorf("cannot fork: no Agent Deck Pi session directory")
+	}
+
+	envPrefix := target.buildEnvSourceCommand()
+	cmd := strings.TrimSpace(baseCommand)
+	if cmd == "" {
+		cmd = "pi"
+	}
+
+	parentSessionDir := piAgentDeckSessionDirExpr(i.ID)
+	sessionDir := piAgentDeckSessionDirExpr(target.ID)
+	quotedInstanceID := shellescape.Quote(target.ID)
+	quotedProfile := shellescape.Quote(sessionProfileEnvValue())
+
+	return envPrefix + fmt.Sprintf(
+		"parent_session_dir=%s; session_dir=%s; mkdir -p \"$session_dir\" && source_file=$(find \"$parent_session_dir\" -type f -name '*.jsonl' -exec ls -t {} + 2>/dev/null | head -n 1); if [ -z \"$source_file\" ]; then echo \"No Pi session file found in $parent_session_dir\" >&2; exit 1; fi; AGENTDECK_INSTANCE_ID=%s AGENTDECK_PROFILE=%s %s --fork \"$source_file\" --session-dir \"$session_dir\"",
+		parentSessionDir,
+		sessionDir,
+		quotedInstanceID,
+		quotedProfile,
+		cmd,
+	), nil
+}
+
+func (i *Instance) consumeForkStartCommand() string {
+	command := i.Command
+	if i.ForkStartCommand != "" {
+		command = i.ForkStartCommand
+		i.ForkStartCommand = ""
+	}
+	i.IsForkAwaitingStart = false
+	return command
 }
 
 // buildCursorCommand builds the command for the Cursor CLI (`cursor agent`).
@@ -1478,12 +1808,25 @@ func (i *Instance) planCodexLaunch(baseCommand string) codexLaunchPlan {
 		plan.shell = codexLaunchShellWindowsCmd
 	}
 	if i.shouldValidateCodexResumeOnHost(command) {
-		if codexHome, ok := i.codexHomeDirForResumeValidation(); ok {
+		if codexHome, ok := i.codexHomeDirForResumeValidation(command); ok {
 			plan.validateHostResume = true
 			plan.codexHome = codexHome
 		}
 	}
 	return plan
+}
+
+func (i *Instance) ensureCodexHomeDir() string {
+	codexHome := strings.TrimSpace(getCodexHomeDir())
+	if codexHome == "" {
+		return ""
+	}
+	if err := os.MkdirAll(codexHome, 0o755); err != nil {
+		sessionLog.Warn("codex_home_mkdir_failed",
+			slog.String("path", codexHome),
+			slog.String("error", err.Error()))
+	}
+	return codexHome
 }
 
 func (i *Instance) buildCodexEnvPrefix(command string) string {
@@ -1492,12 +1835,18 @@ func (i *Instance) buildCodexEnvPrefix(command string) string {
 		shellSetEnvCommandForPowerShell("AGENTDECK_INSTANCE_ID", i.ID, powerShell),
 		shellSetEnvCommandForPowerShell("AGENTDECK_TITLE", i.Title, powerShell),
 		shellSetEnvCommandForPowerShell("AGENTDECK_TOOL", i.Tool, powerShell),
+		shellSetEnvCommandForPowerShell("AGENTDECK_PROFILE", sessionProfileEnvValue(), powerShell),
+	}
+	if i.shouldInjectHostCodexHome(command) {
+		if codexHome := i.ensureCodexHomeDir(); codexHome != "" {
+			agentdeckParts = append(agentdeckParts, shellSetEnvCommandForPowerShell("CODEX_HOME", codexHome, powerShell))
+		}
 	}
 	sep := shellCommandSeparatorForPowerShell(powerShell)
 	return i.buildEnvSourceCommandForPowerShell(powerShell) + strings.Join(agentdeckParts, sep) + sep
 }
 
-func (i *Instance) buildWindowsCmdCodexEnv() []string {
+func (i *Instance) buildWindowsCmdCodexEnv(command string) []string {
 	parts := []string{
 		shellSetEnvCommandForCmd("COLORFGBG", ThemeColorFGBG()),
 	}
@@ -1506,8 +1855,34 @@ func (i *Instance) buildWindowsCmdCodexEnv() []string {
 		shellSetEnvCommandForCmd("AGENTDECK_INSTANCE_ID", i.ID),
 		shellSetEnvCommandForCmd("AGENTDECK_TITLE", i.Title),
 		shellSetEnvCommandForCmd("AGENTDECK_TOOL", i.Tool),
+		shellSetEnvCommandForCmd("AGENTDECK_PROFILE", sessionProfileEnvValue()),
 	)
+	if i.shouldInjectHostCodexHome(command) {
+		if codexHome := i.ensureCodexHomeDir(); codexHome != "" {
+			parts = append(parts, shellSetEnvCommandForCmd("CODEX_HOME", codexHome))
+		}
+	}
 	return parts
+}
+
+func (i *Instance) shouldInjectHostCodexHome(command string) bool {
+	if !isCodexHomeExplicit() || codexHomeFromCommand(command) != "" {
+		return false
+	}
+	_, ok, reliable := i.launchEnvValue("CODEX_HOME")
+	return reliable && !ok
+}
+
+func windowsCmdInlineEnvForCommand(command string) ([]string, string) {
+	assignments, rest, ok := splitLeadingShellEnvAssignments(command)
+	if !ok || len(assignments) == 0 || strings.TrimSpace(rest) == "" {
+		return nil, command
+	}
+	parts := windowsCmdEnvEntryCommands(assignments)
+	if len(parts) == 0 {
+		return nil, command
+	}
+	return parts, strings.TrimSpace(rest)
 }
 
 func (i *Instance) buildWindowsCmdEnvSourceCommands() []string {
@@ -1675,7 +2050,10 @@ func codexRolloutExistsInHome(codexHome, sessionID string) bool {
 	return found
 }
 
-func (i *Instance) codexHomeDirForResumeValidation() (string, bool) {
+func (i *Instance) codexHomeDirForResumeValidation(command string) (string, bool) {
+	if codexHome := codexHomeFromCommand(command); codexHome != "" {
+		return normalizeLaunchEnvPath(codexHome, i.ProjectPath), true
+	}
 	value, ok, reliable := i.launchEnvValue("CODEX_HOME")
 	if !reliable {
 		return "", false
@@ -2781,7 +3159,16 @@ func (i *Instance) updateCodexSession(excludeIDs map[string]bool, forceProbe boo
 		}
 	}
 
-	// 3. Detect same-project session rotation (e.g. /new) from disk.
+	// 3. Use disk scan only as a bootstrap fallback. Once a session ID is
+	// known, rotation must come from authoritative live evidence above (tmux
+	// env, hook payload, or the Codex process' open rollout file). Polling the
+	// full historical $CODEX_HOME/sessions tree for every active Codex session
+	// burns CPU on large histories and has no stronger ownership signal than the
+	// current binding.
+	if i.CodexSessionID != "" {
+		return missingProbeDep
+	}
+
 	// Only allow unscoped fallback when we don't have a known session ID yet.
 	allowUnscoped := envSessionID == "" && i.CodexSessionID == "" && i.CodexStartedAt > 0
 	if !i.shouldScanCodexSession(allowUnscoped) {
@@ -2911,6 +3298,25 @@ func (i *Instance) GetGenericSessionID() string {
 		return ""
 	}
 	return sessionID
+}
+
+// DisplaySessionID returns the session ID the PREVIEW pane surfaces for this
+// instance's tool, mirroring the per-tool branching in the right-pane render
+// so a copy of the preview info carries the same ID the user sees. Returns ""
+// when no session ID is known for the tool.
+func (i *Instance) DisplaySessionID() string {
+	switch {
+	case IsClaudeCompatible(i.Tool):
+		return i.ClaudeSessionID
+	case i.Tool == "gemini":
+		return i.GeminiSessionID
+	case i.Tool == "opencode":
+		return i.OpenCodeSessionID
+	case i.Tool == "codex":
+		return i.CodexSessionID
+	default:
+		return i.GetGenericSessionID()
+	}
 }
 
 // CanRestartGeneric returns true if a custom tool can be restarted with session resume
@@ -3160,18 +3566,16 @@ func (i *Instance) Start() error {
 	commandRequiresPOSIXShell := false
 	switch {
 	case IsClaudeCompatible(i.Tool):
-		// #745 fork guard: a fork target arrives here with i.Command
-		// already populated with the exact `claude --session-id <new>
-		// --resume <parent> --fork-session` command built by
-		// buildClaudeForkCommandForTarget. It also carries a pre-assigned
-		// ClaudeSessionID (the new fork UUID), which would otherwise send
-		// us into buildClaudeResumeCommand and silently drop --resume /
-		// --fork-session. Run the fork command verbatim and clear the
-		// sentinel so a subsequent Restart() takes the normal resume path.
+		// #745 fork guard: a fork target arrives here with a pre-built
+		// first-start command (`claude --session-id <new> --resume <parent>
+		// --fork-session`) and a pre-assigned ClaudeSessionID (the new fork
+		// UUID), which would otherwise send us into buildClaudeResumeCommand
+		// and silently drop --resume / --fork-session. Run the fork command
+		// verbatim and clear the sentinel so a subsequent Restart() takes the
+		// normal resume path.
 		if i.IsForkAwaitingStart {
-			command = i.Command
+			command = i.consumeForkStartCommand()
 			commandRequiresPOSIXShell = true
-			i.IsForkAwaitingStart = false
 			sessionLog.Info("resume: none reason=fork_awaiting_start",
 				slog.String("instance_id", i.ID),
 				slog.String("path", i.ProjectPath),
@@ -3211,14 +3615,48 @@ func (i *Instance) Start() error {
 		// Record start time for session ID detection (Unix millis)
 		i.CopilotStartedAt = time.Now().UnixMilli()
 	case i.Tool == "opencode":
+		if i.IsForkAwaitingStart {
+			// Wrap the deferred fork script through buildOpenCodeCommand so the
+			// first-start command is byte-identical to the pre-deferred behavior
+			// (the script carries its own env prefix); restart falls through to the
+			// resume/fresh branch below via the stable "opencode" base Command.
+			command = i.buildOpenCodeCommand(i.consumeForkStartCommand())
+			i.OpenCodeStartedAt = time.Now().UnixMilli()
+			sessionLog.Info("resume: none reason=fork_awaiting_start",
+				slog.String("instance_id", i.ID),
+				slog.String("path", i.ProjectPath),
+				slog.String("reason", "fork_awaiting_start"))
+			break
+		}
 		command = i.buildOpenCodeCommand(i.Command)
 		// Record start time for session ID detection (Unix millis)
 		i.OpenCodeStartedAt = time.Now().UnixMilli()
 	case IsCodexCompatible(i.Tool):
+		if i.IsForkAwaitingStart {
+			command = i.consumeForkStartCommand()
+			// Stamp the start time so the session-id disk scan is lower-bounded and
+			// can't rebind this fork to an older same-project rollout (e.g. the
+			// parent it just forked from). The normal path stamps after
+			// buildCodexCommand, which this fork branch skips.
+			i.CodexStartedAt = time.Now().UnixMilli()
+			sessionLog.Info("resume: none reason=fork_awaiting_start",
+				slog.String("instance_id", i.ID),
+				slog.String("path", i.ProjectPath),
+				slog.String("reason", "fork_awaiting_start"))
+			break
+		}
 		command = i.buildCodexCommand(i.Command)
 		// Record start time for session ID detection (Unix millis)
 		i.CodexStartedAt = time.Now().UnixMilli()
 	case i.Tool == "pi":
+		if i.IsForkAwaitingStart {
+			command = i.consumeForkStartCommand()
+			sessionLog.Info("resume: none reason=fork_awaiting_start",
+				slog.String("instance_id", i.ID),
+				slog.String("path", i.ProjectPath),
+				slog.String("reason", "fork_awaiting_start"))
+			break
+		}
 		command = i.buildPiCommand(i.Command)
 	case i.Tool == "copilot":
 		command = i.buildCopilotCommand(i.Command)
@@ -3273,6 +3711,12 @@ func (i *Instance) Start() error {
 	if err := i.tmuxSession.SetEnvironment("AGENTDECK_INSTANCE_ID", i.ID); err != nil {
 		sessionLog.Warn("set_instance_id_failed", slog.String("error", err.Error()))
 	}
+
+	// Set AGENTDECK_PROFILE (host-side, tool-agnostic) so a bare `agent-deck`
+	// command run inside this session resolves the session's own profile rather
+	// than falling back to "default". Covers shells/OpenCode/etc. that have no
+	// inline env-prefix injection of their own.
+	i.ensureProfileEnv()
 
 	// Propagate tool session IDs into the tmux environment (host-side, works for both
 	// sandbox and non-sandbox sessions). This replaces the previous approach of embedding
@@ -3380,12 +3824,11 @@ func (i *Instance) StartWithMessage(message string) error {
 	case IsClaudeCompatible(i.Tool):
 		// #745 fork guard: mirrors the Start() branch above. A fork target
 		// that arrives through StartWithMessage must also bypass the
-		// resume/fresh dispatch and run i.Command verbatim, or the
-		// --resume <parent>/--fork-session flags are silently dropped.
+		// resume/fresh dispatch and run its first-start command verbatim, or
+		// the --resume <parent>/--fork-session flags are silently dropped.
 		if i.IsForkAwaitingStart {
-			command = i.Command
+			command = i.consumeForkStartCommand()
 			commandRequiresPOSIXShell = true
-			i.IsForkAwaitingStart = false
 			sessionLog.Info("resume: none reason=fork_awaiting_start",
 				slog.String("instance_id", i.ID),
 				slog.String("path", i.ProjectPath),
@@ -3421,12 +3864,42 @@ func (i *Instance) StartWithMessage(message string) error {
 	case i.Tool == "gemini":
 		command = i.buildGeminiCommand(i.Command)
 	case i.Tool == "opencode":
+		if i.IsForkAwaitingStart {
+			command = i.buildOpenCodeCommand(i.consumeForkStartCommand())
+			i.OpenCodeStartedAt = time.Now().UnixMilli()
+			sessionLog.Info("resume: none reason=fork_awaiting_start",
+				slog.String("instance_id", i.ID),
+				slog.String("path", i.ProjectPath),
+				slog.String("reason", "fork_awaiting_start"))
+			break
+		}
 		command = i.buildOpenCodeCommand(i.Command)
 		i.OpenCodeStartedAt = time.Now().UnixMilli()
 	case IsCodexCompatible(i.Tool):
+		if i.IsForkAwaitingStart {
+			command = i.consumeForkStartCommand()
+			// Stamp the start time so the session-id disk scan is lower-bounded and
+			// can't rebind this fork to an older same-project rollout (e.g. the
+			// parent it just forked from). The normal path stamps after
+			// buildCodexCommand, which this fork branch skips.
+			i.CodexStartedAt = time.Now().UnixMilli()
+			sessionLog.Info("resume: none reason=fork_awaiting_start",
+				slog.String("instance_id", i.ID),
+				slog.String("path", i.ProjectPath),
+				slog.String("reason", "fork_awaiting_start"))
+			break
+		}
 		command = i.buildCodexCommand(i.Command)
 		i.CodexStartedAt = time.Now().UnixMilli()
 	case i.Tool == "pi":
+		if i.IsForkAwaitingStart {
+			command = i.consumeForkStartCommand()
+			sessionLog.Info("resume: none reason=fork_awaiting_start",
+				slog.String("instance_id", i.ID),
+				slog.String("path", i.ProjectPath),
+				slog.String("reason", "fork_awaiting_start"))
+			break
+		}
 		command = i.buildPiCommand(i.Command)
 	case i.Tool == "copilot":
 		command = i.buildCopilotCommand(i.Command)
@@ -3483,6 +3956,12 @@ func (i *Instance) StartWithMessage(message string) error {
 	if err := i.tmuxSession.SetEnvironment("AGENTDECK_INSTANCE_ID", i.ID); err != nil {
 		sessionLog.Warn("set_instance_id_failed", slog.String("error", err.Error()))
 	}
+
+	// Set AGENTDECK_PROFILE (host-side, tool-agnostic) so a bare `agent-deck`
+	// command run inside this session resolves the session's own profile rather
+	// than falling back to "default". Covers shells/OpenCode/etc. that have no
+	// inline env-prefix injection of their own.
+	i.ensureProfileEnv()
 
 	// Propagate tool session IDs into the tmux environment (host-side, works for both
 	// sandbox and non-sandbox sessions).
@@ -3732,6 +4211,68 @@ func hookFastPathFreshnessForTool(tool, hookStatus string) time.Duration {
 	}
 }
 
+// shellForegroundRunning reports whether a "shell" tool session currently has a
+// genuine non-interactive foreground process running (e.g. "node" from
+// `yarn dev`, "java" from `mvn spring-boot:run`). It returns false for the
+// interactive shell itself and for interactive foreground programs (editors,
+// pagers, system monitors, remote shells, multiplexers) that are really waiting
+// for the user rather than doing background work — otherwise opening vim or
+// sitting at an ssh prompt would show a perpetual running indicator.
+//
+// It relies on the pane-info cache warmed once per tick by RefreshPaneInfoCache
+// (TUI backgroundStatusUpdate / Web refreshStatuses / CLI status refresh). When
+// the cache is cold the lookup misses and this returns false, preserving the
+// historical "shell maps to idle" behavior. Caller must hold i.mu.
+//
+// The feature is opt-in via [status] shell_running_indicator (default false):
+// the interactive-program denylist cannot be complete, so without the flag a
+// shell sitting at a psql/REPL/fzf prompt would flip everyone's historical
+// "shell → idle" default to running.
+//
+// Staleness guards — only fresh pane info may promote idle→running:
+//   - GetCachedPaneInfoSnapshot enforces the cache-wide 4s TTL (2 ticks).
+//   - A dead pane (#{pane_dead}) means the command already exited.
+//   - A snapshot taken before this instance's last start describes a previous
+//     same-name session (kill+recreate within the TTL), not this one.
+func (i *Instance) shellForegroundRunning() bool {
+	if i.tmuxSession == nil {
+		return false
+	}
+	cfg, _ := LoadUserConfig()
+	if cfg == nil || !cfg.Status.ShellRunningIndicator {
+		return false
+	}
+	paneInfo, snapshotAt, ok := tmux.GetCachedPaneInfoSnapshot(i.tmuxSession.Name)
+	if !ok || paneInfo.Dead || paneInfo.CurrentCommand == "" {
+		return false
+	}
+	if !i.lastStartTime.IsZero() && snapshotAt.Before(i.lastStartTime) {
+		return false
+	}
+	cmd := paneInfo.CurrentCommand
+	if isShellBinary(cmd) || isInteractiveForegroundProgram(cmd) {
+		return false
+	}
+	return true
+}
+
+// neverStarted reports whether this session was added but never started, so an
+// absent tmux session is expected rather than a fault. Two conditions must both
+// hold (caller holds i.mu):
+//
+//  1. The instance was added in THIS process (addedThisProcess), not reloaded
+//     from storage. A reloaded session whose tmux later dies is a genuine error
+//     (instance_cli_parity_test.go TestUpdateStatus_CLIvsTUIParity_Error builds
+//     a reloaded struct literal, so addedThisProcess is false there).
+//  2. Start() was never called (lastStartTime is zero). A started-then-killed
+//     session has a non-zero lastStartTime and must surface as error
+//     (lifecycle_regression_test.go phase5).
+//  3. The status is still the pristine post-add state (idle or starting).
+func (i *Instance) neverStarted() bool {
+	return i.addedThisProcess && i.lastStartTime.IsZero() &&
+		(i.Status == StatusIdle || i.Status == StatusStarting)
+}
+
 // UpdateStatus updates the session status by checking tmux.
 // Thread-safe: acquires write lock to protect Status, Tool, and internal cache fields.
 func (i *Instance) UpdateStatus() error {
@@ -3758,7 +4299,11 @@ func (i *Instance) UpdateStatus() error {
 	}
 
 	if i.tmuxSession == nil {
-		if i.Status != StatusStopped {
+		if i.neverStarted() {
+			// A session that was added but never started has no tmux yet; it is
+			// not an error, just not-yet-running. Keep it idle (✕ → ○).
+			i.Status = StatusIdle
+		} else if i.Status != StatusStopped {
 			i.Status = StatusError
 		}
 		return nil
@@ -3774,7 +4319,11 @@ func (i *Instance) UpdateStatus() error {
 
 	// Check if tmux session exists
 	if !i.tmuxSession.Exists() {
-		if i.Status != StatusStopped {
+		if i.neverStarted() {
+			// Added but never started: no tmux session was ever created, so an
+			// absent tmux is expected — classify as idle, not error (✕ → ○).
+			i.Status = StatusIdle
+		} else if i.Status != StatusStopped {
 			if i.tmuxSession.ExistsWithConfirmation() {
 				return nil
 			}
@@ -3932,15 +4481,34 @@ func (i *Instance) UpdateStatus() error {
 	case "active":
 		i.Status = StatusRunning
 	case "waiting":
+		// tmux reports a shell prompt ("waiting"), but a non-interactive foreground
+		// process may still be running (e.g. "yarn dev", "mvn spring-boot:run").
+		// shellForegroundRunning() inspects the cached pane command to tell them apart.
 		if i.Tool == "shell" {
-			i.Status = StatusIdle
+			if i.shellForegroundRunning() {
+				i.Status = StatusRunning
+			} else {
+				i.Status = StatusIdle
+			}
 		} else {
 			i.Status = StatusWaiting
 		}
 	case "idle":
-		i.Status = StatusIdle
+		// Acknowledged shell sessions can still have a foreground process running
+		// even after the user has attached; keep surfacing that as running.
+		if i.Tool == "shell" && i.shellForegroundRunning() {
+			i.Status = StatusRunning
+		} else {
+			i.Status = StatusIdle
+		}
 	case "starting":
 		i.Status = StatusStarting
+	case "error":
+		// Pane shows a tool-rendered error banner (#1400): auth failure
+		// ("API Error: 401" / "Please run /login") or a dead connection
+		// ("socket connection closed"). The process is alive but cannot make
+		// progress without user action — report error, not waiting.
+		i.Status = StatusError
 	case "inactive":
 		i.Status = StatusError
 	default:
@@ -4167,6 +4735,22 @@ func (i *Instance) UpdateHookStatus(status *HookStatus) {
 		}
 	}
 
+	// Issue #1349 defense-in-depth #1: never bind a session id from a terminal
+	// hook event (e.g. SessionEnd). The status/event/ack bookkeeping above still
+	// applies, but a terminal payload's session_id is stale by definition and
+	// must not become a bind source — that is exactly what re-binds a
+	// stopped/removed session every poll cycle and collides session ids.
+	//
+	// Accepted tradeoff: if the daemon's first-ever observation of a session is
+	// a SessionEnd (e.g. it was down during the SessionStart/UserPromptSubmit
+	// edges and only the latest event survives in the hook file), the bind is
+	// skipped and the prior ClaudeSessionID stays. That is the correct call —
+	// the session is already gone, so binding its (possibly reused) id onto a
+	// now-dead instance is the corruption we are preventing, not a feature.
+	if isTerminalHookEvent(status.Event) {
+		return
+	}
+
 	// Resolve session ID from hook payload first, then sidecar anchor.
 	sessionID := strings.TrimSpace(status.SessionID)
 	hookSource := "hook_payload"
@@ -4341,6 +4925,40 @@ func (i *Instance) GetHookStatus() (string, bool) {
 	}
 	fresh := time.Since(i.hookLastUpdate) < hookFastPathFreshnessForTool(i.Tool, i.hookStatus)
 	return i.hookStatus, fresh
+}
+
+// GetAutoNameDescription returns the last captured Claude task description for
+// an AutoName session (empty if none captured yet). Thread-safe.
+func (i *Instance) GetAutoNameDescription() string {
+	i.mu.RLock()
+	defer i.mu.RUnlock()
+	return i.autoNameDescription
+}
+
+// GetAutoName reports whether this session should display a captured/live task
+// description instead of its machine-generated handle. Thread-safe.
+func (i *Instance) GetAutoName() bool {
+	i.mu.RLock()
+	defer i.mu.RUnlock()
+	return i.AutoName
+}
+
+// SetAutoName updates whether this session should display a captured/live task
+// description instead of its machine-generated handle. Thread-safe.
+func (i *Instance) SetAutoName(autoName bool) {
+	i.mu.Lock()
+	i.AutoName = autoName
+	i.mu.Unlock()
+}
+
+// SetAutoNameDescription records the latest Claude task description for an
+// AutoName session so it can be persisted and shown on reopen. Thread-safe.
+func (i *Instance) SetAutoNameDescription(desc string) {
+	i.mu.Lock()
+	if strings.TrimSpace(desc) != "" {
+		i.autoNameDescription = desc
+	}
+	i.mu.Unlock()
 }
 
 // ClearHookStatus resets the hook-based status and removes the persisted hook
@@ -4902,6 +5520,25 @@ func (i *Instance) GetLastResponse() (*ResponseOutput, error) {
 	return i.getTerminalLastResponse()
 }
 
+// GetLastResponseBestEffortChecked is the collision-aware variant of
+// GetLastResponseBestEffort (issue #1400). `session output` (including -q)
+// parses the transcript that ClaudeSessionID resolves to; when multiple LIVE
+// instances share one claude_session_id they all resolve to the SAME transcript
+// and return byte-identical "last responses". Given the instance's profile
+// peers, this refuses the read with the same collision semantics #1352 gave
+// `session output --stream` (GetJSONLPathChecked: live peers sharing both the
+// session id and the transcript dir), instead of silently returning another
+// session's output. Non-Claude tools and the no-collision case delegate to
+// GetLastResponseBestEffort unchanged.
+func (i *Instance) GetLastResponseBestEffortChecked(peers []*Instance) (*ResponseOutput, error) {
+	if IsClaudeCompatible(i.Tool) {
+		if _, err := i.GetJSONLPathChecked(peers); err != nil {
+			return nil, fmt.Errorf("refusing to read a colliding transcript: %w", err)
+		}
+	}
+	return i.GetLastResponseBestEffort()
+}
+
 // GetLastResponseBestEffort returns the last assistant response with fallback logic
 // intended for CLI read paths (like `session output`) where we prefer useful output
 // over hard errors.
@@ -4990,6 +5627,67 @@ func (i *Instance) GetLastResponseBestEffort() (*ResponseOutput, error) {
 	}
 
 	return nil, err
+}
+
+// ClaudeSessionIDCollidesWith reports whether another LIVE instance in peers
+// would resolve to the SAME transcript as this instance: it shares this
+// instance's (non-empty) ClaudeSessionID AND resolves to the same transcript
+// directory (same Claude config dir + same encoded project path). A many-to-one
+// session-id → live-instance mapping on one transcript is the data-integrity
+// hazard #1349 describes: two live instances pointed at one transcript would
+// cross-route input/output. Two instances that happen to share a session id but
+// resolve to different transcript dirs (different project/config) are NOT a
+// collision and are not blocked.
+func (i *Instance) ClaudeSessionIDCollidesWith(peers []*Instance) bool {
+	if i.ClaudeSessionID == "" {
+		return false
+	}
+	mine := i.claudeTranscriptDir()
+	for _, p := range peers {
+		if p == nil || p.ID == i.ID {
+			continue
+		}
+		if p.ClaudeSessionID != i.ClaudeSessionID || !isLiveSessionStatus(p.Status) {
+			continue
+		}
+		if p.claudeTranscriptDir() == mine {
+			return true
+		}
+	}
+	return false
+}
+
+// claudeTranscriptDir returns the directory that GetJSONLPath would place this
+// instance's transcript in (config dir + encoded project path), used to decide
+// whether two instances would collide on the same transcript file. It mirrors
+// GetJSONLPath's resolution (GetClaudeConfigDir + i.ProjectPath) exactly, so the
+// collision verdict matches the path the guard protects.
+func (i *Instance) claudeTranscriptDir() string {
+	configDir := GetClaudeConfigDir()
+	resolvedPath := i.ProjectPath
+	if resolved, err := filepath.EvalSymlinks(i.ProjectPath); err == nil {
+		resolvedPath = resolved
+	}
+	return filepath.Join(configDir, "projects", ConvertToClaudeDirName(resolvedPath))
+}
+
+// GetJSONLPathChecked is the collision-aware variant of GetJSONLPath (issue
+// #1349 defense-in-depth #2). Given the set of instances it shares a profile
+// with, it refuses to resolve a transcript path when this instance's
+// ClaudeSessionID collides with another LIVE instance's ClaudeSessionID —
+// because two live instances mapped to one session-id would otherwise read the
+// same transcript, corrupting routing. When there is no collision it delegates
+// to GetJSONLPath.
+func (i *Instance) GetJSONLPathChecked(peers []*Instance) (string, error) {
+	if i.ClaudeSessionIDCollidesWith(peers) {
+		_ = WriteSessionIDLifecycleEvent(SessionIDLifecycleEvent{
+			InstanceID: i.ID, Tool: i.Tool, Action: "reject",
+			Source: "jsonl_resolve", OldID: i.ClaudeSessionID, Candidate: i.ClaudeSessionID,
+			Reason: "claude_session_id_collision_across_live_instances",
+		})
+		return "", fmt.Errorf("claude_session_id %q is shared by more than one live instance; refusing to resolve a colliding transcript path for instance %s", i.ClaudeSessionID, i.ID)
+	}
+	return i.GetJSONLPath(), nil
 }
 
 // GetJSONLPath returns the path to the Claude session JSONL file for analytics
@@ -5803,6 +6501,10 @@ func (i *Instance) Restart() error {
 
 		mcpLog.Debug("respawn_pane_claude_succeeded")
 
+		// Re-assert AGENTDECK_PROFILE host-side: this respawn branch returns
+		// before the fallback recreate path that would otherwise set it.
+		i.ensureProfileEnv()
+
 		// Persist .sid sidecar so hook events after restart can be correlated
 		WriteHookSessionAnchor(i.ID, i.ClaudeSessionID)
 
@@ -5842,6 +6544,11 @@ func (i *Instance) Restart() error {
 		}
 
 		sessionLog.Info("restart_gemini_respawn_succeeded")
+
+		// Re-assert AGENTDECK_PROFILE host-side: gemini's rebuilt resume command
+		// carries no inline AGENTDECK_PROFILE prefix, and this branch returns
+		// before the fallback recreate path that would otherwise set it.
+		i.ensureProfileEnv()
 
 		// Persist .sid sidecar so hook events after restart can be correlated
 		WriteHookSessionAnchor(i.ID, i.GeminiSessionID)
@@ -5896,6 +6603,11 @@ func (i *Instance) Restart() error {
 		}
 
 		sessionLog.Info("restart_opencode_respawn_succeeded")
+
+		// Re-assert AGENTDECK_PROFILE host-side: opencode's rebuilt resume command
+		// carries no inline AGENTDECK_PROFILE prefix, and this branch returns
+		// before the fallback recreate path that would otherwise set it.
+		i.ensureProfileEnv()
 
 		// Persist .sid sidecar so hook events after restart can be correlated
 		if i.OpenCodeSessionID != "" {
@@ -5963,6 +6675,11 @@ func (i *Instance) Restart() error {
 
 		sessionLog.Info("restart_codex_respawn_succeeded")
 
+		// Re-assert AGENTDECK_PROFILE host-side as a belt-and-suspenders to the
+		// inline prefix buildCodexCommand already injects; this branch returns
+		// before the fallback recreate path that would otherwise set it.
+		i.ensureProfileEnv()
+
 		// Persist .sid sidecar so hook events after restart can be correlated
 		WriteHookSessionAnchor(i.ID, i.CodexSessionID)
 
@@ -6007,6 +6724,12 @@ func (i *Instance) Restart() error {
 		}
 
 		sessionLog.Info("restart_generic_respawn_succeeded", slog.String("tool", i.Tool))
+
+		// Re-assert AGENTDECK_PROFILE host-side: the generic resume command is a
+		// bare `<cmd> <resumeFlag> <sid>` with no inline AGENTDECK_PROFILE prefix,
+		// and this branch returns before the fallback recreate path.
+		i.ensureProfileEnv()
+
 		i.loadCustomPatternsFromConfig() // Reload custom patterns
 		i.Status = StatusWaiting
 		return nil
@@ -6112,6 +6835,12 @@ func (i *Instance) Restart() error {
 	if err := i.tmuxSession.SetEnvironment("AGENTDECK_INSTANCE_ID", i.ID); err != nil {
 		sessionLog.Warn("set_instance_id_failed", slog.String("error", err.Error()))
 	}
+
+	// Set AGENTDECK_PROFILE (host-side, tool-agnostic) so a bare `agent-deck`
+	// command run inside this session resolves the session's own profile rather
+	// than falling back to "default". Covers shells/OpenCode/etc. that have no
+	// inline env-prefix injection of their own.
+	i.ensureProfileEnv()
 
 	// Propagate all known tool session IDs to the tmux environment (host-side).
 	// This covers Restart() which uses buildClaudeResumeCommand() and similar
@@ -6326,6 +7055,44 @@ func (i *Instance) ApplyLaunchModel(model string) error {
 	}
 }
 
+// ClearLaunchModel removes any per-session model override so the session falls
+// back to the configured default ([claude].default_model, etc.) on the next
+// start/restart (#1436). Mirrors ApplyLaunchModel across tools; a no-op when
+// no override is set.
+func (i *Instance) ClearLaunchModel() error {
+	if i == nil {
+		return nil
+	}
+	switch {
+	case IsClaudeCompatible(i.Tool):
+		opts := i.GetClaudeOptions()
+		if opts == nil {
+			return nil
+		}
+		opts.Model = ""
+		return i.SetClaudeOptions(opts)
+	case i.Tool == "gemini":
+		i.GeminiModel = ""
+		return nil
+	case i.Tool == "opencode":
+		opts := i.GetOpenCodeOptions()
+		if opts == nil {
+			return nil
+		}
+		opts.Model = ""
+		return i.SetOpenCodeOptions(opts)
+	case IsCodexCompatible(i.Tool):
+		opts := i.GetCodexOptions()
+		if opts == nil {
+			return nil
+		}
+		opts.Model = ""
+		return i.SetCodexOptions(opts)
+	default:
+		return nil
+	}
+}
+
 // CanRestart returns true if the session can be restarted
 // For Claude sessions with known ID: can always restart (interrupt and resume)
 // For Gemini sessions with known ID: can always restart (interrupt and resume)
@@ -6423,6 +7190,18 @@ func (i *Instance) CanFork() bool {
 		return i.CanForkOpenCode()
 	}
 
+	// Pi sessions fork by source JSONL path under Agent Deck's per-instance
+	// Pi session directory. The launch command validates that a JSONL exists.
+	if i.Tool == "pi" {
+		return i.CanForkPi()
+	}
+
+	// Codex-compatible sessions fork via `codex fork <sid>`, gated on a
+	// flushed on-disk rollout (same invariant as `codex resume`).
+	if IsCodexCompatible(i.Tool) {
+		return i.CanForkCodex()
+	}
+
 	// Claude sessions can fork if session ID is recent
 	if i.ClaudeSessionID == "" {
 		return false
@@ -6432,7 +7211,43 @@ func (i *Instance) CanFork() bool {
 
 // CanForkOpenCode returns true if this OpenCode session can be forked
 func (i *Instance) CanForkOpenCode() bool {
-	return i.Tool == "opencode" && i.OpenCodeSessionID != "" && time.Since(i.OpenCodeDetectedAt) < 5*time.Minute
+	sessionID, err := normalizeToolSessionID(FieldOpenCodeSessionID, i.OpenCodeSessionID)
+	return i.Tool == "opencode" && err == nil && sessionID != "" && sessionID == strings.TrimSpace(i.OpenCodeSessionID) && time.Since(i.OpenCodeDetectedAt) < 5*time.Minute
+}
+
+// CanForkPi returns true if this Pi session can be forked by Agent Deck.
+func (i *Instance) CanForkPi() bool {
+	if i.Tool != "pi" || i.ID == "" {
+		return false
+	}
+	// For local non-sandboxed Pi sessions, require an actual source JSONL so
+	// CLI/TUI fork attempts fail before creating an immediately-dead child tmux
+	// pane. Remote/sandboxed sessions use target-side $HOME, which this process
+	// cannot inspect, so the launch command performs the runtime validation.
+	if i.SSHHost == "" && !i.IsSandboxed() {
+		return i.hasLocalPiSessionFile()
+	}
+	return true
+}
+
+func (i *Instance) hasLocalPiSessionFile() bool {
+	home, err := userHomeDir()
+	if err != nil || home == "" {
+		return false
+	}
+	sessionDir := filepath.Join(home, ".pi", "agent-deck", i.ID)
+	found := false
+	_ = filepath.WalkDir(sessionDir, func(path string, d os.DirEntry, err error) error {
+		if err != nil || d == nil || d.IsDir() {
+			return nil
+		}
+		if strings.EqualFold(filepath.Ext(path), ".jsonl") {
+			found = true
+			return filepath.SkipAll
+		}
+		return nil
+	})
+	return found
 }
 
 // Fork returns the command to create a forked Claude session
@@ -6542,6 +7357,17 @@ func (i *Instance) CreateForkedInstanceWithOptions(
 	}
 	forked.Tool = "claude"
 
+	// #1407: persist the parent's ExtraArgs onto the fork record. The baked
+	// one-shot fork command below inherits them implicitly via the builder
+	// (which reads the PARENT's ExtraArgs), but without persisting them on
+	// the fork they silently drop on the fork's first restart
+	// (buildClaudeResumeCommand reads the fork's own ExtraArgs) and a
+	// fork-of-a-fork never sees them at all. Mirrors how ClaudeOptions are
+	// persisted via SetClaudeOptions further down. Copied, not aliased.
+	if len(i.ExtraArgs) > 0 {
+		forked.ExtraArgs = append([]string(nil), i.ExtraArgs...)
+	}
+
 	cmd, err := i.buildClaudeForkCommandForTarget(forked, opts)
 	if err != nil {
 		return nil, "", err
@@ -6570,6 +7396,30 @@ func (i *Instance) CreateForkedInstanceWithOptions(
 	return forked, cmd, nil
 }
 
+// CreateForkedInstanceForTool creates a forked instance using the correct
+// tool-specific fork implementation. opts is the shared fork carrier for
+// worktree fields; non-Claude tool options continue to come from global config.
+func (i *Instance) CreateForkedInstanceForTool(newTitle, newGroupPath string, opts *ClaudeOptions) (*Instance, string, error) {
+	switch {
+	case i.Tool == "opencode":
+		workDir := i.ProjectPath
+		repoRoot := ""
+		branch := ""
+		if opts != nil && opts.WorkDir != "" {
+			workDir = opts.WorkDir
+			repoRoot = opts.WorktreeRepoRoot
+			branch = opts.WorktreeBranch
+		}
+		return i.CreateForkedOpenCodeInstanceWithOptionsAndWorkDir(newTitle, newGroupPath, nil, workDir, repoRoot, branch)
+	case i.Tool == "pi":
+		return i.CreateForkedPiInstanceWithOptions(newTitle, newGroupPath, opts)
+	case IsCodexCompatible(i.Tool):
+		return i.CreateForkedCodexInstanceWithOptions(newTitle, newGroupPath, opts)
+	default:
+		return i.CreateForkedInstanceWithOptions(newTitle, newGroupPath, opts)
+	}
+}
+
 // ForkOpenCode returns the command to create a forked OpenCode session.
 // Uses export/import to clone the session with a new ID, then launches
 // the forked session with opencode -s <new-id>.
@@ -6582,23 +7432,29 @@ func (i *Instance) ForkOpenCode(newTitle, newGroupPath string) (string, error) {
 // Uses export/import to clone the session with a new ID, then launches
 // the forked session with opencode -s <new-id> plus any model/agent flags.
 func (i *Instance) ForkOpenCodeWithOptions(newTitle, newGroupPath string, opts *OpenCodeOptions) (string, error) {
+	return i.forkOpenCodeWithOptionsInWorkDir(newTitle, newGroupPath, opts, i.ProjectPath)
+}
+
+func (i *Instance) forkOpenCodeWithOptionsInWorkDir(newTitle, newGroupPath string, opts *OpenCodeOptions, workDir string) (string, error) {
 	if !i.CanForkOpenCode() {
 		return "", fmt.Errorf("cannot fork: no active OpenCode session")
 	}
+	if strings.TrimSpace(workDir) == "" {
+		workDir = i.ProjectPath
+	}
 
-	workDir := i.ProjectPath
 	envPrefix := i.buildEnvSourceCommandForPowerShell(false)
 
 	// Build extra flags from options (for fork, exclude session mode flags)
 	var extraFlags string
 	if opts != nil {
 		for _, arg := range opts.ToArgsForFork() {
-			extraFlags += " " + arg
+			extraFlags += " " + shellescape.Quote(arg)
 		}
 	} else if config, err := LoadUserConfig(); err == nil && config != nil {
 		defaultOpts := NewOpenCodeOptions(config)
 		for _, arg := range defaultOpts.ToArgsForFork() {
-			extraFlags += " " + arg
+			extraFlags += " " + shellescape.Quote(arg)
 		}
 	}
 
@@ -6613,8 +7469,11 @@ func (i *Instance) ForkOpenCodeWithOptions(newTitle, newGroupPath string, opts *
 // writeOpenCodeForkScript writes a bash script that forks via export/import.
 // The script self-deletes after execution.
 func (i *Instance) writeOpenCodeForkScript(workDir, envPrefix, extraFlags string) (string, error) {
+	quotedWorkDir := shellescape.Quote(workDir)
+	quotedSessionID := shellescape.Quote(i.OpenCodeSessionID)
+	sedSessionID := strings.ReplaceAll(i.OpenCodeSessionID, ".", `\.`)
 	script := fmt.Sprintf(`#!/bin/bash
-cd "%s" || { echo "cd failed to: %s"; exit 1; }
+cd %s || { printf 'cd failed to: %%s\n' %s; exit 1; }
 %s
 tmpfile=$(mktemp -t opencode-fork)
 trap "rm -f \"$tmpfile\" \"$0\"" EXIT
@@ -6639,8 +7498,8 @@ opencode import "$tmpfile" 2>&1 || { echo "Import failed"; exit 1; }
 # OPENCODE_SESSION_ID is propagated via host-side SetEnvironment after tmux start.
 echo "Forked to: $new_id"
 opencode -s "$new_id"%s
-`, workDir, workDir, envPrefix, i.OpenCodeSessionID,
-		i.OpenCodeSessionID, i.OpenCodeSessionID, extraFlags)
+`, quotedWorkDir, quotedWorkDir, envPrefix, quotedSessionID,
+		sedSessionID, sedSessionID, extraFlags)
 
 	f, err := os.CreateTemp("", "opencode-fork-*.sh")
 	if err != nil {
@@ -6672,25 +7531,185 @@ func (i *Instance) CreateForkedOpenCodeInstanceWithOptions(
 	newTitle, newGroupPath string,
 	opts *OpenCodeOptions,
 ) (*Instance, string, error) {
-	cmd, err := i.ForkOpenCodeWithOptions(newTitle, newGroupPath, opts)
+	return i.CreateForkedOpenCodeInstanceWithOptionsAndWorkDir(newTitle, newGroupPath, opts, i.ProjectPath, "", "")
+}
+
+// CreateForkedOpenCodeInstanceWithOptionsAndWorkDir creates a forked OpenCode instance
+// rooted at workDir and copies worktree metadata when worktreeRepoRoot is set.
+func (i *Instance) CreateForkedOpenCodeInstanceWithOptionsAndWorkDir(
+	newTitle, newGroupPath string,
+	opts *OpenCodeOptions,
+	workDir, worktreeRepoRoot, worktreeBranch string,
+) (*Instance, string, error) {
+	if strings.TrimSpace(workDir) == "" {
+		workDir = i.ProjectPath
+	}
+	cmd, err := i.forkOpenCodeWithOptionsInWorkDir(newTitle, newGroupPath, opts, workDir)
 	if err != nil {
 		return nil, "", err
 	}
 
-	forked := NewInstance(newTitle, i.ProjectPath)
+	forked := NewInstance(newTitle, workDir)
 	if newGroupPath != "" {
 		forked.GroupPath = newGroupPath
 	} else {
 		forked.GroupPath = i.GroupPath
 	}
-	forked.Command = cmd
+	// Defer the one-shot fork script via ForkStartCommand (Pi/Codex pattern): the
+	// script self-deletes after first run, so storing it as the persistent Command
+	// would make a later restart re-run a missing file. Command holds a stable base
+	// ("opencode") that restart resumes from via OpenCodeSessionID.
+	forked.Command = "opencode"
+	forked.ForkStartCommand = cmd
+	forked.IsForkAwaitingStart = true
 	forked.Tool = "opencode"
+	if worktreeRepoRoot != "" {
+		forked.WorktreePath = workDir
+		forked.WorktreeRepoRoot = worktreeRepoRoot
+		forked.WorktreeBranch = worktreeBranch
+	}
 
 	// Store options in the new instance for persistence
 	if opts != nil {
 		if err := forked.SetOpenCodeOptions(opts); err != nil {
 			sessionLog.Warn("set_opencode_options_failed", slog.String("error", err.Error()))
 		}
+	}
+
+	return forked, cmd, nil
+}
+
+// CreateForkedPiInstance creates a new Instance configured for forking a Pi session.
+// Deprecated: Use CreateForkedPiInstanceWithOptions instead.
+func (i *Instance) CreateForkedPiInstance(newTitle, newGroupPath string) (*Instance, string, error) {
+	return i.CreateForkedPiInstanceWithOptions(newTitle, newGroupPath, nil)
+}
+
+// CreateForkedPiInstanceWithOptions creates a new Instance configured for forking a Pi session.
+// The opts parameter is accepted for the shared fork worktree flow; only WorkDir
+// and Worktree* fields are consumed for Pi.
+func (i *Instance) CreateForkedPiInstanceWithOptions(
+	newTitle, newGroupPath string,
+	opts *ClaudeOptions,
+) (*Instance, string, error) {
+	projectPath := i.ProjectPath
+	if opts != nil && opts.WorkDir != "" {
+		projectPath = opts.WorkDir
+	}
+
+	forked := NewInstance(newTitle, projectPath)
+	if newGroupPath != "" {
+		forked.GroupPath = newGroupPath
+	} else {
+		forked.GroupPath = i.GroupPath
+	}
+	forked.Tool = "pi"
+	forked.Wrapper = i.Wrapper
+
+	baseCommand := strings.TrimSpace(i.Command)
+	if baseCommand == "" {
+		baseCommand = "pi"
+	}
+	forked.Command = baseCommand
+
+	cmd, err := i.buildPiForkCommandForTarget(forked, baseCommand)
+	if err != nil {
+		return nil, "", err
+	}
+	forked.ForkStartCommand = cmd
+	forked.IsForkAwaitingStart = true
+
+	if opts != nil && opts.WorktreePath != "" {
+		forked.WorktreePath = opts.WorktreePath
+		forked.WorktreeRepoRoot = opts.WorktreeRepoRoot
+		forked.WorktreeBranch = opts.WorktreeBranch
+	}
+
+	return forked, cmd, nil
+}
+
+// CanForkCodex reports whether this Codex session can be forked. Forkability
+// requires a flushed on-disk rollout for the captured session id — the same
+// invariant buildCodexCommand uses to gate `codex resume` (#756). `codex fork`
+// is a newer codex CLI subcommand; if the installed binary predates it the
+// launched command fails into a recoverable error state.
+func (i *Instance) CanForkCodex() bool {
+	if !IsCodexCompatible(i.Tool) || i.CodexSessionID == "" {
+		return false
+	}
+	sessionID, err := normalizeToolSessionID(FieldCodexSessionID, i.CodexSessionID)
+	return err == nil && sessionID != "" && sessionID == strings.TrimSpace(i.CodexSessionID) && codexRolloutExistsInHome(sessionID, i.getCodexHomeDir())
+}
+
+// buildCodexForkCommandForTarget builds the one-time `codex fork <parent-sid>`
+// launch command for a forked codex instance. Mirrors buildCodexCommand's resume
+// path (instance.go:1374) but uses `fork`, which clones the parent transcript into
+// a new thread with a fresh id while leaving the parent intact.
+func (i *Instance) buildCodexForkCommandForTarget(target *Instance, baseCommand string) (string, error) {
+	if !i.CanForkCodex() {
+		return "", fmt.Errorf("cannot fork: no resumable Codex session")
+	}
+	envPrefix := target.buildEnvSourceCommand()
+	// Shell-quote the injected env values: target.Title is user-editable and could
+	// contain shell metacharacters (e.g. $(...) or backticks), and custom Codex-tool
+	// identities are config-defined — keep the generated fork command injection-safe.
+	envPrefix += fmt.Sprintf("AGENTDECK_INSTANCE_ID=%s AGENTDECK_TITLE=%s AGENTDECK_TOOL=%s AGENTDECK_PROFILE=%s ",
+		shellescape.Quote(target.ID), shellescape.Quote(target.Title), shellescape.Quote(target.Tool), shellescape.Quote(sessionProfileEnvValue()))
+	yoloFlag := target.resolveCodexYoloFlag()
+	modelFlag := target.resolveCodexModelFlag()
+	command := target.resolveCodexCommand(baseCommand)
+	if isCodexHomeExplicit() {
+		codexHome := strings.TrimSpace(getCodexHomeDir())
+		if codexHome != "" {
+			if err := os.MkdirAll(codexHome, 0o755); err != nil {
+				sessionLog.Warn("codex_home_mkdir_failed",
+					slog.String("path", codexHome),
+					slog.String("error", err.Error()))
+			}
+			envPrefix += "CODEX_HOME=" + shellescape.Quote(codexHome) + " "
+		}
+	}
+	return envPrefix + fmt.Sprintf("%s%s%s fork %s", command, yoloFlag, modelFlag, shellescape.Quote(i.CodexSessionID)), nil
+}
+
+// CreateForkedCodexInstanceWithOptions creates a forked Codex instance. Mirrors
+// CreateForkedPiInstanceWithOptions: opts is the shared worktree carrier (only
+// WorkDir/Worktree* consumed); launch is deferred via ForkStartCommand.
+func (i *Instance) CreateForkedCodexInstanceWithOptions(
+	newTitle, newGroupPath string,
+	opts *ClaudeOptions,
+) (*Instance, string, error) {
+	projectPath := i.ProjectPath
+	if opts != nil && opts.WorkDir != "" {
+		projectPath = opts.WorkDir
+	}
+
+	forked := NewInstance(newTitle, projectPath)
+	if newGroupPath != "" {
+		forked.GroupPath = newGroupPath
+	} else {
+		forked.GroupPath = i.GroupPath
+	}
+	forked.Tool = i.Tool
+	forked.Wrapper = i.Wrapper
+
+	baseCommand := strings.TrimSpace(i.Command)
+	if baseCommand == "" {
+		baseCommand = "codex"
+	}
+	forked.Command = baseCommand
+
+	cmd, err := i.buildCodexForkCommandForTarget(forked, baseCommand)
+	if err != nil {
+		return nil, "", err
+	}
+	forked.ForkStartCommand = cmd
+	forked.IsForkAwaitingStart = true
+
+	if opts != nil && opts.WorktreePath != "" {
+		forked.WorktreePath = opts.WorktreePath
+		forked.WorktreeRepoRoot = opts.WorktreeRepoRoot
+		forked.WorktreeBranch = opts.WorktreeBranch
 	}
 
 	return forked, cmd, nil
@@ -6732,6 +7751,30 @@ func (i *Instance) setTmuxSession(sess *tmux.Session) {
 		return
 	}
 	i.backend = sessionbackend.NewBackend(sess)
+}
+
+// Substate returns the additive Honest-Status-v2 refinement for this session
+// (see Substate). It reads the live tmux pane and classifies it; SubstateNone
+// when there is no tmux session, the pane is dead, or the tool has no substate
+// heuristics. This is an enrichment of Status, not a replacement — it never
+// changes the canonical status reported by GetStatus/UpdateStatus.
+func (i *Instance) Substate() Substate {
+	tmuxSess := i.GetTmuxSession()
+	if tmuxSess == nil {
+		return SubstateNone
+	}
+	return tmuxSess.GetSubstate()
+}
+
+// CachedSubstate returns the last substate computed by a prior status check
+// WITHOUT capturing the pane. Use it on the TUI render hot path; the background
+// status loop keeps the value fresh.
+func (i *Instance) CachedSubstate() Substate {
+	tmuxSess := i.GetTmuxSession()
+	if tmuxSess == nil {
+		return SubstateNone
+	}
+	return tmuxSess.CachedSubstate()
 }
 
 // SetAcknowledgedFromShared applies an acknowledgment from another TUI instance
@@ -7786,21 +8829,16 @@ func isWindowsCmdWrappedLaunch(command string) bool {
 }
 
 func startsWithCommand(command, wantBase string) bool {
-	fields := strings.Fields(strings.TrimSpace(command))
-	if len(fields) == 0 {
+	cmdToken, _, ok := firstShellCommandToken(command)
+	if !ok {
 		return false
 	}
-	cmdToken := strings.Trim(fields[0], `"'`)
-	base := filepath.Base(cmdToken)
-	for _, suffix := range []string{".exe", ".EXE", ".cmd", ".CMD", ".bat", ".BAT"} {
-		base = strings.TrimSuffix(base, suffix)
-	}
-	return strings.EqualFold(base, wantBase)
+	return strings.EqualFold(commandBaseToken(cmdToken), commandBaseToken(wantBase))
 }
 
 func isSimpleCommandInvocation(command, wantBase string) bool {
-	fields := strings.Fields(strings.TrimSpace(command))
-	if len(fields) == 0 {
+	fields, ok := shellWords(command)
+	if !ok || len(fields) == 0 {
 		return false
 	}
 	for _, field := range fields {
@@ -7840,8 +8878,11 @@ func isCodexTUICommandInvocationForBase(command, base string) bool {
 	if !isSimpleCommandInvocation(trimmed, base) {
 		return false
 	}
-	fields := strings.Fields(trimmed)
-	firstArg := firstCodexNonFlagArg(fields[1:])
+	_, args, ok := firstShellCommandToken(trimmed)
+	if !ok {
+		return false
+	}
+	firstArg := firstCodexNonFlagArg(args)
 	if firstArg == "" {
 		return true
 	}
@@ -7849,11 +8890,11 @@ func isCodexTUICommandInvocationForBase(command, base string) bool {
 }
 
 func configuredCodexCommandBase() string {
-	fields := strings.Fields(strings.TrimSpace(GetCodexCommand()))
-	if len(fields) == 0 {
+	cmdToken, _, ok := firstShellCommandToken(GetCodexCommand())
+	if !ok {
 		return ""
 	}
-	return strings.Trim(fields[0], `"'`)
+	return cmdToken
 }
 
 func firstCodexNonFlagArg(args []string) string {
@@ -7913,7 +8954,7 @@ func (i *Instance) shouldAppendCodexResumeForLaunch(command string) bool {
 		return isCodexTUICommandInvocation(trimmed)
 	}
 	base := configuredCodexCommandBase()
-	if base != "" && base != "codex" && isSimpleCommandInvocation(trimmed, base) {
+	if base != "" && !strings.EqualFold(commandBaseToken(base), "codex") && isSimpleCommandInvocation(trimmed, base) {
 		if isCodexTUICommandInvocationForBase(trimmed, base) {
 			return true
 		}
@@ -7922,7 +8963,7 @@ func (i *Instance) shouldAppendCodexResumeForLaunch(command string) bool {
 		}
 		return false
 	}
-	return shouldAppendCodexResume(trimmed)
+	return false
 }
 
 func (i *Instance) isCodexTUICommandInvocationForLaunch(command string) bool {
@@ -7933,14 +8974,21 @@ func (i *Instance) isCodexTUICommandInvocationForLaunch(command string) bool {
 		return false
 	}
 	base := configuredCodexCommandBase()
-	if base == "" || base == "codex" {
+	if base == "" || strings.EqualFold(commandBaseToken(base), "codex") {
 		return false
 	}
 	return isCodexTUICommandInvocationForBase(command, base)
 }
 
 func isConfiguredCodexLauncherInvocation(command, configuredBase string) bool {
-	fields := strings.Fields(strings.TrimSpace(command))
+	_, rest, ok := splitLeadingShellEnvAssignments(command)
+	if !ok {
+		return false
+	}
+	fields, ok := shellWords(rest)
+	if !ok {
+		return false
+	}
 	if len(fields) < 2 || !isSimpleCommandInvocation(command, configuredBase) {
 		return false
 	}
@@ -8020,7 +9068,7 @@ func (i *Instance) commandBuilderEmitsPowerShell() bool {
 
 func (i *Instance) shouldValidateCodexResumeOnHost(command string) bool {
 	return i.Tool == "codex" &&
-		strings.TrimSpace(command) == "codex" &&
+		i.isCodexTUICommandInvocationForLaunch(command) &&
 		!i.IsSSH() &&
 		!i.IsSandboxed() &&
 		!i.hasEffectiveWrapper()
@@ -8063,7 +9111,7 @@ func (i *Instance) isCodexExtraArgsFoldableLaunch(command string) bool {
 	// `{command} --model ...` wrapper suffix belongs inside the resolved launch
 	// command rather than being dropped by prepareCommand's wrapper handling.
 	return base != "" &&
-		base != "codex" &&
+		!strings.EqualFold(commandBaseToken(base), "codex") &&
 		isConfiguredCodexLauncherInvocation(command, base)
 }
 

@@ -14,9 +14,12 @@ All options for `~/.agent-deck/config.toml`.
 - [[hermes] Section](#hermes-section)
 - [[docker] Section](#docker-section)
 - [[worktree] Section](#worktree-section)
+- [[fork] Section](#fork-section)
+- [[conductor] Section](#conductor-section)
 - [[logs] Section](#logs-section)
 - [[updates] Section](#updates-section)
 - [[display] Section](#display-section)
+- [[ui] Section](#ui-section)
 - [[global_search] Section](#global_search-section)
 - [Skills Registry (Outside config.toml)](#skills-registry-outside-configtoml)
 - [[mcp_pool] Section](#mcp_pool-section)
@@ -83,7 +86,7 @@ extra_args = ["--agent", "reviewer"] # Extra Claude CLI flags
 env_file = "~/.claude.env"         # .env file specific to Claude sessions
 
 [profiles.work.claude]
-config_dir = "~/.claude-work"      # Optional override for profile "work"
+config_dir = "~/.claude-team"      # Optional override for profile "work"
 ```
 
 | Key | Type | Default | Description |
@@ -115,7 +118,7 @@ Use a global default, then override only profiles that need a different Claude a
 config_dir = "~/.claude"             # Global default (personal)
 
 [profiles.work.claude]
-config_dir = "~/.claude-work"        # Work account
+config_dir = "~/.claude-team"        # Work account
 
 [profiles.clientx.claude]
 config_dir = "~/.claude-clientx"     # Client account
@@ -306,6 +309,48 @@ branch_prefix = "$USER/"          # "my-session" -> "dani/my-session"
 branch_prefix = ""                # "my-session" -> "my-session"
 ```
 
+## [fork] Section
+
+Defaults for forking a session — the TUI quick fork (`f`) and the `Shift+F` dialog. By default a fork creates a new git worktree + branch, carries the parent's uncommitted working-tree changes (staged, unstaged, and untracked files), matches Docker isolation, and inherits the Claude launch options. Copying **gitignored** files is **opt-in** (`with_ignored = false`): that tree is unbounded (data sets, virtual envs, `node_modules`) and can carry secrets, so it would otherwise block the fork silently. These settings are **independent** of `[worktree].default_enabled` / `[docker].default_enabled` (which govern non-fork session creation).
+
+```toml
+[fork]
+inherit_from_parent = false   # Mirror the parent and ignore the keys below
+worktree            = true    # Create a new worktree + branch for the fork
+with_state          = true    # Carry the parent's uncommitted changes into the fork
+with_ignored        = false   # Also copy gitignored files (implies with_state); opt-in
+docker              = "auto"  # "auto" (match parent) | "on" | "off"
+branch_prefix       = "fork/" # Auto branch name = <branch_prefix><sanitized-title>
+```
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `inherit_from_parent` | bool | `false` | When `true`, the fork mirrors the parent (worktree + state + gitignored on, Docker matches parent) and the individual keys below are ignored. |
+| `worktree` | bool | `true` | Create a new git worktree + branch for the fork. |
+| `with_state` | bool | `true` | Carry the parent's uncommitted working-tree changes (staged, unstaged, and untracked files; gitignored excluded unless `with_ignored`) into the fork's worktree. |
+| `with_ignored` | bool | `false` | Also copy gitignored files (e.g. `.env`, `node_modules`) into the worktree. Implies `with_state`. **Opt-in:** the gitignored tree is unbounded and may contain secrets, and the copy is blocking with no size cap. Set `true` to include it, or use `inherit_from_parent` to mirror the parent wholesale. |
+| `docker` | string | `"auto"` | Docker isolation for the fork: `"auto"` matches the parent (sandboxed parent → a fresh container; otherwise none), `"on"` always sandboxes, `"off"` never. |
+| `branch_prefix` | string | `"fork/"` | Prefix for the auto-suggested fork branch name. Applies to both quick fork and the `Shift+F` dialog. |
+
+> **Note:** Forking is supported across Claude, OpenCode, Pi, and Codex (and Codex-compatible custom tools) via each tool's native fork, in the TUI, CLI (`agent-deck session fork <id>`), and Web UI. The Web/API endpoint (`POST /api/sessions/{id}/fork`) performs a plain tool-native fork and does **not** apply these `[fork]` worktree/state/Docker defaults — those are TUI quick-fork/dialog scope. Codex forking requires a codex CLI with `codex fork <session-id>` support.
+
+## [conductor] Section
+
+Conductor (meta-agent orchestration) settings. The `[conductor]` block also carries the conductor-system toggles (`enabled`, `heartbeat_interval`, Telegram/Slack/Discord integration) — see the conductor setup docs; the key below governs where conductor state lives.
+
+```toml
+[conductor]
+dir = ""   # Override the base conductor directory (default: <data-dir>/conductor)
+```
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `dir` | string | `""` | Base directory for conductor homes (`meta.json`, `CLAUDE.md`, heartbeat scripts). Empty uses the default resolution: `$XDG_DATA_HOME/agent-deck/conductor` with a legacy `~/.agent-deck/conductor` fallback. Tilde and `$VAR` are expanded. |
+
+> **Note:** Each conductor's `heartbeat.sh` honors `[conductor].dir` and self-heals — when you change `dir`, the script content is auto-refreshed by the migration that runs on the next `agent-deck conductor list` / `status` / `setup` / `teardown`. The surface that goes **stale** is the daemon, not the script: the launchd heartbeat plist (and the Linux systemd unit) bakes absolute script/log paths at install time and is regenerated only by `agent-deck conductor setup`. After changing `dir`, re-run `agent-deck conductor setup <name>` per conductor to regenerate and reload the daemon. (A `conductor migrate-dir` helper to automate this is planned.) A `conductor list`/`status` after a dir change will flag a stale heartbeat daemon in its `[migrated]` output.
+
+> **Note:** The Telegram/Slack/Discord bridge daemon (`bridge.py`) now honors `[conductor].dir`: the Go side injects the resolved override into the daemon environment as `AGENT_DECK_CONDUCTOR_DIR`, and the bridge prefers it over its XDG/legacy resolver (#1350). Caveat: the daemon's environment is frozen at install time, so if you change `[conductor].dir` after the bridge is set up, regenerate the bridge daemon (re-run conductor setup, or the planned `conductor migrate-dir`) for the daemon to pick up the new directory.
+
 ## [logs] Section
 
 Session log file management.
@@ -354,6 +399,8 @@ full_repaint = false                              # Force full screen clear ever
 default_filter = "active"                         # Initial status filter: "", "active", "running", "waiting", "idle", "error"
 active_filter_label = "Open"                      # Label for the active filter pill (default: "Open")
 active_filter_excludes = ["error", "stopped"]     # Statuses the % "Open" filter hides (default: ["error", "stopped"])
+show_pane_titles = false                          # Show the pane title (task description) on every row, not just the selected one
+include_cwd_prefix = true                         # Prefix titles with "[<cwd-basename>]"
 ```
 
 | Key | Type | Default | Description |
@@ -362,6 +409,29 @@ active_filter_excludes = ["error", "stopped"]     # Statuses the % "Open" filter
 | `default_filter` | string | `""` | Status filter applied on TUI startup. `"active"` engages the configurable Open filter. Auto-clears if no sessions match. |
 | `active_filter_label` | string | `"Open"` | Label shown on the filter pill when active filter is engaged (e.g., "Active", "Live", "Open"). |
 | `active_filter_excludes` | []string | `["error", "stopped"]` | Statuses hidden when the `%` "Open" filter is engaged. Default matches the original hardcoded behavior. Valid values: `running`, `waiting`, `idle`, `error`, `starting`, `stopped`. Unknown entries are dropped silently; if the resulting list is empty the default applies. **Set to `["error"]`** to keep stopped/closed sessions visible while still hiding errors — fixes the over-broad "Open" semantics where closed sessions disappeared from view. Extend with `idle` for an aggressive "show only running/waiting" definition of open. |
+| `show_pane_titles` | bool | `false` | Shows the dim tmux pane-title (task description) suffix on every session row instead of only the selected row. Also toggleable in the TUI Settings panel (`S`) under **DISPLAY**. |
+| `include_cwd_prefix` | bool | `true` | Show the working-directory prefix (`[<cwd-basename>]`) on session rows/titles. Set `false` to show only the session title. (v1.9.46) |
+
+## [ui] Section
+
+TUI behavior settings, including new-session tool picker visibility (TUI + web). The picker keys are display filters only — CLI launch and existing sessions are unaffected.
+
+```toml
+[ui]
+footer = "full"                               # Footer hint bar: "full", "curated", "compact", "minimal"
+hidden_tools = ["gemini", "opencode", "pi"]   # Denylist: hide these from the picker
+show_only_installed_tools = true              # Also hide tools not found on PATH
+new_session_enter_advances = false            # Opt OUT: restore Enter-submits behavior
+```
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `footer` | string | `"full"` | Style of the bottom hint bar: `"full"` (default, the historic verbose bar), `"curated"`, `"compact"`, or `"minimal"`. (v1.9.49) |
+| `hidden_tools` | []string | `[]` | Tool names to hide from the new-session picker. `shell` is always shown and cannot be hidden. Unknown names log a warning and are ignored. Edit via TUI **Settings (`S`) → Visible tools…** or by hand in `config.toml`. |
+| `show_only_installed_tools` | bool | `false` | When `true`, hides built-in and custom tools whose command does not resolve on the host `PATH`. `shell` stays visible. If nothing else resolves, the picker falls back to showing all tools with a one-line hint. Toggle in TUI Settings under **TOOL PICKER**. |
+| `new_session_enter_advances` | bool | `true` | Controls what **Enter** does on the free-text **Name** / **Branch** fields of the new-session dialog. Default `true`: Enter **advances** to the next field, so typing a name and pressing Enter no longer silently creates a session with all defaults. **Ctrl+S** is the explicit "create now" shortcut and submits from any field in both modes. Set `false` to restore the legacy behavior where Enter on Name/Branch submits the form. |
+
+Filters compose: `hidden_tools` is applied first, then `show_only_installed_tools` (when enabled).
 
 ## [global_search] Section
 
@@ -592,7 +662,7 @@ dangerous_mode = true
 env_file = "~/.claude.env"
 
 [profiles.work.claude]
-config_dir = "~/.claude-work"
+config_dir = "~/.claude-team"
 
 [gemini]
 yolo_mode = true

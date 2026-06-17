@@ -25,7 +25,7 @@ var supportedSkills = map[string]struct{}{
 }
 
 // handleWatcherInstallSkill copies an embedded skill to
-// $HOME/.agent-deck/skills/pool/<skill-name>/.
+// the configured Agent Deck skill pool.
 //
 // Security:
 //   - skill name must be in supportedSkills whitelist (string equality, no regex).
@@ -43,12 +43,12 @@ func handleWatcherInstallSkill(_ string, args []string) error {
 		return fmt.Errorf("unsupported skill %q: only %v are available in this release", skillName, keys(supportedSkills))
 	}
 
-	agentDeckDir, err := session.GetAgentDeckDir()
+	poolDir, err := session.GetSkillPoolPath()
 	if err != nil {
-		return fmt.Errorf("resolve agent-deck dir: %w", err)
+		return fmt.Errorf("resolve skill pool path: %w", err)
 	}
 
-	targetDir := filepath.Join(agentDeckDir, "skills", "pool", skillName)
+	targetDir := filepath.Join(poolDir, skillName)
 
 	// Create the full directory hierarchy with mode 0o700 (T-18-21).
 	// MkdirAll is used for each step so that each segment gets the correct
@@ -56,8 +56,8 @@ func handleWatcherInstallSkill(_ string, args []string) error {
 	// given permission for newly created directories only — existing dirs are
 	// left untouched, which is the desired behaviour.
 	for _, dir := range []string{
-		filepath.Join(agentDeckDir, "skills"),
-		filepath.Join(agentDeckDir, "skills", "pool"),
+		filepath.Dir(poolDir),
+		poolDir,
 		targetDir,
 	} {
 		if err := os.MkdirAll(dir, 0o700); err != nil {

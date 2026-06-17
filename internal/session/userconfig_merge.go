@@ -48,16 +48,22 @@ func MergePanelConfigOntoDisk(panel *UserConfig) (*UserConfig, error) {
 	merged.Codex.YoloMode = panel.Codex.YoloMode
 
 	// ── Updates (panel manages CheckEnabled + AutoUpdate) ──────────────
-	merged.Updates.CheckEnabled = panel.Updates.CheckEnabled
+	if panel.Updates.CheckEnabled != nil {
+		merged.Updates.CheckEnabled = panel.Updates.CheckEnabled
+	}
 	merged.Updates.AutoUpdate = panel.Updates.AutoUpdate
 
 	// ── Logs (panel manages 3 fields; other Logs.* preserved) ──────────
 	merged.Logs.MaxSizeMB = panel.Logs.MaxSizeMB
 	merged.Logs.MaxLines = panel.Logs.MaxLines
-	merged.Logs.RemoveOrphans = panel.Logs.RemoveOrphans
+	if panel.Logs.RemoveOrphans != nil {
+		merged.Logs.RemoveOrphans = panel.Logs.RemoveOrphans
+	}
 
 	// ── GlobalSearch ───────────────────────────────────────────────────
-	merged.GlobalSearch.Enabled = panel.GlobalSearch.Enabled
+	if panel.GlobalSearch.Enabled != nil {
+		merged.GlobalSearch.Enabled = panel.GlobalSearch.Enabled
+	}
 	merged.GlobalSearch.Tier = panel.GlobalSearch.Tier
 	merged.GlobalSearch.RecentDays = panel.GlobalSearch.RecentDays
 
@@ -86,6 +92,15 @@ func MergePanelConfigOntoDisk(panel *UserConfig) (*UserConfig, error) {
 	if panel.Preview.NotesOutputSplit > 0 {
 		merged.Preview.NotesOutputSplit = panel.Preview.NotesOutputSplit
 	}
+
+	// ── Display subset (panel manages ShowSessionTimestamps; FullRepaint
+	//    and filter prefs stay from disk) ───────────────────────────────
+	merged.Display.ShowSessionTimestamps = panel.Display.ShowSessionTimestamps
+	merged.Display.ShowPaneTitles = panel.Display.ShowPaneTitles
+
+	// ── UI subset (panel manages show_only_installed_tools; hidden_tools
+	//    is edited via ToolVisibilityPanel) ─────────────────────────────
+	merged.UI.ShowOnlyInstalledTools = panel.UI.ShowOnlyInstalledTools
 
 	// ── SystemStats subset ─────────────────────────────────────────────
 	if panel.SystemStats.Enabled != nil {

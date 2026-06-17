@@ -18,9 +18,11 @@ import (
 
 	"github.com/asheshgoplani/agent-deck/internal/clipboard"
 	"github.com/asheshgoplani/agent-deck/internal/git"
+	"github.com/asheshgoplani/agent-deck/internal/jujutsu"
 	"github.com/asheshgoplani/agent-deck/internal/profile"
 	"github.com/asheshgoplani/agent-deck/internal/send"
 	"github.com/asheshgoplani/agent-deck/internal/session"
+	"github.com/asheshgoplani/agent-deck/internal/statedb"
 	"github.com/asheshgoplani/agent-deck/internal/tmux"
 	"github.com/asheshgoplani/agent-deck/internal/ui"
 	"github.com/asheshgoplani/agent-deck/internal/vcs"
@@ -67,6 +69,8 @@ func handleSession(profile string, args []string) {
 		handleSessionSetTitleLock(profile, args[1:])
 	case "set":
 		handleSessionSet(profile, args[1:])
+	case "switch-account":
+		handleSessionSwitchAccount(profile, args[1:])
 	case "move", "mv":
 		handleSessionMove(profile, args[1:])
 	case "send":
@@ -98,11 +102,12 @@ func printSessionHelp() {
 	fmt.Println("  remove <id>             Remove session from registry (stopped/error only; --force to bypass)")
 	fmt.Println("  restart [id] [--all]    Restart session (Claude: reload MCPs)")
 	fmt.Println("  revive [--all|--name]   Rebuild dead control pipes for errored sessions")
-	fmt.Println("  fork <id>               Fork Claude session with context")
+	fmt.Println("  fork <id>               Fork Claude, OpenCode, Pi, or Codex session with context")
 	fmt.Println("  attach <id>             Attach to session interactively")
 	fmt.Println("  show [id]               Show session details (auto-detect current if no id)")
 	fmt.Println("  current                 Show current session and profile (auto-detect)")
 	fmt.Println("  set <id> <field> <value>  Update session property")
+	fmt.Println("  switch-account <id> <account>  Switch Claude account and migrate the conversation")
 	fmt.Println("  move <id> <path>        Move session to a new path (migrates Claude history)")
 	fmt.Println("  send <id> <message>     Send a message to a running session")
 	fmt.Println("  output <id>             Get the last response from a session")
@@ -615,7 +620,7 @@ func branchCleanupHint(createdBranch bool, repoRoot, branchName string) string {
 	return fmt.Sprintf(" && git -C %s branch -D %s", shellescape.Quote(repoRoot), shellescape.Quote(branchName))
 }
 
-// handleSessionFork forks a Claude session
+// handleSessionFork forks a supported tool session
 func handleSessionFork(profile string, args []string) {
 	fs := flag.NewFlagSet("session fork", flag.ExitOnError)
 	jsonOutput := fs.Bool("json", false, "Output as JSON")
@@ -625,11 +630,11 @@ func handleSessionFork(profile string, args []string) {
 	titleShort := fs.String("t", "", "Title for forked session (short)")
 	group := fs.String("group", "", "Group for forked session")
 	groupShort := fs.String("g", "", "Group for forked session (short)")
-	worktreeBranch := fs.String("w", "", "Create fork in git worktree for branch")
-	worktreeBranchLong := fs.String("worktree", "", "Create fork in git worktree for branch")
-	newBranch := fs.Bool("b", false, "Create new branch (use with --worktree)")
-	newBranchLong := fs.Bool("new-branch", false, "Create new branch")
-	withState := fs.Bool("with-state", false, "Copy parent's staged+unstaged+untracked files into the new worktree (#1029, requires -w)")
+	worktreeBranch := fs.String("w", "", "Create fork in a worktree/workspace for branch (git or jj)")
+	worktreeBranchLong := fs.String("worktree", "", "Create fork in a worktree/workspace for branch (git or jj)")
+	newBranch := fs.Bool("b", false, "Create new branch/bookmark (use with --worktree)")
+	newBranchLong := fs.Bool("new-branch", false, "Create new branch/bookmark")
+	withState := fs.Bool("with-state", false, "Carry parent's uncommitted working state into the new worktree/workspace (git or jj; #1029/#1305, requires -w)")
 	withStateGitignored := fs.Bool("with-state-and-gitignored", false, "Like --with-state, plus gitignored files (e.g. .env). Implies --with-state. Requires -w.")
 	sandbox := fs.Bool("sandbox", false, "Run forked session in Docker sandbox")
 	sandboxImage := fs.String("sandbox-image", "", "Docker image for sandbox (overrides config default)")
@@ -637,7 +642,7 @@ func handleSessionFork(profile string, args []string) {
 	fs.Usage = func() {
 		fmt.Println("Usage: agent-deck session fork <id|title> [options]")
 		fmt.Println()
-		fmt.Println("Fork a Claude session with conversation context.")
+		fmt.Println("Fork a Claude, OpenCode, Pi, or Codex session with conversation context.")
 		fmt.Println()
 		fmt.Println("Options:")
 		fs.PrintDefaults()
@@ -683,31 +688,39 @@ func handleSessionFork(profile string, args []string) {
 		return // unreachable, satisfies staticcheck SA5011
 	}
 
-	// Verify it's a Claude session
-	if !session.IsClaudeCompatible(inst.Tool) {
+	// Verify this tool has a session-fork implementation.
+	isClaudeFork := session.IsClaudeCompatible(inst.Tool)
+	isPiFork := inst.Tool == "pi"
+	isOpenCodeFork := inst.Tool == "opencode"
+	isCodexFork := session.IsCodexCompatible(inst.Tool)
+	if !isClaudeFork && !isPiFork && !isOpenCodeFork && !isCodexFork {
 		out.Error(
-			fmt.Sprintf("session '%s' is not a Claude session (tool: %s)", inst.Title, inst.Tool),
+			fmt.Sprintf("session '%s' is not a forkable session (tool: %s)", inst.Title, inst.Tool),
 			ErrCodeInvalidOperation,
 		)
 		os.Exit(1)
 	}
 
-	// Try to capture session ID from tmux if missing (handles pre-fix sessions)
-	if inst.ClaudeSessionID == "" && inst.Exists() {
+	// Try to capture Claude session ID from tmux if missing (handles pre-fix sessions).
+	if isClaudeFork && inst.ClaudeSessionID == "" && inst.Exists() {
 		inst.PostStartSync(2 * time.Second)
 	}
 
-	// Verify it can be forked
+	// Verify it can be forked.
 	if !inst.CanFork() {
 		out.Error(
-			fmt.Sprintf("session '%s' cannot be forked: no active Claude session ID", inst.Title),
+			fmt.Sprintf("session '%s' cannot be forked: no resumable session for tool %s", inst.Title, inst.Tool),
 			ErrCodeInvalidOperation,
 		)
 		os.Exit(1)
 	}
 
-	// Default title if not provided
-	if forkTitle == "" {
+	// Default title if not provided. An explicitly passed -t/--title is user
+	// intent and gets TitleLocked below (mirrors the TUI fork dialog); the
+	// auto-generated "<title>-fork" default keeps the #572 name sync enabled
+	// (mirrors quick fork).
+	explicitTitle := forkTitle != ""
+	if !explicitTitle {
 		forkTitle = inst.Title + "-fork"
 	}
 
@@ -742,15 +755,13 @@ func handleSessionFork(profile string, args []string) {
 		worktreeType = string(backend.Type())
 		repoRoot := backend.RepoDir()
 
-		// --with-state* is git-specific: it anchors the new worktree at the
-		// parent's HEAD and materializes the parent's index/stash. Enforce the
-		// git requirement HERE, before the git-direct collision gate and the
-		// parent-HEAD anchoring below. This early guard — not the call routing —
-		// is what makes those git-direct calls jujutsu-safe: a jujutsu backend
-		// can never reach them. (The late jujutsu branch below keeps a
-		// belt-and-suspenders rejection for non-state paths.)
-		if wantState && backend.Type() != vcs.TypeGit {
-			out.Error("--with-state is only supported for git repositories", ErrCodeInvalidOperation)
+		// --with-state* anchors the new worktree/workspace at the parent's
+		// committed point and materializes the parent's working state. git and
+		// jujutsu both support it (jj since #1305); any other backend can't, so
+		// reject early. The git-direct collision gate and anchoring below are
+		// reached only on the git branch; jujutsu has its own branch.
+		if wantState && backend.Type() != vcs.TypeGit && backend.Type() != vcs.TypeJujutsu {
+			out.Error("--with-state is not supported for this repository's VCS backend", ErrCodeInvalidOperation)
 			os.Exit(1)
 		}
 
@@ -765,7 +776,7 @@ func handleSessionFork(profile string, args []string) {
 		// upstream's "branch must already exist (use -b to create)" contract.
 		// These two are mutually exclusive: with-state requires the branch ABSENT,
 		// the else-branch requires it PRESENT — never flatten them.
-		if wantState {
+		if wantState && backend.Type() == vcs.TypeGit {
 			if err := git.ValidateForkWithStateDestination(repoRoot, wtBranch); err != nil {
 				var collErr *git.DestinationCollisionError
 				if errors.As(err, &collErr) {
@@ -780,6 +791,19 @@ func handleSessionFork(profile string, args []string) {
 					os.Exit(1)
 				}
 				out.Error(fmt.Sprintf("failed to validate destination: %v", err), ErrCodeInvalidOperation)
+				os.Exit(1)
+			}
+		} else if wantState {
+			// jujutsu with-state: a fresh destination bookmark is required, mirroring
+			// the git collision gate. (Workspace-path collision is caught by the
+			// os.Stat check below.)
+			exists, bmErr := jujutsu.BookmarkExists(repoRoot, wtBranch)
+			if bmErr != nil {
+				out.Error(fmt.Sprintf("failed to validate destination: %v", bmErr), ErrCodeInvalidOperation)
+				os.Exit(1)
+			}
+			if exists {
+				out.Error(fmt.Sprintf("bookmark '%s' already exists; choose a new destination branch for --with-state", wtBranch), ErrCodeInvalidOperation)
 				os.Exit(1)
 			}
 		} else if !createNewBranch && !backend.BranchExists(wtBranch) {
@@ -818,8 +842,7 @@ func handleSessionFork(profile string, args []string) {
 			}
 
 			var setupErr error
-			if wantState {
-				// git-only, guaranteed by the early guard above.
+			if wantState && backend.Type() == vcs.TypeGit {
 				//
 				// Mid-op refusal: surface an actionable error BEFORE creating the
 				// worktree, so the user sees the exact abort command for their
@@ -861,7 +884,7 @@ func handleSessionFork(profile string, args []string) {
 				// Materialize parent state, with cleanup-on-error.
 				if matErr := git.MaterializeWipFromParent(inst.ProjectPath, worktreePath, *withStateGitignored); matErr != nil {
 					var cleanupErrs []string
-					if rmErr := exec.Command("git", "-C", repoRoot, "worktree", "remove", "--force", worktreePath).Run(); rmErr != nil {
+					if rmErr := git.RemoveWorktree(repoRoot, worktreePath, true); rmErr != nil {
 						cleanupErrs = append(cleanupErrs, fmt.Sprintf("worktree remove failed: %v", rmErr))
 					}
 					if createdBranch {
@@ -887,6 +910,37 @@ func handleSessionFork(profile string, args []string) {
 					fmt.Fprintf(os.Stderr, "worktreeinclude: %v\n", inclErr)
 				}
 				setupErr = git.RunWorktreeSetupAfterCreate(repoRoot, worktreePath, os.Stdout, os.Stderr, session.GetWorktreeSettings().SetupTimeout())
+			} else if wantState {
+				// jujutsu with-state (#1305): anchor the new workspace at the
+				// parent's committed point (@-) and materialize its working copy.
+				parentBase, pbErr := jujutsu.WorkingCopyParentRevision(inst.ProjectPath)
+				if pbErr != nil {
+					out.Error(fmt.Sprintf("failed to resolve parent session committed anchor: %v", pbErr), ErrCodeInvalidOperation)
+					os.Exit(1)
+				}
+				if cwErr := jujutsu.CreateWorkspaceAtRevision(repoRoot, worktreePath, wtBranch, parentBase); cwErr != nil {
+					out.Error(fmt.Sprintf("workspace creation failed: %v", cwErr), ErrCodeInvalidOperation)
+					os.Exit(1)
+				}
+				if matErr := jujutsu.MaterializeWipFromParent(inst.ProjectPath, worktreePath, *withStateGitignored); matErr != nil {
+					var cleanupErrs []string
+					if rmErr := backend.RemoveWorktree(worktreePath, true); rmErr != nil {
+						cleanupErrs = append(cleanupErrs, fmt.Sprintf("workspace forget failed: %v", rmErr))
+					}
+					if brErr := backend.DeleteBranch(wtBranch, true); brErr != nil {
+						cleanupErrs = append(cleanupErrs, fmt.Sprintf("bookmark delete failed: %v", brErr))
+					}
+					if len(cleanupErrs) == 0 {
+						out.Error(fmt.Sprintf("failed to materialize parent state: %v; new workspace cleaned up", matErr), ErrCodeInvalidOperation)
+					} else {
+						out.Error(fmt.Sprintf("failed to materialize parent state: %v; cleanup also failed (%s); manual cleanup required: rm -rf %s",
+							matErr, strings.Join(cleanupErrs, "; "), shellescape.Quote(worktreePath)), ErrCodeInvalidOperation)
+					}
+					os.Exit(1)
+				}
+				if *withStateGitignored && !jujutsu.SupportsGitignoredCopy(inst.ProjectPath) {
+					fmt.Fprintln(os.Stderr, "Warning: forked without gitignored files: this jj repo has no git metadata to copy them")
+				}
 			} else if backend.Type() == vcs.TypeGit {
 				// Non-with-state git path: upstream's combined wrapper unchanged.
 				var cwErr error
@@ -919,10 +973,14 @@ func handleSessionFork(profile string, args []string) {
 	}
 
 	// Create the forked instance
-	forkedInst, _, err := inst.CreateForkedInstanceWithOptions(forkTitle, forkGroup, opts)
+	var forkedInst *session.Instance
+	forkedInst, _, err = inst.CreateForkedInstanceForTool(forkTitle, forkGroup, opts)
 	if err != nil {
 		out.Error(fmt.Sprintf("failed to create fork: %v", err), ErrCodeInvalidOperation)
 		os.Exit(1)
+	}
+	if explicitTitle {
+		forkedInst.TitleLocked = true
 	}
 
 	if worktreeType != "" {
@@ -957,7 +1015,7 @@ func handleSessionFork(profile string, args []string) {
 	// Rebuild group tree and ensure group exists
 	groupTree := session.NewGroupTreeWithGroups(instances, groupsData)
 	if forkedInst.GroupPath != "" {
-		groupTree.CreateGroup(forkedInst.GroupPath)
+		groupTree.CreateGroupPath(forkedInst.GroupPath)
 	}
 
 	// Save
@@ -1127,6 +1185,11 @@ func handleSessionShow(profile string, args []string) {
 		"tool":                 inst.Tool,
 		"created_at":           inst.CreatedAt.Format(time.RFC3339),
 	}
+	// Honest Status v2: additive substate refinement (omit when none so the
+	// existing keys stay byte-stable for consumers that don't expect it).
+	if sub := string(inst.Substate()); sub != "" {
+		jsonData["substate"] = sub
+	}
 	modelInfo := inst.LaunchModelInfo()
 	addModelInfoJSON(jsonData, modelInfo)
 
@@ -1295,8 +1358,9 @@ func handleSessionSet(profile string, args []string) {
 		fmt.Println("  tool               Tool type (claude, gemini, shell, etc.)")
 		fmt.Println("  wrapper            Wrapper command (use {command} to include tool command)")
 		fmt.Println("  channels           Comma-separated plugin channel ids (claude only)")
-		fmt.Println("  plugins            Comma-separated plugin catalog names (claude only) — see [plugins.<name>] in ~/.agent-deck/config.toml")
+		fmt.Printf("  plugins            Comma-separated plugin catalog names (claude only) — see [plugins.<name>] in %s\n", effectiveUserConfigPathForHelp())
 		fmt.Println("  extra-args         Extra claude CLI tokens (claude only; use `-- --flag value` for tokens starting with -; persisted plaintext — no secrets)")
+		fmt.Println("  model              Per-session model override (e.g. opus/sonnet/haiku or a gemini model); persists across restart (#1436). Empty clears it.")
 		fmt.Println("  color              Optional TUI row tint: '#RRGGBB' or ANSI '0'..'255' or '' (issue #391)")
 		fmt.Println("  claude-session-id  Claude conversation ID")
 		fmt.Println("  gemini-session-id  Gemini conversation ID")
@@ -1354,6 +1418,13 @@ func handleSessionSet(profile string, args []string) {
 		return // unreachable, satisfies staticcheck SA5011
 	}
 
+	// #924 follow-up: the conversation follows the account. Capture the old
+	// account's config dir before SetField mutates resolution.
+	var preAccountConfigDir string
+	if field == session.FieldAccount && inst.Tool == "claude" {
+		preAccountConfigDir = session.GetClaudeConfigDirForInstance(inst)
+	}
+
 	// Delegate to session.SetField so CLI and TUI share validation. The
 	// extraArgTokens slice carries pre-tokenized argv for extra-args (CLI
 	// preserves values with spaces); SetField ignores it for other fields.
@@ -1367,6 +1438,20 @@ func handleSessionSet(profile string, args []string) {
 	// until after instancesMu.Unlock.
 	if postCommit != nil {
 		postCommit()
+	}
+
+	// Copy the conversation into the new account's config dir so the
+	// restart-required switch resumes with full context. Copy-only; a fresh
+	// session (no conversation yet) is not an error.
+	if preAccountConfigDir != "" {
+		targetDir := session.GetClaudeConfigDirForInstance(inst)
+		if migrated, merr := session.MigrateConversationFrom(inst, preAccountConfigDir, targetDir); merr != nil {
+			if !errors.Is(merr, session.ErrNoConversation) {
+				fmt.Fprintf(os.Stderr, "Warning: account set, but conversation not migrated: %v\n", merr)
+			}
+		} else if migrated != "" && !quietMode && !*jsonOutput {
+			fmt.Printf("Conversation migrated to %s\n", migrated)
+		}
 	}
 
 	// Save
@@ -2152,25 +2237,57 @@ func handleSessionSend(profile string, args []string) {
 	// Claude's composer renders after the loop has already returned
 	// success on startup "active" status, leaving the message unsubmitted.
 	// default mode: full retry budget after readiness check.
+	//
+	// Both modes run the composer-draft guard (issue #1409) and submit
+	// verification with a machine-checkable delivery status (issue #1413).
+	tun := defaultSendTuning()
 	if *noWait {
-		if err := sendNoWait(tmuxSess, inst.Tool, message); err != nil {
-			out.Error(fmt.Sprintf("failed to send message: %v", err), ErrCodeInvalidOperation)
-			os.Exit(1)
+		tun = noWaitSendTuning()
+	}
+	sendRes, sendErr := executeSend(tmuxSess, inst.Tool, message, *noWait, tun)
+	if sendErr != nil {
+		extra := sendRes.jsonFields()
+		extra["session_id"] = inst.ID
+		extra["session_title"] = inst.Title
+		if sendRes.delivery == deliveryTypedNotSubmitted {
+			out.ErrorWithData(fmt.Sprintf("message typed but not submitted to '%s': %v", inst.Title, sendErr), ErrCodeDeliveryFailed, extra)
+		} else {
+			out.ErrorWithData(fmt.Sprintf("failed to send message: %v", sendErr), ErrCodeInvalidOperation, extra)
 		}
-	} else {
-		if err := sendWithRetry(tmuxSess, message, skipClaudeDeliveryVerify(inst.Tool)); err != nil {
-			out.Error(fmt.Sprintf("failed to send message: %v", err), ErrCodeInvalidOperation)
-			os.Exit(1)
-		}
+		os.Exit(1)
+	}
+
+	// Self-heal Stage 1: stamp the "we talked to it" clock. A delivered send is
+	// exactly the event the idle_at_empty_prompt dwell is measured from — a
+	// session is only stuck at an empty prompt if WE sent it something and
+	// nothing happened. Targeted single-column write (never SaveInstances);
+	// best-effort, never blocks or fails the send.
+	if db := statedb.GetGlobal(); db != nil {
+		_ = db.WriteLastSentAt(inst.ID, sentAt.Unix())
+	}
+
+	// Delivery succeeded, but if an operator draft was cleared and could not
+	// be typed back, it's no longer on screen — surface it on stderr (it's
+	// also in saved_draft in --json) so the operator can recover it rather
+	// than discovering a silent loss. draft_restore_failed never blocks the
+	// send: the automated message did go through.
+	if sendRes.draftSaved != "" && sendRes.draftRestoreFailed {
+		fmt.Fprintf(os.Stderr,
+			"Warning: cleared the operator draft to deliver this message but could not restore it. Recover it from: %s\n",
+			sendRes.draftSaved)
 	}
 
 	if !*stream {
-		out.Success(fmt.Sprintf("Sent message to '%s'", inst.Title), map[string]interface{}{
+		data := map[string]interface{}{
 			"success":       true,
 			"session_id":    inst.ID,
 			"session_title": inst.Title,
 			"message":       message,
-		})
+		}
+		for k, v := range sendRes.jsonFields() {
+			data[k] = v
+		}
+		out.Success(fmt.Sprintf("Sent message to '%s'", inst.Title), data)
 	}
 
 	// --stream: tail the Claude transcript and pipe JSONL events to
@@ -2210,13 +2327,13 @@ func handleSessionSend(profile string, args []string) {
 		// Wait for the JSONL to contain a response newer than sentAt.
 		// The status check (waitForCompletion) detects the UI prompt reappearing,
 		// but the JSONL file may not be flushed yet — poll until it is.
-		response, err := waitForFreshOutput(inst, sentAt)
+		response, err := waitForFreshOutput(inst, sentAt, instances)
 		if err != nil {
 			// Fallback: reload session from DB in case tmux env was also stale
 			// (e.g., /clear created a new session that TUI or hooks detected)
 			if _, freshInstances, _, loadErr := loadSessionData(profile); loadErr == nil {
 				if freshInst, _, _ := ResolveSession(sessionRef, freshInstances); freshInst != nil {
-					response, err = waitForFreshOutput(freshInst, sentAt)
+					response, err = waitForFreshOutput(freshInst, sentAt, freshInstances)
 				}
 			}
 		}
@@ -2271,10 +2388,179 @@ func shouldSkipConductorHeartbeatSend(inst *session.Instance, message string) bo
 	return time.Since(lastActivity) >= time.Duration(idleMinutes)*time.Minute
 }
 
-// sendWithRetry sends a message atomically and retries Enter if the agent
-// doesn't start processing within a reasonable time.
-func sendWithRetry(tmuxSess *tmux.Session, message string, skipVerify bool) error {
-	return sendWithRetryTarget(tmuxSess, message, skipVerify, defaultSendOptions())
+// Delivery status values surfaced by the `session send` path (issue #1413).
+// They are part of the `--json` contract: callers (watchers, conductors,
+// bridges) key off the `delivery` field to distinguish a confirmed submit
+// from a message left typed-but-unsubmitted at the composer.
+const (
+	// deliverySubmitted: positive evidence the agent accepted the message
+	// (an "active" transition, or the composer cleared after holding it).
+	deliverySubmitted = "submitted"
+	// deliveryUnverified: the message was sent but this tool's TUI exposes
+	// no Claude-shaped verification signals, so submission is unverified
+	// (non-Claude tools; legacy best-effort contract).
+	deliveryUnverified = "unverified"
+	// deliveryTypedNotSubmitted: the message body is still sitting unsent in
+	// the composer after the bounded Enter-retry budget (issue #1413).
+	deliveryTypedNotSubmitted = "typed_not_submitted"
+	// deliveryNoEvidence: no positive delivery signal was ever observed
+	// (issue #876 silent-drop classification).
+	deliveryNoEvidence = "no_evidence"
+	// deliverySendFailed: the initial tmux send-keys itself failed.
+	deliverySendFailed = "send_failed"
+)
+
+// sendDeliveryResult is the prompt-state-aware outcome of executeSend.
+type sendDeliveryResult struct {
+	// delivery is one of the delivery* constants above.
+	delivery string
+	// held is how long the composer guard waited/worked before the send
+	// (issue #1409 hold-and-retry plus save-clear time).
+	held time.Duration
+	// draftSaved is the operator draft that was cleared from the composer to
+	// make way for the automated send (empty when no clear was needed).
+	draftSaved string
+	// draftCleared reports whether the guard confirmed the composer emptied
+	// after Ctrl+C.
+	draftCleared bool
+	// draftRestored reports whether the saved operator draft was typed back
+	// (without Enter) after the automated delivery.
+	draftRestored bool
+	// draftRestoreFailed reports that a saved operator draft was cleared but
+	// the type-back failed (SendKeysChunked errored) — the draft is held in
+	// draftSaved for recovery and must be surfaced, not silently dropped.
+	draftRestoreFailed bool
+}
+
+// jsonFields returns the delivery-status fields added to `session send`
+// success and error payloads in --json mode (issue #1413 machine-checkable
+// contract; #1409 draft-guard observability).
+func (r sendDeliveryResult) jsonFields() map[string]interface{} {
+	fields := map[string]interface{}{}
+	if r.delivery != "" {
+		fields["delivery"] = r.delivery
+	}
+	if ms := r.held.Milliseconds(); ms > 0 {
+		fields["held_for_composer_ms"] = ms
+	}
+	if r.draftSaved != "" {
+		fields["saved_draft"] = r.draftSaved
+		fields["draft_restored"] = r.draftRestored
+		if r.draftRestoreFailed {
+			fields["draft_restore_failed"] = true
+		}
+	}
+	return fields
+}
+
+// sendExecTuning bundles the bounded budgets of the full executeSend
+// pipeline (preflight barrier, composer-draft guard, verification loop) so
+// tests can shrink them and production paths share one definition.
+type sendExecTuning struct {
+	// guardHold bounds the #1409 hold-and-retry phase: how long an automated
+	// send waits for a non-empty operator draft to clear on its own before
+	// falling back to save-clear-restore.
+	guardHold      time.Duration
+	guardPoll      time.Duration
+	guardClearWait time.Duration
+	// preflightWait/preflightPoll bound the --no-wait composer-visibility
+	// barrier (issue #616).
+	preflightWait time.Duration
+	preflightPoll time.Duration
+	// settleDelay is the post-composer-render settle pause (issue #616).
+	settleDelay time.Duration
+	// retry is the verification-loop budget (issues #876, #1413).
+	retry sendRetryOptions
+}
+
+// defaultSendTuning is the tuning for the default (readiness-waited) send
+// path. The guard hold is generous because the caller already waited for
+// readiness; an operator mid-keystroke gets up to 10s to finish or pause.
+func defaultSendTuning() sendExecTuning {
+	return sendExecTuning{
+		guardHold:      10 * time.Second,
+		guardPoll:      250 * time.Millisecond,
+		guardClearWait: 1500 * time.Millisecond,
+		retry:          defaultSendOptions(),
+	}
+}
+
+// noWaitSendTuning is the tuning for `session send --no-wait`. --no-wait
+// skips the readiness wait, NOT the composer guard or submit verification —
+// but its guard hold is kept small (2s) so automated callers (heartbeats,
+// inbox nudges, watchers) pay minimal added latency. When the composer is
+// empty the guard costs a single pane capture.
+func noWaitSendTuning() sendExecTuning {
+	return sendExecTuning{
+		guardHold:      2 * time.Second,
+		guardPoll:      150 * time.Millisecond,
+		guardClearWait: time.Second,
+		preflightWait:  5 * time.Second,
+		preflightPoll:  100 * time.Millisecond,
+		settleDelay:    500 * time.Millisecond,
+		retry:          noWaitSendOptions(),
+	}
+}
+
+// executeSend is the prompt-state-aware send pipeline used by
+// `session send` (issues #1409 + #1413):
+//
+//  1. --no-wait only: capped preflight barrier until the Claude composer is
+//     visible, plus a short settle delay (issue #616).
+//  2. Composer-draft guard (issue #1409): hold while the composer shows a
+//     non-empty operator draft; at the bound, save the draft and clear the
+//     composer (Ctrl+C) so the automated message cannot merge with it.
+//  3. Send + bounded submit verification (issues #876, #1413), classifying
+//     the outcome into a delivery status.
+//  4. Restore the saved operator draft (typed back without Enter) once the
+//     automated delivery is not stuck in the composer. When the automated
+//     message itself ends typed_not_submitted the draft is NOT retyped (it
+//     would merge into the stuck composer) — it is surfaced in the result
+//     instead so the caller can report it.
+//
+// Steps 1, 2 and 4 are Claude-only: composer introspection is Claude-shaped
+// and non-Claude tools gate readiness upstream.
+func executeSend(target sendRetryTarget, tool, message string, noWait bool, tun sendExecTuning) (sendDeliveryResult, error) {
+	res := sendDeliveryResult{}
+	claudeLike := session.IsClaudeCompatible(tool)
+
+	if noWait && claudeLike {
+		if awaitComposerReadyBestEffort(target, tun.preflightWait, tun.preflightPoll) {
+			// Post-composer settle: React mount can lag behind the
+			// composer glyph by a few hundred ms on cold starts.
+			if tun.settleDelay > 0 {
+				time.Sleep(tun.settleDelay)
+			}
+		}
+	}
+
+	if claudeLike {
+		guard := send.GuardComposerDraft(target, send.ComposerGuardOptions{
+			HoldWait:     tun.guardHold,
+			PollInterval: tun.guardPoll,
+			ClearWait:    tun.guardClearWait,
+			Strip:        tmux.StripANSI,
+		})
+		res.held = guard.Held
+		res.draftSaved = guard.SavedDraft
+		res.draftCleared = guard.DraftCleared
+	}
+
+	delivery, err := sendWithRetryTarget(target, message, skipClaudeDeliveryVerify(tool), tun.retry)
+	res.delivery = delivery
+
+	if res.draftSaved != "" && delivery != deliveryTypedNotSubmitted {
+		if restoreErr := target.SendKeysChunked(res.draftSaved); restoreErr == nil {
+			res.draftRestored = true
+		} else {
+			// The composer was cleared (Ctrl+C) but the type-back failed, so
+			// the operator's draft is no longer on screen. Don't silently
+			// drop it: flag the failure so the caller surfaces draftSaved for
+			// recovery instead of reporting a clean success.
+			res.draftRestoreFailed = true
+		}
+	}
+	return res, err
 }
 
 // skipClaudeDeliveryVerify reports whether the Claude-tuned post-send delivery
@@ -2367,9 +2653,9 @@ func awaitComposerReadyBestEffort(target sendRetryTarget, maxWait, pollInterval 
 	}
 }
 
-// sendNoWait implements `session send --no-wait` semantics for the CLI.
-//
-// Issue #616 fix has three layers, applied in order:
+// The `session send --no-wait` semantics for the CLI live in executeSend
+// (called with noWait=true and noWaitSendTuning()). The historical issue
+// #616 fix is preserved there as three layers, applied in order:
 //
 //  1. Preflight readiness barrier (capped at 5s): polls the pane for a
 //     visible Claude composer `❯`. Without this, the initial paste
@@ -2388,23 +2674,15 @@ func awaitComposerReadyBestEffort(target sendRetryTarget, maxWait, pollInterval 
 //
 // maxFullResends=-1 is load-bearing for the #479 regression (never
 // double-send). Non-Claude tools skip the preflight — they have their
-// own readiness shapes and upstream gating.
-func sendNoWait(target sendRetryTarget, tool, message string) error {
-	if session.IsClaudeCompatible(tool) {
-		if awaitComposerReadyBestEffort(target, 5*time.Second, 100*time.Millisecond) {
-			// Post-composer settle: React mount can lag behind the
-			// composer glyph by a few hundred ms on cold starts.
-			time.Sleep(500 * time.Millisecond)
-		}
-	}
-	return sendWithRetryTarget(target, message, skipClaudeDeliveryVerify(tool), noWaitSendOptions())
-}
+// own readiness shapes and upstream gating. Issue #1409 added a fourth
+// layer between 2 and 3: the composer-draft guard.
 
 type sendRetryTarget interface {
 	SendKeysAndEnter(string) error
 	GetStatus() (string, error)
 	SendEnter() error
 	SendCtrlC() error
+	SendKeysChunked(string) error
 	CapturePaneFresh() (string, error)
 }
 
@@ -2423,7 +2701,11 @@ type sendRetryOptions struct {
 	verifyDelivery bool
 }
 
-func sendWithRetryTarget(target sendRetryTarget, message string, skipVerify bool, opts sendRetryOptions) error {
+// sendWithRetryTarget sends the message and runs the bounded submit
+// verification loop. It returns a delivery status (one of the delivery*
+// constants) alongside the error so callers can expose a machine-checkable
+// outcome (issue #1413).
+func sendWithRetryTarget(target sendRetryTarget, message string, skipVerify bool, opts sendRetryOptions) (string, error) {
 	if opts.maxRetries <= 0 {
 		opts.maxRetries = 1
 	}
@@ -2432,11 +2714,11 @@ func sendWithRetryTarget(target sendRetryTarget, message string, skipVerify bool
 	}
 
 	if err := target.SendKeysAndEnter(message); err != nil {
-		return fmt.Errorf("failed to send message: %w", err)
+		return deliverySendFailed, fmt.Errorf("failed to send message: %w", err)
 	}
 
 	if skipVerify {
-		return nil
+		return deliveryUnverified, nil
 	}
 
 	// Verify the agent accepted Enter and began processing.
@@ -2509,7 +2791,7 @@ func sendWithRetryTarget(target sendRetryTarget, message string, skipVerify bool
 			waitingNoActivityChecks = 0
 			activeChecks++
 			if activeChecks >= activeSuccessThreshold {
-				return nil
+				return deliverySubmitted, nil
 			}
 			continue
 		}
@@ -2520,7 +2802,7 @@ func sendWithRetryTarget(target sendRetryTarget, message string, skipVerify bool
 				waitingNoMarkerChecks++
 				waitingNoActivityChecks = 0
 				if waitingNoMarkerChecks >= waitingAfterActiveThreshold {
-					return nil
+					return deliverySubmitted, nil
 				}
 			} else {
 				waitingNoMarkerChecks = 0
@@ -2565,17 +2847,37 @@ func sendWithRetryTarget(target sendRetryTarget, message string, skipVerify bool
 		}
 	}
 
-	// Issue #876: with verifyDelivery, refuse to claim success when no
-	// positive signal was ever observed — the message was very likely
-	// dropped silently. Without it, preserve the legacy best-effort
-	// contract used by paths that gate verification elsewhere.
-	if opts.verifyDelivery && !sawDeliveryEvidence {
-		return fmt.Errorf("send dropped silently: no evidence of delivery after %d checks (issue #876). "+
-			"The agent never transitioned to 'active', no composer/unsent-paste marker appeared, "+
-			"and the message body was not visible in the pane. Verify the inner agent is reading from "+
-			"its TTY before retrying", opts.maxRetries)
+	// Budget exhausted without a confirmed submit. Classify the final state
+	// (issue #1413): a message still sitting unsent in the composer after
+	// every bounded Enter retry must surface as typed_not_submitted (nonzero
+	// exit + `delivery` in --json) instead of the historical silent exit 0.
+	if opts.verifyDelivery {
+		if rawContent, captureErr := target.CapturePaneFresh(); captureErr == nil {
+			content := tmux.StripANSI(rawContent)
+			if send.HasUnsentPastedPrompt(content) || send.HasUnsentComposerPrompt(content, message) {
+				return deliveryTypedNotSubmitted, fmt.Errorf(
+					"message typed but not submitted after %d verification checks (issue #1413): "+
+						"the composer still holds the message despite bounded Enter retries. "+
+						"The recipient agent's input handler is not accepting Enter", opts.maxRetries)
+			}
+		}
+
+		// Issue #876: with verifyDelivery, refuse to claim success when no
+		// positive signal was ever observed — the message was very likely
+		// dropped silently.
+		if !sawDeliveryEvidence {
+			return deliveryNoEvidence, fmt.Errorf("send dropped silently: no evidence of delivery after %d checks (issue #876). "+
+				"The agent never transitioned to 'active', no composer/unsent-paste marker appeared, "+
+				"and the message body was not visible in the pane. Verify the inner agent is reading from "+
+				"its TTY before retrying", opts.maxRetries)
+		}
+		// Evidence was observed and the composer no longer holds the message:
+		// it was accepted at some point during the budget.
+		return deliverySubmitted, nil
 	}
-	return nil
+
+	// Legacy best-effort contract for paths that gate verification elsewhere.
+	return deliveryUnverified, nil
 }
 
 // messageDeliveryToken returns a short, content-bearing slice of the message
@@ -2811,10 +3113,21 @@ var freshOutputTestConfig *freshOutputConfig
 //
 // Falls back to the best-effort response if the freshness timeout expires,
 // logging a warning to stderr so the caller knows the data may be stale.
-func waitForFreshOutput(inst *session.Instance, sentAt time.Time) (*session.ResponseOutput, error) {
+//
+// peers carries the profile snapshot for the #1400 collision guard: a
+// claude_session_id shared by multiple live instances resolves to ONE
+// transcript, so waiting on it would return another session's output.
+// Fail fast (same semantics as --stream's #1352 guard) instead of polling
+// a colliding transcript until the freshness timeout.
+func waitForFreshOutput(inst *session.Instance, sentAt time.Time, peers []*session.Instance) (*session.ResponseOutput, error) {
 	// Non-Claude tools don't use JSONL timestamps — skip the freshness loop.
 	if !session.IsClaudeCompatible(inst.Tool) {
 		return inst.GetLastResponseBestEffort()
+	}
+
+	// #1400: refuse a colliding transcript before entering the poll loop.
+	if _, err := inst.GetJSONLPathChecked(peers); err != nil {
+		return nil, fmt.Errorf("refusing to read a colliding transcript: %w", err)
 	}
 
 	pollInterval := 250 * time.Millisecond
@@ -2905,14 +3218,27 @@ func streamSessionSend(inst *session.Instance, sessionRef, profile string, sentA
 	}
 
 	var jsonlPath string
+	// peers carries the latest profile snapshot so the resolve can refuse a
+	// transcript path that collides with another live instance's session id
+	// (issue #1349 defense-in-depth #2): streaming the wrong transcript is one
+	// of the corruption symptoms the rebind bug caused.
+	var peers []*session.Instance
+	if _, initial, _, loadErr := loadSessionData(profile); loadErr == nil {
+		peers = initial
+	}
 	deadline := time.Now().Add(opts.timeout)
 	for time.Now().Before(deadline) {
-		jsonlPath = resolvedInst.GetJSONLPath()
+		p, resolveErr := resolvedInst.GetJSONLPathChecked(peers)
+		if resolveErr != nil {
+			return fmt.Errorf("refusing to stream a colliding transcript: %w", resolveErr)
+		}
+		jsonlPath = p
 		if jsonlPath != "" {
 			break
 		}
 		// Refresh from DB in case the session was just created.
 		if _, freshInstances, _, loadErr := loadSessionData(profile); loadErr == nil {
+			peers = freshInstances
 			if fi, _, _ := ResolveSession(sessionRef, freshInstances); fi != nil {
 				resolvedInst = fi
 			}
@@ -3028,8 +3354,13 @@ func handleSessionOutput(profile string, args []string) {
 		return
 	}
 
-	// Get the last response (best-effort fallback for smoother CLI reads)
-	response, err := inst.GetLastResponseBestEffort()
+	// Get the last response (best-effort fallback for smoother CLI reads).
+	// Collision-checked (#1400): multiple live instances sharing one
+	// claude_session_id resolve to the SAME transcript, so the parsed "last
+	// response" (-q / --json / default / --copy) would be byte-identical for
+	// all of them. Refuse the read instead — the same guard `session output
+	// --stream` got in #1352.
+	response, err := inst.GetLastResponseBestEffortChecked(instances)
 	if err != nil {
 		out.Error(fmt.Sprintf("failed to get response: %v", err), ErrCodeInvalidOperation)
 		os.Exit(1)
@@ -3314,8 +3645,9 @@ func handleSessionSearch(profile string, args []string) {
 	}
 
 	claudeDir := session.GetClaudeConfigDir()
+	searchEnabled := true
 	cfg := session.GlobalSearchSettings{
-		Enabled:        true,
+		Enabled:        &searchEnabled,
 		Tier:           *tierFlag,
 		MemoryLimitMB:  100,
 		RecentDays:     *recentDays,

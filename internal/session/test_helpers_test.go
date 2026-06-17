@@ -36,6 +36,19 @@ func isolatedHomeDir(t *testing.T) string {
 	return home
 }
 
+func claudeProjectDirForTest(t *testing.T, configDir, projectPath string) string {
+	t.Helper()
+	resolvedPath := projectPath
+	if resolved, err := filepath.EvalSymlinks(projectPath); err == nil {
+		resolvedPath = resolved
+	}
+	encoded := ConvertToClaudeDirName(resolvedPath)
+	if encoded == "" {
+		encoded = "-"
+	}
+	return filepath.Join(configDir, "projects", encoded)
+}
+
 func isWindowsSymlinkPrivilegeError(err error) bool {
 	if err == nil || runtime.GOOS != "windows" {
 		return false
