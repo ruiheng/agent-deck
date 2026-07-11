@@ -1549,9 +1549,10 @@ func mostRecentPathForSessions(sessions []*Instance) string {
 	return ""
 }
 
-// resolveGroupDefaultPath normalizes a default path and maps git worktree paths
-// to their base repository root.
-func resolveGroupDefaultPath(defaultPath string) string {
+// normalizeExplicitGroupDefaultPath expands an operator-configured path without
+// changing which checkout they selected. In particular, an explicit worktree
+// path must not be rewritten to the main repository root.
+func normalizeExplicitGroupDefaultPath(defaultPath string) string {
 	defaultPath = strings.TrimSpace(defaultPath)
 	if defaultPath == "" {
 		return ""
@@ -1572,6 +1573,17 @@ func resolveGroupDefaultPath(defaultPath string) string {
 		if abs, err := filepath.Abs(defaultPath); err == nil {
 			defaultPath = abs
 		}
+	}
+	return defaultPath
+}
+
+// resolveGroupDefaultPath normalizes a derived fallback path and maps git
+// worktrees to their base repository root. Derived paths should avoid pointing
+// new sessions at a worktree that may later be removed.
+func resolveGroupDefaultPath(defaultPath string) string {
+	defaultPath = normalizeExplicitGroupDefaultPath(defaultPath)
+	if defaultPath == "" {
+		return ""
 	}
 
 	info, err := os.Stat(defaultPath)
@@ -1600,7 +1612,7 @@ func (t *GroupTree) DefaultPathForGroup(groupPath string) string {
 	}
 
 	if group.DefaultPath != "" {
-		return resolveGroupDefaultPath(group.DefaultPath)
+		return normalizeExplicitGroupDefaultPath(group.DefaultPath)
 	}
 
 	return resolveGroupDefaultPath(mostRecentPathForSessions(group.Sessions))
@@ -1613,7 +1625,7 @@ func (t *GroupTree) SetDefaultPathForGroup(groupPath, defaultPath string) bool {
 		return false
 	}
 
-	group.DefaultPath = resolveGroupDefaultPath(defaultPath)
+	group.DefaultPath = normalizeExplicitGroupDefaultPath(defaultPath)
 	return true
 }
 
@@ -1626,6 +1638,6 @@ func (t *GroupTree) updateGroupDefaultPath(groupPath string) {
 	}
 
 	if group.DefaultPath != "" {
-		group.DefaultPath = resolveGroupDefaultPath(group.DefaultPath)
+		group.DefaultPath = normalizeExplicitGroupDefaultPath(group.DefaultPath)
 	}
 }
