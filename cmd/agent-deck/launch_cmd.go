@@ -109,7 +109,7 @@ func handleLaunch(profile string, args []string) {
 		fmt.Println("Combines: add + session start + session send")
 		fmt.Println()
 		fmt.Println("Arguments:")
-		fmt.Println("  [path]    Project directory (defaults to current directory)")
+		fmt.Println("  [path]    Project directory (group/global default when omitted; '.' uses current directory)")
 		fmt.Println()
 		fmt.Println("Options:")
 		fs.PrintDefaults()
@@ -138,35 +138,6 @@ func handleLaunch(profile string, args []string) {
 	quietMode := *quiet || *quietShort
 	out := NewCLIOutput(*jsonOutput, quietMode)
 
-	// Resolve path
-	path := strings.Trim(fs.Arg(0), "'\"")
-	if path == "" || path == "." {
-		var err error
-		path, err = os.Getwd()
-		if err != nil {
-			out.Error(fmt.Sprintf("failed to get current directory: %v", err), ErrCodeInvalidOperation)
-			os.Exit(1)
-		}
-	} else {
-		var err error
-		path, err = filepath.Abs(path)
-		if err != nil {
-			out.Error(fmt.Sprintf("failed to resolve path: %v", err), ErrCodeInvalidOperation)
-			os.Exit(1)
-		}
-	}
-
-	// Verify path exists and is a directory
-	info, err := os.Stat(path)
-	if err != nil {
-		out.Error(fmt.Sprintf("path does not exist: %s", path), ErrCodeNotFound)
-		os.Exit(1)
-	}
-	if !info.IsDir() {
-		out.Error(fmt.Sprintf("path is not a directory: %s", path), ErrCodeInvalidOperation)
-		os.Exit(1)
-	}
-
 	// Merge flags
 	sessionTitle := mergeFlags(*title, *titleShort)
 	sessionGroup := mergeFlags(*group, *groupShort)
@@ -179,6 +150,35 @@ func handleLaunch(profile string, args []string) {
 		os.Exit(1)
 	}
 	initialMessage := mergeFlags(*message, *messageShort)
+
+	// Load sessions before resolving an omitted path so launch follows the
+	// same group default_path semantics as add.
+	storage, instances, groups, err := loadSessionData(profile)
+	if err != nil {
+		out.Error(err.Error(), ErrCodeNotFound)
+		os.Exit(1)
+	}
+	groupTree := session.NewGroupTreeWithGroups(instances, groups)
+	if explicitGroupProvided {
+		sessionGroup = resolveGroupPathForAdd(groupTree, sessionGroup)
+	}
+
+	path, err := resolveLaunchPath(strings.Trim(fs.Arg(0), "'\""), sessionGroup, groupTree)
+	if err != nil {
+		out.Error(fmt.Sprintf("failed to resolve path: %v", err), ErrCodeInvalidOperation)
+		os.Exit(1)
+	}
+
+	// Verify path exists and is a directory
+	info, err := os.Stat(path)
+	if err != nil {
+		out.Error(fmt.Sprintf("path does not exist: %s", path), ErrCodeNotFound)
+		os.Exit(1)
+	}
+	if !info.IsDir() {
+		out.Error(fmt.Sprintf("path is not a directory: %s", path), ErrCodeInvalidOperation)
+		os.Exit(1)
+	}
 
 	// Resolve worktree flags
 	wtBranch := *worktreeBranch
@@ -261,13 +261,6 @@ func handleLaunch(profile string, args []string) {
 
 		worktreeRepoRoot = repoRoot
 		path = worktreePath
-	}
-
-	// Load sessions
-	storage, instances, groups, err := loadSessionData(profile)
-	if err != nil {
-		out.Error(err.Error(), ErrCodeNotFound)
-		os.Exit(1)
 	}
 
 	// Resolve parent session if specified.
@@ -440,7 +433,7 @@ func handleLaunch(profile string, args []string) {
 	// group cap math and the second SaveWithGroups after PostStartSync).
 	instances = append(instances, newInstance)
 
-	groupTree := session.NewGroupTreeWithGroups(instances, groups)
+	groupTree = session.NewGroupTreeWithGroups(instances, groups)
 	if newInstance.GroupPath != "" {
 		groupTree.CreateGroupPath(newInstance.GroupPath)
 	}
@@ -629,4 +622,25 @@ func handleLaunch(profile string, args []string) {
 		}
 	}
 	out.Success(msg, jsonData)
+}
+
+func resolveLaunchPath(rawPath, groupPath string, groupTree *session.GroupTree) (string, error) {
+	if rawPath != "" {
+		if rawPath == "." {
+			return os.Getwd()
+		}
+		return filepath.Abs(rawPath)
+	}
+
+	if groupPath != "" && groupTree != nil {
+		if path := groupTree.DefaultPathForGroup(groupPath); path != "" {
+			return path, nil
+		}
+	}
+	if userCfg, err := session.LoadUserConfig(); err == nil {
+		if path := resolveConfiguredDefaultPath(userCfg.DefaultPath); path != "" {
+			return path, nil
+		}
+	}
+	return os.Getwd()
 }

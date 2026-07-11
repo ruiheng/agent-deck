@@ -1116,6 +1116,7 @@ func reorderGroupArgs(args []string) []string {
 		"--default-path":   true,
 		"--max-concurrent": true,
 		"--position":       true,
+		"-default-path":    true,
 		"-max-concurrent":  true,
 		"-p":               true,
 	}

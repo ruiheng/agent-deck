@@ -1,7 +1,11 @@
 package main
 
 import (
+	"os"
+	"path/filepath"
 	"testing"
+
+	"github.com/asheshgoplani/agent-deck/internal/session"
 )
 
 // TestLaunch_ToolWithFlags_FoldsExtrasIntoWrapper pins the CLI parse boundary
@@ -52,5 +56,60 @@ func TestLaunch_ToolWithSessionIdFlag_IsPreserved(t *testing.T) {
 	want := "{command} --session-id abc-123 --dangerously-skip-permissions"
 	if wrapper != want {
 		t.Fatalf("wrapper shape dropped --session-id or --dang… flag.\n  got:  %q\n  want: %q", wrapper, want)
+	}
+}
+
+func TestResolveLaunchPathUsesGroupDefaultWhenPathOmitted(t *testing.T) {
+	defaultPath := t.TempDir()
+	tree := session.NewGroupTreeWithGroups(nil, []*session.GroupData{{
+		Name: "Steelyard", Path: "steelyard", DefaultPath: defaultPath,
+	}})
+
+	got, err := resolveLaunchPath("", "steelyard", tree)
+	if err != nil {
+		t.Fatalf("resolveLaunchPath() error = %v", err)
+	}
+	if got != defaultPath {
+		t.Fatalf("resolveLaunchPath() = %q, want group default %q", got, defaultPath)
+	}
+}
+
+func TestResolveLaunchPathExplicitPathWins(t *testing.T) {
+	defaultPath := t.TempDir()
+	explicitPath := t.TempDir()
+	tree := session.NewGroupTreeWithGroups(nil, []*session.GroupData{{
+		Name: "Steelyard", Path: "steelyard", DefaultPath: defaultPath,
+	}})
+
+	got, err := resolveLaunchPath(explicitPath, "steelyard", tree)
+	if err != nil {
+		t.Fatalf("resolveLaunchPath() error = %v", err)
+	}
+	want, err := filepath.Abs(explicitPath)
+	if err != nil {
+		t.Fatalf("filepath.Abs() error = %v", err)
+	}
+	if got != want {
+		t.Fatalf("resolveLaunchPath() = %q, want explicit path %q", got, want)
+	}
+}
+
+func TestResolveLaunchPathExplicitDotUsesCwd(t *testing.T) {
+	cwd := t.TempDir()
+	t.Chdir(cwd)
+	tree := session.NewGroupTreeWithGroups(nil, []*session.GroupData{{
+		Name: "Steelyard", Path: "steelyard", DefaultPath: t.TempDir(),
+	}})
+
+	got, err := resolveLaunchPath(".", "steelyard", tree)
+	if err != nil {
+		t.Fatalf("resolveLaunchPath() error = %v", err)
+	}
+	want, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("os.Getwd() error = %v", err)
+	}
+	if got != want {
+		t.Fatalf("resolveLaunchPath() = %q, want cwd %q", got, want)
 	}
 }

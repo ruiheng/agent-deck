@@ -141,11 +141,15 @@ func TestGroupReorderPositionClamp(t *testing.T) {
 	}
 }
 
-func TestReorderGroupArgsKeepsMaxConcurrentValueWithFlag(t *testing.T) {
-	for _, flagName := range []string{"--max-concurrent", "-max-concurrent"} {
+func TestReorderGroupArgsKeepsValueWithFlag(t *testing.T) {
+	for _, flagName := range []string{"--max-concurrent", "-max-concurrent", "--default-path", "-default-path"} {
 		t.Run(flagName, func(t *testing.T) {
-			got := reorderGroupArgs([]string{"steelyard", flagName, "0"})
-			want := []string{flagName, "0", "steelyard"}
+			value := "0"
+			if strings.Contains(flagName, "default-path") {
+				value = "/tmp/project"
+			}
+			got := reorderGroupArgs([]string{"steelyard", flagName, value})
+			want := []string{flagName, value, "steelyard"}
 			if strings.Join(got, "\x00") != strings.Join(want, "\x00") {
 				t.Fatalf("reorderGroupArgs() = %q, want %q", got, want)
 			}
