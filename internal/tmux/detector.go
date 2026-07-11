@@ -67,7 +67,8 @@ func (d *PromptDetector) HasPrompt(content string) bool {
 		// Busy indicators take priority over prompt markers.
 		lower := strings.ToLower(content)
 		if strings.Contains(lower, "esc to interrupt") ||
-			strings.Contains(lower, "ctrl+c to interrupt") {
+			strings.Contains(lower, "ctrl+c to interrupt") ||
+			hasCodexActiveStatusBar(content) {
 			return false
 		}
 		// Direct prompt strings
@@ -88,6 +89,11 @@ func (d *PromptDetector) HasPrompt(content string) bool {
 		// Generic shell - check for common prompts
 		return d.hasShellPrompt(content)
 	}
+}
+
+func hasCodexActiveStatusBar(content string) bool {
+	return strings.Contains(content, "· Thinking ·") ||
+		strings.Contains(content, "· Working ·")
 }
 
 // hasClaudePrompt detects if Claude Code is waiting for input

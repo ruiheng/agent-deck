@@ -70,41 +70,46 @@ func TestContainsDoneMarker(t *testing.T) {
 
 func TestAnalyzePaneTitle(t *testing.T) {
 	tests := []struct {
-		name    string
-		title   string
-		command string
-		want    TitleState
+		name           string
+		title          string
+		paneCommand    string
+		sessionCommand string
+		want           TitleState
 	}{
 		// Working state: Braille spinner present
-		{"braille spinner + claude", "⠂ Testing Papaorch", "claude", TitleStateWorking},
-		{"braille spinner + bash", "⠋ Running tools", "bash", TitleStateWorking}, // bash during tool use
-		{"braille spinner only", "⠹", "claude", TitleStateWorking},
+		{"braille spinner + claude", "⠂ Testing Papaorch", "claude", "", TitleStateWorking},
+		{"braille spinner + bash", "⠋ Running tools", "bash", "", TitleStateWorking}, // bash during tool use
+		{"braille spinner only", "⠹", "claude", "", TitleStateWorking},
+		{"codex thinking title via session command", "agent-deck | Thinking", "sh", "codex --model gpt-5", TitleStateWorking},
+		{"codex working title via pane command", "agent-deck | Working", "codex", "", TitleStateWorking},
+		{"non-codex working suffix", "agent-deck | Working", "bash", "custom-tool", TitleStateUnknown},
+		{"codex ready title", "agent-deck | Ready", "sh", "codex", TitleStateUnknown},
 
 		// Done state: done marker present (regardless of current command)
-		{"done marker + claude", "✳ Worked for 54s", "claude", TitleStateDone},
-		{"heavy asterisk + claude", "✻ Ready", "claude", TitleStateDone},
-		{"done + node", "✳ Complete", "node", TitleStateDone},
-		{"done marker + bash", "✳ Worked for 54s", "bash", TitleStateDone},
-		{"done marker + zsh", "✻ Done", "zsh", TitleStateDone},
-		{"done marker + fish", "✽ Complete", "fish", TitleStateDone},
+		{"done marker + claude", "✳ Worked for 54s", "claude", "", TitleStateDone},
+		{"heavy asterisk + claude", "✻ Ready", "claude", "", TitleStateDone},
+		{"done + node", "✳ Complete", "node", "", TitleStateDone},
+		{"done marker + bash", "✳ Worked for 54s", "bash", "", TitleStateDone},
+		{"done marker + zsh", "✻ Done", "zsh", "", TitleStateDone},
+		{"done marker + fish", "✽ Complete", "fish", "", TitleStateDone},
 
 		// Unknown state: no recognized pattern
-		{"plain title", "my-session", "claude", TitleStateUnknown},
-		{"empty title", "", "claude", TitleStateUnknown},
-		{"empty both", "", "", TitleStateUnknown},
-		{"regular asterisk", "* task", "bash", TitleStateUnknown},
-		{"gemini title", "Gemini CLI", "gemini", TitleStateUnknown},
+		{"plain title", "my-session", "claude", "", TitleStateUnknown},
+		{"empty title", "", "claude", "", TitleStateUnknown},
+		{"empty both", "", "", "", TitleStateUnknown},
+		{"regular asterisk", "* task", "bash", "", TitleStateUnknown},
+		{"gemini title", "Gemini CLI", "gemini", "", TitleStateUnknown},
 
 		// Edge cases
-		{"braille + done marker", "⠋ ✳ mixed signals", "claude", TitleStateWorking}, // braille wins
-		{"done + version string", "✳ claude v2.1.25", "claude", TitleStateDone},
+		{"braille + done marker", "⠋ ✳ mixed signals", "claude", "", TitleStateWorking}, // braille wins
+		{"done + version string", "✳ claude v2.1.25", "claude", "", TitleStateDone},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := AnalyzePaneTitle(tt.title, tt.command)
+			got := AnalyzePaneTitle(tt.title, tt.paneCommand, tt.sessionCommand)
 			if got != tt.want {
-				t.Errorf("AnalyzePaneTitle(%q, %q) = %v, want %v", tt.title, tt.command, got, tt.want)
+				t.Errorf("AnalyzePaneTitle(%q, %q, %q) = %v, want %v", tt.title, tt.paneCommand, tt.sessionCommand, got, tt.want)
 			}
 		})
 	}

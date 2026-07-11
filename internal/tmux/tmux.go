@@ -2963,11 +2963,12 @@ func (s *Session) GetStatus() (string, error) {
 		return "inactive", nil
 	}
 
-	// FAST PATH: Title-based state detection for Claude Code sessions.
+	// FAST PATH: Title-based state detection for agent sessions.
 	// Claude Code sets pane titles via OSC sequences: Braille spinner while working,
-	// ✳ markers when done. One character check replaces full CapturePane + content scan.
+	// ✳ markers when done. Codex sets explicit " | Working"/" | Thinking"
+	// suffixes. Cheap title checks avoid a full CapturePane + content scan.
 	if paneInfo, ok := GetCachedPaneInfo(s.Name); ok {
-		titleState := AnalyzePaneTitle(paneInfo.Title, paneInfo.CurrentCommand)
+		titleState := AnalyzePaneTitle(paneInfo.Title, paneInfo.CurrentCommand, s.Command)
 		switch titleState {
 		case TitleStateWorking:
 			// Braille spinner in title = actively working. Short-circuit completely.

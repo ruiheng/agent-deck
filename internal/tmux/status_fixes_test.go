@@ -1038,6 +1038,44 @@ func TestClaudeCode2125_DynamicStatusPattern(t *testing.T) {
 	}
 }
 
+func TestCodexActiveStatusBarIsBusy(t *testing.T) {
+	for _, state := range []string{"Thinking", "Working"} {
+		t.Run(state, func(t *testing.T) {
+			content := `› Summarize recent commits
+
+  gpt-5.5 xhigh · Context 42% left · ~/agent-deck · ` + state + ` · +309477 -12330`
+
+			sess := NewSession("codex-"+state+"-status", "/tmp")
+			sess.Command = "codex"
+			if !sess.hasBusyIndicator(content) {
+				t.Fatalf("codex %s status bar must be busy", state)
+			}
+
+			detector := NewPromptDetector("codex")
+			if detector.HasPrompt(content) {
+				t.Fatalf("codex %s status bar must suppress prompt detection", state)
+			}
+		})
+	}
+}
+
+func TestCodexReadyPromptIsNotBusy(t *testing.T) {
+	content := `› Summarize recent commits
+
+  gpt-5.5 xhigh · Context 42% left · ~/agent-deck · Ready · +309477 -12330`
+
+	sess := NewSession("codex-ready-status", "/tmp")
+	sess.Command = "codex"
+	if sess.hasBusyIndicator(content) {
+		t.Fatalf("codex Ready status bar must not be busy")
+	}
+
+	detector := NewPromptDetector("codex")
+	if !detector.HasPrompt(content) {
+		t.Fatalf("codex Ready status bar with prompt marker must be prompt")
+	}
+}
+
 // =============================================================================
 // VALIDATION 8.0: OpenCode Question Tool Detection (#255)
 // =============================================================================

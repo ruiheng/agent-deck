@@ -244,7 +244,7 @@ func GetCachedPaneInfoSnapshot(sessionName string) (PaneInfo, time.Time, bool) {
 // session often shows "bash" as the command, making it indistinguishable from
 // "Claude exited and shell is showing". The existing Exists() check handles
 // truly dead sessions reliably.
-func AnalyzePaneTitle(title, _ string) TitleState {
+func AnalyzePaneTitle(title, paneCommand, sessionCommand string) TitleState {
 	if title == "" {
 		return TitleStateUnknown
 	}
@@ -254,12 +254,37 @@ func AnalyzePaneTitle(title, _ string) TitleState {
 		return TitleStateWorking
 	}
 
+	// Codex can set titles like "project | Working" while the model is
+	// active and "project | Ready" when it is idle. Treat only active states
+	// as working; Ready falls through to content/prompt detection.
+	if isCodexTitleSource(paneCommand, sessionCommand) && hasCodexActiveStateSuffix(title) {
+		return TitleStateWorking
+	}
+
 	// Done marker (✳✻✽✶✢) = Claude finished a task, fall through to prompt detection
 	if containsDoneMarker(title) {
 		return TitleStateDone
 	}
 
 	return TitleStateUnknown
+}
+
+func isCodexTitleSource(paneCommand, sessionCommand string) bool {
+	return detectToolFromCommand(paneCommand) == "codex" ||
+		detectToolFromCommand(sessionCommand) == "codex"
+}
+
+func hasCodexActiveStateSuffix(title string) bool {
+	_, state, ok := strings.Cut(strings.TrimSpace(title), " | ")
+	if !ok {
+		return false
+	}
+	switch state {
+	case "Thinking", "Working":
+		return true
+	default:
+		return false
+	}
 }
 
 // CleanPaneTitle strips spinner/done-marker characters from a tmux pane title
