@@ -141,6 +141,18 @@ func TestGroupReorderPositionClamp(t *testing.T) {
 	}
 }
 
+func TestReorderGroupArgsKeepsMaxConcurrentValueWithFlag(t *testing.T) {
+	for _, flagName := range []string{"--max-concurrent", "-max-concurrent"} {
+		t.Run(flagName, func(t *testing.T) {
+			got := reorderGroupArgs([]string{"steelyard", flagName, "0"})
+			want := []string{flagName, "0", "steelyard"}
+			if strings.Join(got, "\x00") != strings.Join(want, "\x00") {
+				t.Fatalf("reorderGroupArgs() = %q, want %q", got, want)
+			}
+		})
+	}
+}
+
 // TestNormalizeGroupPathCasePreserving verifies that normalizeGroupPath does not
 // lowercase its argument. GroupTree.Groups is keyed by the raw stored path, so
 // lowercasing here would make any group with uppercase letters unreachable.

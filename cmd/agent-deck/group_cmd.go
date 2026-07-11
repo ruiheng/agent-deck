@@ -1112,10 +1112,12 @@ func reorderGroupArgs(args []string) []string {
 
 	// Known flags that take a value
 	valueFlags := map[string]bool{
-		"--parent":       true,
-		"--default-path": true,
-		"--position":     true,
-		"-p":             true,
+		"--parent":         true,
+		"--default-path":   true,
+		"--max-concurrent": true,
+		"--position":       true,
+		"-max-concurrent":  true,
+		"-p":               true,
 	}
 
 	var flags []string
