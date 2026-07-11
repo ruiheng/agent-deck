@@ -1480,6 +1480,12 @@ func (s *StateDB) ResignPrimary() error {
 
 // SetMeta sets a key-value pair in the metadata table.
 func (s *StateDB) SetMeta(key, value string) error {
+	return withBusyRetry(func() error {
+		return s.setMeta(key, value)
+	})
+}
+
+func (s *StateDB) setMeta(key, value string) error {
 	_, err := s.db.Exec(
 		"INSERT OR REPLACE INTO metadata (key, value) VALUES (?, ?)",
 		key, value,
@@ -1501,7 +1507,18 @@ func (s *StateDB) GetMeta(key string) (string, error) {
 
 // Touch updates a metadata timestamp that other instances can poll to detect changes.
 func (s *StateDB) Touch() error {
-	return s.SetMeta("last_modified", fmt.Sprintf("%d", time.Now().UnixNano()))
+	_, err := s.TouchNow()
+	return err
+}
+
+// TouchNow updates last_modified and returns the exact timestamp written.
+func (s *StateDB) TouchNow() (int64, error) {
+	var ts int64
+	err := withBusyRetry(func() error {
+		ts = time.Now().UnixNano()
+		return s.setMeta("last_modified", fmt.Sprintf("%d", ts))
+	})
+	return ts, err
 }
 
 // LastModified returns the last_modified timestamp from metadata.

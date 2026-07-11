@@ -9852,15 +9852,16 @@ func (h *Home) saveInstancesWithForce(force bool) {
 
 		groupTreeCopy := h.groupTree.ShallowCopyForSave()
 
-		// CRITICAL FIX: NotifySave MUST be called immediately before SaveWithGroups
-		// Previously it was called 25 lines earlier, creating a race window where the
-		// 500ms ignore window could expire before the save completed under load
 		if h.storageWatcher != nil {
-			h.storageWatcher.NotifySave()
+			h.storageWatcher.BeginSave()
 		}
 
 		// Save both instances and groups (including empty ones)
-		if err := h.storage.SaveWithGroups(instancesCopy, groupTreeCopy); err != nil {
+		saveModified, err := h.storage.SaveWithGroupsTouched(instancesCopy, groupTreeCopy)
+		if h.storageWatcher != nil {
+			h.storageWatcher.FinishSave(saveModified)
+		}
+		if err != nil {
 			h.setError(fmt.Errorf("failed to save: %w", err))
 		} else {
 			// CRITICAL FIX: Update lastLoadMtime after successful save.

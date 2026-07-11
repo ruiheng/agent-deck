@@ -152,6 +152,33 @@ func TestWriteStatus_RetriesOnBusy(t *testing.T) {
 	<-lockHeld
 }
 
+func TestTouchNow_RetriesOnBusy(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "state.db")
+	db := openSingleConnDB(t, dbPath)
+	if err := db.Migrate(); err != nil {
+		t.Fatalf("Migrate: %v", err)
+	}
+
+	lockHeld := briefWriteLock(t, dbPath, 80*time.Millisecond)
+	callStart := time.Now()
+	ts, err := db.TouchNow()
+	if err != nil {
+		t.Fatalf("TouchNow under contention: %v", err)
+	}
+	<-lockHeld
+	if time.Unix(0, ts).Before(callStart.Add(20 * time.Millisecond)) {
+		t.Fatalf("TouchNow timestamp %s was captured before the retry that succeeded", time.Unix(0, ts))
+	}
+
+	stored, err := db.LastModified()
+	if err != nil {
+		t.Fatalf("LastModified: %v", err)
+	}
+	if stored != ts {
+		t.Fatalf("LastModified = %d, want TouchNow timestamp %d", stored, ts)
+	}
+}
+
 // TestUpdateWatcherEventRoutedTo_RetriesOnBusy is the parity test against
 // SaveWatcherEvent (which already retries). Pre-fix the asymmetry surfaces
 // as transient errors during routing under conductor crash-restart cycles.

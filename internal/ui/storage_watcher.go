@@ -25,17 +25,16 @@ type StorageWatcher struct {
 	lastModified int64
 	modMu        sync.RWMutex
 
-	// Tracks when TUI saved, to ignore self-triggered changes
-	lastSaveTime time.Time
-	saveMu       sync.RWMutex
+	// ignoreModified is the exact metadata timestamp produced by this TUI's
+	// latest save. Only that timestamp is ignored; later external writes must
+	// still trigger a reload.
+	ignoreModified int64
+	saveInProgress bool
+	saveMu         sync.RWMutex
 }
 
-// ignoreWindow is the time window after NotifySave during which changes are ignored.
-// Must be > pollInterval so the first poll after a self-save always falls within the window.
-const ignoreWindow = 3 * time.Second
-
 // pollInterval is how often we check for external changes.
-const pollInterval = 2 * time.Second
+const pollInterval = 500 * time.Millisecond
 
 // NewStorageWatcher creates a watcher that polls the SQLite metadata for changes.
 func NewStorageWatcher(db *statedb.StateDB) (*StorageWatcher, error) {
@@ -82,6 +81,15 @@ func (sw *StorageWatcher) checkAndNotify() {
 		return
 	}
 
+	sw.saveMu.RLock()
+	ignoreModified := sw.ignoreModified
+	saveInProgress := sw.saveInProgress
+	sw.saveMu.RUnlock()
+
+	if saveInProgress {
+		return
+	}
+
 	sw.modMu.Lock()
 	changed := ts > sw.lastModified
 	if changed {
@@ -93,14 +101,7 @@ func (sw *StorageWatcher) checkAndNotify() {
 		return
 	}
 
-	// Check if we should ignore this change (TUI's own save).
-	// The ignore window must be >= pollInterval so a self-triggered change
-	// is always caught on the first poll after the save.
-	sw.saveMu.RLock()
-	lastSave := sw.lastSaveTime
-	sw.saveMu.RUnlock()
-
-	if time.Since(lastSave) < ignoreWindow {
+	if ts == ignoreModified {
 		watcherLog.Debug("watcher_ignoring_own_save")
 		return
 	}
@@ -120,11 +121,23 @@ func (sw *StorageWatcher) ReloadChannel() <-chan struct{} {
 	return sw.reloadCh
 }
 
-// NotifySave should be called by the TUI right before it saves to storage.
-// This marks the current time so the watcher can ignore the resulting change.
-func (sw *StorageWatcher) NotifySave() {
+// BeginSave pauses reload classification while this process is writing. The
+// matching FinishSave call records the exact timestamp to ignore.
+func (sw *StorageWatcher) BeginSave() {
 	sw.saveMu.Lock()
-	sw.lastSaveTime = time.Now()
+	sw.saveInProgress = true
+	sw.saveMu.Unlock()
+}
+
+// FinishSave records the metadata timestamp produced by this TUI's own save,
+// so the watcher can ignore exactly that write without swallowing later
+// external CLI/delegate-task changes.
+func (sw *StorageWatcher) FinishSave(ts int64) {
+	sw.saveMu.Lock()
+	if ts != 0 {
+		sw.ignoreModified = ts
+	}
+	sw.saveInProgress = false
 	sw.saveMu.Unlock()
 }
 

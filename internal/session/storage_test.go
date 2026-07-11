@@ -93,6 +93,63 @@ func TestStorageUpdatedAtTimestamp(t *testing.T) {
 	}
 }
 
+func TestSaveWithGroupsTouchedReturnsStoredTimestamp(t *testing.T) {
+	s := newTestStorage(t)
+
+	instances := []*Instance{
+		{
+			ID:          "test-touched",
+			Title:       "Touched Session",
+			ProjectPath: "/tmp/test",
+			GroupPath:   "test-group",
+			Command:     "claude",
+			Tool:        "claude",
+			Status:      StatusIdle,
+			CreatedAt:   time.Now(),
+		},
+	}
+
+	ts, err := s.SaveWithGroupsTouched(instances, nil)
+	if err != nil {
+		t.Fatalf("SaveWithGroupsTouched failed: %v", err)
+	}
+	if ts == 0 {
+		t.Fatal("SaveWithGroupsTouched returned zero timestamp")
+	}
+
+	stored, err := s.db.LastModified()
+	if err != nil {
+		t.Fatalf("LastModified failed: %v", err)
+	}
+	if stored != ts {
+		t.Fatalf("LastModified = %d, want exact returned timestamp %d", stored, ts)
+	}
+}
+
+func TestSaveWithGroupsTouchedReturnsTouchError(t *testing.T) {
+	s := newTestStorage(t)
+	if _, err := s.db.DB().Exec("DROP TABLE metadata"); err != nil {
+		t.Fatalf("drop metadata: %v", err)
+	}
+
+	ts, err := s.SaveWithGroupsTouched([]*Instance{{
+		ID:          "test-touch-error",
+		Title:       "Touch Error",
+		ProjectPath: "/tmp/test",
+		GroupPath:   "test-group",
+		Command:     "claude",
+		Tool:        "claude",
+		Status:      StatusIdle,
+		CreatedAt:   time.Now(),
+	}}, nil)
+	if err == nil {
+		t.Fatal("SaveWithGroupsTouched must return TouchNow errors")
+	}
+	if ts != 0 {
+		t.Fatalf("SaveWithGroupsTouched timestamp = %d, want 0 when touch fails", ts)
+	}
+}
+
 // TestGetUpdatedAtEmpty verifies behavior when no data has been saved
 func TestGetUpdatedAtEmpty(t *testing.T) {
 	s := newTestStorage(t)

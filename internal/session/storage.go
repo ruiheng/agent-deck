@@ -303,11 +303,18 @@ func (s *Storage) Save(instances []*Instance) error {
 // SaveWithGroups persists instances and groups to SQLite.
 // Converts Instance objects to database rows, then batch-inserts in a transaction.
 func (s *Storage) SaveWithGroups(instances []*Instance, groupTree *GroupTree) error {
+	_, err := s.SaveWithGroupsTouched(instances, groupTree)
+	return err
+}
+
+// SaveWithGroupsTouched is SaveWithGroups plus the exact last_modified
+// timestamp written for change detection.
+func (s *Storage) SaveWithGroupsTouched(instances []*Instance, groupTree *GroupTree) (int64, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	if s.db == nil {
-		return fmt.Errorf("storage database not initialized")
+		return 0, fmt.Errorf("storage database not initialized")
 	}
 
 	// Enforce one Claude conversation owner across persisted sessions.
@@ -319,13 +326,13 @@ func (s *Storage) SaveWithGroups(instances []*Instance, groupTree *GroupTree) er
 	for i, inst := range instances {
 		row, err := instanceToRow(inst)
 		if err != nil {
-			return err
+			return 0, err
 		}
 		rows[i] = row
 	}
 
 	if err := s.db.SaveInstances(rows); err != nil {
-		return fmt.Errorf("failed to save instances: %w", err)
+		return 0, fmt.Errorf("failed to save instances: %w", err)
 	}
 
 	// Save groups (including empty ones)
@@ -342,14 +349,17 @@ func (s *Storage) SaveWithGroups(instances []*Instance, groupTree *GroupTree) er
 			})
 		}
 		if err := s.db.SaveGroups(groupRows); err != nil {
-			return fmt.Errorf("failed to save groups: %w", err)
+			return 0, fmt.Errorf("failed to save groups: %w", err)
 		}
 	}
 
-	// Touch metadata for change detection by other instances
-	_ = s.db.Touch()
+	// Touch metadata for change detection by other instances.
+	ts, err := s.db.TouchNow()
+	if err != nil {
+		return 0, fmt.Errorf("failed to touch metadata: %w", err)
+	}
 
-	return nil
+	return ts, nil
 }
 
 // DeleteInstance removes a single instance from the database by ID.

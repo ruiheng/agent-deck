@@ -48,7 +48,7 @@ func TestStorageWatcher_DetectsChanges(t *testing.T) {
 	}
 }
 
-func TestStorageWatcher_NotifySaveIgnoresOwnChanges(t *testing.T) {
+func TestStorageWatcher_FinishSaveIgnoresOwnChanges(t *testing.T) {
 	db := newTestDB(t)
 	watcher, err := NewStorageWatcher(db)
 	require.NoError(t, err)
@@ -56,18 +56,18 @@ func TestStorageWatcher_NotifySaveIgnoresOwnChanges(t *testing.T) {
 
 	watcher.Start()
 
-	// Notify that we're about to save (simulating TUI save)
-	watcher.NotifySave()
-
 	// Touch metadata (this simulates TUI's own save via storage.SaveWithGroups)
 	time.Sleep(10 * time.Millisecond)
-	require.NoError(t, db.Touch())
+	watcher.BeginSave()
+	ts, err := db.TouchNow()
+	require.NoError(t, err)
+	watcher.FinishSave(ts)
 
-	// Should NOT receive reload signal (within ignore window)
+	// Should NOT receive reload signal for the exact timestamp produced by our save.
 	select {
 	case <-watcher.ReloadChannel():
 		t.Fatal("Should not receive reload signal for TUI's own save")
-	case <-time.After(3 * time.Second):
+	case <-time.After(2 * pollInterval):
 		// Success: no reload signal received
 	}
 }
@@ -80,21 +80,58 @@ func TestStorageWatcher_ExternalChangesStillDetected(t *testing.T) {
 
 	watcher.Start()
 
-	// Notify that we saved
-	watcher.NotifySave()
+	// Record our own save timestamp.
+	watcher.BeginSave()
+	ts, err := db.TouchNow()
+	require.NoError(t, err)
+	watcher.FinishSave(ts)
 
-	// Wait for ignore window to expire (ignoreWindow is 3s)
-	time.Sleep(4 * time.Second)
-
-	// Now an external change should be detected
+	// A later external change must not be swallowed just because it happens
+	// immediately after this TUI's own save.
 	require.NoError(t, db.Touch())
 
-	// Should receive reload signal (outside ignore window)
 	select {
 	case <-watcher.ReloadChannel():
 		// Success
-	case <-time.After(5 * time.Second):
+	case <-time.After(2 * time.Second):
 		t.Fatal("Expected reload signal for external change but got timeout")
+	}
+}
+
+func TestStorageWatcher_SaveInProgressDoesNotSwallowLaterExternalChange(t *testing.T) {
+	db := newTestDB(t)
+	watcher, err := NewStorageWatcher(db)
+	require.NoError(t, err)
+	defer watcher.Close()
+
+	watcher.BeginSave()
+	ownTS, err := db.TouchNow()
+	require.NoError(t, err)
+
+	// A poll in the tiny window after TouchNow but before FinishSave must not
+	// classify our own write as external.
+	watcher.checkAndNotify()
+	select {
+	case <-watcher.ReloadChannel():
+		t.Fatal("Should not receive reload while own save is in progress")
+	default:
+	}
+
+	watcher.FinishSave(ownTS)
+	watcher.checkAndNotify()
+	select {
+	case <-watcher.ReloadChannel():
+		t.Fatal("Should not receive reload for the completed own save")
+	default:
+	}
+
+	require.NoError(t, db.Touch())
+	watcher.checkAndNotify()
+	select {
+	case <-watcher.ReloadChannel():
+		// Success
+	default:
+		t.Fatal("Expected reload signal for later external change")
 	}
 }
 
