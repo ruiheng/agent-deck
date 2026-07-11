@@ -37,6 +37,16 @@ func TestUpdateStatus_NeverStartedSessionIsIdleNotError(t *testing.T) {
 		"a never-started session should remain idle")
 }
 
+func TestUpdateStatus_QueuedSessionRemainsQueuedWithoutTmux(t *testing.T) {
+	inst := NewInstanceWithTool("queued", t.TempDir(), "codex")
+	inst.Status = StatusQueued
+	inst.CreatedAt = time.Now().Add(-5 * time.Second)
+	inst.ForceNextStatusCheck()
+
+	require.NoError(t, inst.UpdateStatus())
+	assert.Equal(t, StatusQueued, inst.GetStatusThreadSafe())
+}
+
 // A started-then-lost session must still surface as error: gating on
 // lastStartTime must not regress the externally-killed contract.
 func TestUpdateStatus_StartedThenLostTmuxIsStillError(t *testing.T) {

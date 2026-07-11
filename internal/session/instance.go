@@ -3716,6 +3716,13 @@ func (i *Instance) UpdateStatus() error {
 	i.mu.Lock()
 	defer i.mu.Unlock()
 
+	// Queued sessions intentionally have no tmux session until group capacity
+	// becomes available. Treating that expected absence as StatusError loses
+	// the queue state and makes callers attempt delivery to a nonexistent pane.
+	if i.Status == StatusQueued {
+		return nil
+	}
+
 	// Short grace period for tmux initialization (not Claude startup)
 	// Use lastStartTime for accuracy on restarts, fallback to CreatedAt
 	graceTime := i.lastStartTime
