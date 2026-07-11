@@ -26,6 +26,22 @@ func SeedPaneInfoCacheForTest(t testing.TB, info map[string]PaneInfo) {
 	})
 }
 
+// SeedWindowCacheForTest replaces the package's window cache with fresh data.
+// Production callers must use RefreshSessionCache/RefreshPaneInfoCache.
+func SeedWindowCacheForTest(t testing.TB, windows map[string][]WindowInfo) {
+	t.Helper()
+	windowCacheMu.Lock()
+	windowCacheData = windows
+	windowCacheTime = time.Now()
+	windowCacheMu.Unlock()
+	t.Cleanup(func() {
+		windowCacheMu.Lock()
+		windowCacheData = nil
+		windowCacheTime = time.Time{}
+		windowCacheMu.Unlock()
+	})
+}
+
 // ExpirePaneInfoCacheForTest leaves the cache contents intact but rewinds the
 // timestamp past the freshness threshold so GetCachedPaneInfo treats it as
 // stale. Used to model the case where backgroundStatusUpdate hasn't run for a

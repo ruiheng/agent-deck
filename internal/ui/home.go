@@ -880,6 +880,11 @@ type statusUpdateMsg struct {
 	attachedWorkDir   string // pane_current_path captured after attach returns
 } // Triggers immediate status update without reloading
 
+type attachedSessionStatusRefreshedMsg struct {
+	sessionID     string
+	statusChanged bool
+}
+
 // openSwitcherMsg is emitted when the user pressed the session-switch key while
 // attached. It carries the same post-attach reconciliation data as
 // statusUpdateMsg; the switcher always opens pre-highlighted on the session we
@@ -897,6 +902,7 @@ type switcherCommitMsg struct {
 }
 
 type attachReturnRefreshMsg struct{}
+type attachReturnRefreshCompleteMsg struct{}
 
 // storageChangedMsg signals that state.db was modified externally
 type storageChangedMsg struct{}
@@ -3387,10 +3393,20 @@ func (h *Home) getSelectedSession() *session.Instance {
 }
 
 type sessionRenderState struct {
-	status    session.Status
-	substate  session.Substate // Honest Status v2: additive refinement (model-unavailable, auth-401, ...)
-	tool      string
-	paneTitle string // Current task description from tmux pane title (stripped of spinner/done markers)
+	status                session.Status
+	substate              session.Substate // Honest Status v2: additive refinement (model-unavailable, auth-401, ...)
+	tool                  string
+	autoName              bool
+	autoNameDescription   string
+	hasWindows            bool
+	canRestartFresh       bool
+	canForkHint           bool
+	lastActivity          time.Time
+	lastObservedActivity  time.Time
+	hasLastObservedActive bool
+	badgeTime             time.Time
+	tmuxName              string
+	paneTitle             string // Current task description from tmux pane title (stripped of spinner/done markers)
 }
 
 // displaySessionTitle returns the label to render for a session row. For an
@@ -3432,6 +3448,18 @@ func displaySessionTitle(inst *session.Instance, paneTitle string) string {
 	return inst.Title
 }
 
+func displaySessionTitleFromState(inst *session.Instance, state sessionRenderState) string {
+	if state.autoName {
+		if state.paneTitle != "" {
+			return state.paneTitle
+		}
+		if state.autoNameDescription != "" {
+			return state.autoNameDescription
+		}
+	}
+	return inst.Title
+}
+
 // sessionDisplayLabels returns the primary title and the optional dim secondary
 // subtitle to render for a session row, given its live pane title (already
 // cleaned by cleanPaneTitle). Both render paths — the overview
@@ -3447,6 +3475,14 @@ func sessionDisplayLabels(inst *session.Instance, paneTitle string) (title, subt
 	title = displaySessionTitle(inst, paneTitle)
 	if !inst.GetAutoName() {
 		subtitle = paneTitle
+	}
+	return title, subtitle
+}
+
+func sessionDisplayLabelsFromState(inst *session.Instance, state sessionRenderState) (title, subtitle string) {
+	title = displaySessionTitleFromState(inst, state)
+	if !state.autoName {
+		subtitle = state.paneTitle
 	}
 	return title, subtitle
 }
@@ -3493,25 +3529,37 @@ func (h *Home) refreshSessionRenderSnapshot(instances []*session.Instance) {
 		if inst == nil {
 			continue
 		}
-		state := sessionRenderState{
-			status:   inst.GetStatusThreadSafe(),
-			substate: inst.CachedSubstate(),
-			tool:     inst.GetToolThreadSafe(),
+		var hookStatus *session.HookStatus
+		if h.hookWatcher != nil {
+			hookStatus = h.hookWatcher.GetHookStatus(inst.ID)
 		}
-		// Look up pane title from the already-refreshed tmux cache.
-		// Only RefreshPaneInfoCache (called from backgroundStatusUpdate) keeps
-		// the cache fresh; processStatusUpdate and other rebuild paths run on
-		// their own cadence. When that cache crosses the 4-second freshness
-		// threshold (GetCachedPaneInfo returns ok=false), keep the previous
-		// snapshot's paneTitle so the inline suffix in renderSessionItem does
-		// not blink to empty between successful refreshes — the user would
-		// otherwise read the disappearance as "title only updated once."
+		state := sessionRenderState{
+			status:              inst.GetStatusThreadSafe(),
+			substate:            inst.CachedSubstate(),
+			tool:                inst.GetToolThreadSafe(),
+			autoName:            inst.GetAutoName(),
+			autoNameDescription: inst.GetAutoNameDescription(),
+			canRestartFresh:     inst.CanRestartFresh(),
+			canForkHint:         forkHintAvailable(inst),
+			lastActivity:        inst.GetLastActivityTime(),
+			badgeTime:           pickBadgeTime(inst.CreatedAt, inst.LastStartedAt, hookStatus, time.Time{}, false),
+		}
+		// Look up pane title from the already-refreshed tmux cache. When that
+		// cache crosses the 4-second freshness threshold (GetCachedPaneInfo
+		// returns ok=false), keep the previous snapshot's paneTitle so the
+		// inline suffix in renderSessionItem does not blink to empty between
+		// successful refreshes; the user would otherwise read the disappearance
+		// as "title only updated once."
 		// Reading the latest snapshot inside the per-instance branch (rather
 		// than once before the loop) narrows the read-store race window: if a
 		// concurrent rebuild lands a fresher value while we're walking the
 		// instances slice, the fallback uses that value instead of stamping
 		// an even-older one back into the snapshot.
 		if tmuxSess := inst.GetTmuxSession(); tmuxSess != nil {
+			state.tmuxName = tmuxSess.Name
+			state.hasWindows = len(tmux.GetCachedWindows(tmuxSess.Name)) >= 2
+			state.lastObservedActivity, state.hasLastObservedActive = inst.LastObservedActivity()
+			state.badgeTime = pickBadgeTime(inst.CreatedAt, inst.LastStartedAt, hookStatus, state.lastObservedActivity, state.hasLastObservedActive)
 			if paneInfo, ok := tmux.GetCachedPaneInfo(tmuxSess.Name); ok {
 				state.paneTitle = cleanPaneTitle(paneInfo.Title)
 			} else if prev := h.getSessionRenderSnapshot(); prev != nil {
@@ -3534,11 +3582,30 @@ func (h *Home) getSessionRenderState(inst *session.Instance) sessionRenderState 
 			return state
 		}
 	}
-	// Fallback for newly-added sessions before snapshot refresh.
-	return sessionRenderState{
-		status: inst.GetStatusThreadSafe(),
-		tool:   inst.GetToolThreadSafe(),
+	// Fallback for newly-added sessions before snapshot refresh. Keep this cheap:
+	// no tmux refresh and no hook-watcher read on the render path.
+	state := sessionRenderState{
+		status:              inst.GetStatusThreadSafe(),
+		substate:            inst.CachedSubstate(),
+		tool:                inst.GetToolThreadSafe(),
+		autoName:            inst.GetAutoName(),
+		autoNameDescription: inst.GetAutoNameDescription(),
+		canRestartFresh:     inst.CanRestartFresh(),
+		canForkHint:         forkHintAvailable(inst),
+		lastActivity:        inst.GetLastActivityTime(),
+		badgeTime:           pickBadgeTime(inst.CreatedAt, inst.LastStartedAt, nil, time.Time{}, false),
 	}
+	if tmuxSess := inst.GetTmuxSession(); tmuxSess != nil {
+		state.tmuxName = tmuxSess.Name
+	}
+	return state
+}
+
+func forkHintAvailable(inst *session.Instance) bool {
+	if inst == nil {
+		return false
+	}
+	return inst.CanFork()
 }
 
 // markNavigationActivity records a short "hot" window where background workers
@@ -3548,6 +3615,11 @@ func (h *Home) markNavigationActivity() {
 	h.lastNavigationTime = now
 	h.isNavigating = true
 	h.navigationHotUntil.Store(now.Add(900 * time.Millisecond).UnixNano())
+}
+
+func (h *Home) navigationHot() bool {
+	hotUntil := h.navigationHotUntil.Load()
+	return hotUntil > 0 && time.Now().UnixNano() < hotUntil
 }
 
 func (h *Home) beginAttachReturnGrace(now time.Time) {
@@ -3643,7 +3715,7 @@ func (h *Home) statusWorker() {
 			return
 
 		case <-timer.C:
-			// Self-triggered update - runs even when TUI is paused
+			// Self-triggered update - runs even when TUI is paused.
 			sweepStart := time.Now()
 			h.backgroundStatusUpdate()
 			timer.Reset(nextStatusInterval(time.Since(sweepStart), baseStatusInterval, maxStatusInterval))
@@ -3713,7 +3785,7 @@ func (h *Home) backgroundStatusUpdate() {
 	}()
 
 	totalStart := time.Now()
-	if hotUntil := h.navigationHotUntil.Load(); hotUntil > 0 && time.Now().UnixNano() < hotUntil {
+	if h.navigationHot() {
 		return
 	}
 
@@ -3732,6 +3804,9 @@ func (h *Home) backgroundStatusUpdate() {
 	// Refresh tmux session cache
 	refreshStart := time.Now()
 	tmux.RefreshExistingSessions()
+	if h.navigationHot() {
+		return
+	}
 	tmux.RefreshPaneInfoCache()
 	refreshDur := time.Since(refreshStart)
 	if refreshDur > 100*time.Millisecond {
@@ -3767,6 +3842,9 @@ func (h *Home) backgroundStatusUpdate() {
 	// Configure one session per tick to avoid blocking the status update
 	// This ensures all sessions get configured within ~1 minute even without user interaction
 	for _, inst := range instances {
+		if h.navigationHot() {
+			return
+		}
 		if tmuxSess := inst.GetTmuxSession(); tmuxSess != nil {
 			if !tmuxSess.IsConfigured() && tmuxSess.Exists() {
 				tmuxSess.EnsureConfigured()
@@ -3790,6 +3868,9 @@ func (h *Home) backgroundStatusUpdate() {
 	// Proactive context-% monitoring: send /clear before auto-compact triggers
 	// For conductor sessions with clear_on_compact enabled, check cached analytics
 	for _, inst := range instances {
+		if h.navigationHot() {
+			return
+		}
 		if !session.IsClaudeCompatible(inst.Tool) || inst.GroupPath != "conductor" {
 			continue
 		}
@@ -3842,6 +3923,9 @@ func (h *Home) backgroundStatusUpdate() {
 	g.SetLimit(10) // Pool of 10 workers (tmux server serializes, more doesn't help)
 
 	for _, inst := range instances {
+		if h.navigationHot() {
+			break
+		}
 		inst := inst // capture loop variable
 
 		// Skip idle sessions when PipeManager knows they haven't produced output.
@@ -3857,6 +3941,9 @@ func (h *Home) backgroundStatusUpdate() {
 		}
 
 		g.Go(func() error {
+			if h.navigationHot() {
+				return nil
+			}
 			oldStatus := inst.GetStatusThreadSafe()
 			instStart := time.Now()
 			_ = inst.UpdateStatus()
@@ -4195,44 +4282,44 @@ func (h *Home) triggerStatusUpdate() {
 	}
 }
 
-func (h *Home) refreshAttachedSessionStatus(sessionID string) {
+func (h *Home) refreshAttachedSessionStatusCmd(sessionID string) tea.Cmd {
 	if strings.TrimSpace(sessionID) == "" {
-		return
+		return nil
 	}
-
-	h.instancesMu.RLock()
-	inst := h.instanceByID[sessionID]
-	h.instancesMu.RUnlock()
-	if inst == nil {
-		return
-	}
-
-	// Attach return is the one moment where stale hook files are most visible:
-	// Claude/Codex may have exited via /q without writing a fresh "dead" hook.
-	// Force the attached session through the live tmux path before the list is
-	// redrawn so the status icon reflects a dead pane immediately.
-	inst.ClearHookStatus()
-	if h.hookWatcher != nil {
-		h.hookWatcher.ClearHookStatus(inst.ID)
-	}
-	inst.ForceNextStatusCheck()
-
-	if inst.GetTmuxSession() != nil {
-		tmux.RefreshSessionCache()
-		tmux.RefreshPaneInfoCache()
-	}
-
-	oldStatus := inst.GetStatusThreadSafe()
-	_ = inst.UpdateStatus()
-	newStatus := inst.GetStatusThreadSafe()
-	if newStatus != oldStatus {
-		h.cachedStatusCounts.valid.Store(false)
-		h.publishCurrentSessionStates()
-		if db := statedb.GetGlobal(); db != nil {
-			_ = db.WriteStatus(inst.ID, string(newStatus), inst.GetToolThreadSafe())
+	return func() tea.Msg {
+		h.instancesMu.RLock()
+		inst := h.instanceByID[sessionID]
+		h.instancesMu.RUnlock()
+		if inst == nil {
+			return attachedSessionStatusRefreshedMsg{sessionID: sessionID}
 		}
+
+		// Attach return is the one moment where stale hook files are most visible:
+		// Claude/Codex may have exited via /q without writing a fresh "dead" hook.
+		// Force the attached session through the live tmux path, but do it off the
+		// UI goroutine so returning to the list does not stall key handling.
+		inst.ClearHookStatus()
+		if h.hookWatcher != nil {
+			h.hookWatcher.ClearHookStatus(inst.ID)
+		}
+		inst.ForceNextStatusCheck()
+
+		if inst.GetTmuxSession() != nil {
+			tmux.RefreshSessionCache()
+			tmux.RefreshPaneInfoCache()
+		}
+
+		oldStatus := inst.GetStatusThreadSafe()
+		_ = inst.UpdateStatus()
+		newStatus := inst.GetStatusThreadSafe()
+		if newStatus != oldStatus {
+			if db := statedb.GetGlobal(); db != nil {
+				_ = db.WriteStatus(inst.ID, string(newStatus), inst.GetToolThreadSafe())
+			}
+			return attachedSessionStatusRefreshedMsg{sessionID: sessionID, statusChanged: true}
+		}
+		return attachedSessionStatusRefreshedMsg{sessionID: sessionID}
 	}
-	h.refreshSessionRenderSnapshot(nil)
 }
 
 func (h *Home) publishCurrentSessionStates() {
@@ -4243,18 +4330,13 @@ func (h *Home) publishCurrentSessionStates() {
 	h.publishWebSessionStates(instances)
 }
 
-// processStatusUpdate implements round-robin status updates (Priority 1A + 1B)
-// Called by the background worker goroutine
-// Instead of updating ALL sessions every tick (which causes lag with 100+ sessions),
-// we update in batches:
-//   - Always update visible sessions first (ensures UI responsiveness)
-//   - Round-robin through remaining sessions (spreads CPU load over time)
-//
-// Performance: With 10 sessions, updating all takes ~1-2s of cumulative time per tick.
-// With batching (3 visible + 2 non-visible per tick), we keep each tick under 100ms.
+// processStatusUpdate samples status on the background worker and publishes a
+// render snapshot for the UI. It must never be required for key handling to make
+// progress: if navigation starts while this is running, stop scheduling more
+// tmux/status work and let the next quiet tick catch up.
 func (h *Home) processStatusUpdate(req statusUpdateRequest) {
 	const batchSize = 2 // Reduced from 5 to 2 - fewer CapturePane() calls per tick
-	if hotUntil := h.navigationHotUntil.Load(); hotUntil > 0 && time.Now().UnixNano() < hotUntil {
+	if h.navigationHot() {
 		return
 	}
 	if last := h.lastFullStatusSweep.Load(); last > 0 {
@@ -4268,6 +4350,9 @@ func (h *Home) processStatusUpdate(req statusUpdateRequest) {
 	// This prevents UI freezing when subprocess spawning is slow (high system load)
 	// The cache refresh spawns `tmux list-sessions` which can block for 50-200ms
 	tmux.RefreshExistingSessions()
+	if h.navigationHot() {
+		return
+	}
 
 	// Take a snapshot of instances under read lock (thread-safe)
 	h.instancesMu.RLock()
@@ -4294,6 +4379,9 @@ func (h *Home) processStatusUpdate(req statusUpdateRequest) {
 
 	// Step 1: Always update visible sessions (Priority 1B - visible first)
 	for _, inst := range instancesCopy {
+		if h.navigationHot() {
+			return
+		}
 		if visibleIDs[inst.ID] {
 			oldStatus := inst.GetStatusThreadSafe()
 			_ = inst.UpdateStatus() // Ignore errors in background worker
@@ -4312,6 +4400,9 @@ func (h *Home) processStatusUpdate(req statusUpdateRequest) {
 	instanceCount := len(instancesCopy)
 
 	for i := 0; i < instanceCount && remaining > 0; i++ {
+		if h.navigationHot() {
+			return
+		}
 		idx := (startIdx + i) % instanceCount
 		inst := instancesCopy[idx]
 
@@ -5401,9 +5492,7 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 		h.isAttaching.Store(false) // Atomic store for thread safety
 		now := time.Now()
 		h.beginAttachReturnGrace(now)
-		// Reconcile the attached session synchronously before the normal delayed
-		// refresh so an exited pane does not render as still running for a tick.
-		h.refreshAttachedSessionStatus(msg.attachedSessionID)
+		refreshStatusCmd := h.refreshAttachedSessionStatusCmd(msg.attachedSessionID)
 
 		selectedBefore := h.captureSelectedItemIdentity()
 		h.rebuildFlatItemsPreservingSelection(selectedBefore)
@@ -5470,6 +5559,7 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// right edge), and schedule a delayed repaint for any pane-title/content
 		// cache changes that settle just after tmux restores the outer client.
 		return h, tea.Batch(
+			refreshStatusCmd,
 			tea.EnableMouseCellMotion,
 			RestoreLegacyKeyboardCmd(os.Stdout),
 			tea.WindowSize(),
@@ -5483,7 +5573,7 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// by handleSessionSwitcherKey.
 		h.isAttaching.Store(false)
 		h.beginAttachReturnGrace(time.Now())
-		h.refreshAttachedSessionStatus(msg.fromSessionID)
+		refreshStatusCmd := h.refreshAttachedSessionStatusCmd(msg.fromSessionID)
 		selectedBefore := h.captureSelectedItemIdentity()
 		h.rebuildFlatItemsPreservingSelection(selectedBefore)
 		h.followAttachReturnCwd(statusUpdateMsg{
@@ -5492,19 +5582,38 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 		})
 		h.openSessionSwitcher(msg.fromSessionID, true)
 		return h, tea.Batch(
+			refreshStatusCmd,
 			tea.EnableMouseCellMotion,
 			RestoreLegacyKeyboardCmd(os.Stdout),
 			tea.WindowSize(),
 			tea.Tick(attachReturnRefreshDelay, func(time.Time) tea.Msg { return attachReturnRefreshMsg{} }),
 		)
 
+	case attachedSessionStatusRefreshedMsg:
+		if msg.statusChanged {
+			h.cachedStatusCounts.valid.Store(false)
+			h.publishCurrentSessionStates()
+		}
+		selectedBefore := h.captureSelectedItemIdentity()
+		h.rebuildFlatItemsPreservingSelection(selectedBefore)
+		h.refreshSessionRenderSnapshot(nil)
+		return h, nil
+
 	case switcherCommitMsg:
 		return h, h.handleSwitcherCommit(msg)
 
 	case attachReturnRefreshMsg:
+		if h.navigationHot() {
+			return h, tea.Tick(300*time.Millisecond, func(time.Time) tea.Msg { return attachReturnRefreshMsg{} })
+		}
+		return h, func() tea.Msg {
+			tmux.RefreshSessionCache()
+			tmux.RefreshPaneInfoCache()
+			return attachReturnRefreshCompleteMsg{}
+		}
+
+	case attachReturnRefreshCompleteMsg:
 		selectedBefore := h.captureSelectedItemIdentity()
-		tmux.RefreshSessionCache()
-		tmux.RefreshPaneInfoCache()
 		h.rebuildFlatItemsPreservingSelection(selectedBefore)
 		h.refreshSessionRenderSnapshot(nil)
 		return h, nil
@@ -13489,14 +13598,18 @@ func (h *Home) renderHelpBarMinimal() string {
 		if item.Type == session.ItemTypeGroup {
 			contextKeys = renderKeys("⏎", newKey, quickKey, groupKey)
 		} else {
+			var state sessionRenderState
+			if item.Session != nil {
+				state = h.getSessionRenderState(item.Session)
+			}
 			contextKeys = renderKeys("⏎", newKey, quickKey, restartKey)
-			if item.Session != nil && item.Session.CanRestartFresh() {
+			if item.Session != nil && state.canRestartFresh {
 				freshRendered := renderKeys(restartFreshKey)
 				if freshRendered != "" {
 					contextKeys += " " + freshRendered
 				}
 			}
-			if item.Session != nil && item.Session.CanFork() {
+			if item.Session != nil && state.canForkHint {
 				forkRendered := renderKeys(forkKey)
 				if forkRendered != "" {
 					contextKeys += " " + forkRendered
@@ -13587,6 +13700,10 @@ func (h *Home) renderHelpBarCompact() string {
 				contextHints = append(contextHints, h.helpKeyShort(newQuickKey, "New"))
 			}
 		} else {
+			var state sessionRenderState
+			if item.Session != nil {
+				state = h.getSessionRenderState(item.Session)
+			}
 			contextHints = append(contextHints, h.helpKeyShort("⏎", "Attach"))
 			if newQuickKey != "" {
 				contextHints = append(contextHints, h.helpKeyShort(newQuickKey, "New"))
@@ -13594,10 +13711,10 @@ func (h *Home) renderHelpBarCompact() string {
 			if key := h.actionKey(hotkeyRestart); key != "" {
 				contextHints = append(contextHints, h.helpKeyShort(key, "Restart"))
 			}
-			if item.Session != nil && item.Session.CanRestartFresh() && restartFreshKey != "" {
+			if item.Session != nil && state.canRestartFresh && restartFreshKey != "" {
 				contextHints = append(contextHints, h.helpKeyShort(restartFreshKey, "Fresh"))
 			}
-			if item.Session != nil && item.Session.CanFork() {
+			if item.Session != nil && state.canForkHint {
 				if key := h.actionKey(hotkeyQuickFork); key != "" {
 					contextHints = append(contextHints, h.helpKeyShort(key, "Fork"))
 				}
@@ -13760,6 +13877,10 @@ func (h *Home) renderHelpBarFull() string {
 				secondaryHints = append(secondaryHints, h.helpKey(deleteKey, "Delete"))
 			}
 		} else {
+			var state sessionRenderState
+			if item.Session != nil {
+				state = h.getSessionRenderState(item.Session)
+			}
 			contextTitle = "Session"
 			primaryHints = append(primaryHints, h.helpKey("Enter", "Attach"))
 			if newQuickKey != "" {
@@ -13771,11 +13892,11 @@ func (h *Home) renderHelpBarFull() string {
 			if restartKey != "" {
 				primaryHints = append(primaryHints, h.helpKey(restartKey, "Restart"))
 			}
-			if item.Session != nil && item.Session.CanRestartFresh() && restartFreshKey != "" {
+			if item.Session != nil && state.canRestartFresh && restartFreshKey != "" {
 				primaryHints = append(primaryHints, h.helpKey(restartFreshKey, "Restart Fresh"))
 			}
 			// Only show fork hints when the selected tool supports Agent Deck forking.
-			if item.Session != nil && item.Session.CanFork() {
+			if item.Session != nil && state.canForkHint {
 				if forkKeys != "" {
 					primaryHints = append(primaryHints, h.helpKey(forkKeys, "Fork"))
 				}
@@ -13997,7 +14118,7 @@ const maxCuratedContextHints = 3
 // likely to be wanted for the current selection; rarer and global actions stay
 // under help (?). The settings and help keys are added separately by
 // renderHelpBarCurated so they always remain last.
-func (h *Home) curatedContextHints(item session.Item) []footerHint {
+func (h *Home) curatedContextHints(item session.Item, snapshots ...map[string]sessionRenderState) []footerHint {
 	var hints []footerHint
 	add := func(key, label string) {
 		if len(hints) >= maxCuratedContextHints {
@@ -14009,6 +14130,10 @@ func (h *Home) curatedContextHints(item session.Item) []footerHint {
 	}
 
 	newQuick := joinHotkeyLabels(h.actionKey(hotkeyNewSession), h.actionKey(hotkeyQuickCreate))
+	snapshot := h.getSessionRenderSnapshot()
+	if len(snapshots) > 0 {
+		snapshot = snapshots[0]
+	}
 
 	switch item.Type {
 	case session.ItemTypeGroup:
@@ -14026,7 +14151,11 @@ func (h *Home) curatedContextHints(item session.Item) []footerHint {
 		if s == nil {
 			return hints
 		}
-		if sessionIsQueued(s) {
+		state, ok := snapshot[s.ID]
+		if !ok {
+			state = h.getSessionRenderState(s)
+		}
+		if state.status == session.StatusQueued {
 			// Queued: waiting for a group slot, no tmux yet — so it is neither
 			// attachable (no pane to enter) nor restartable (nothing running to
 			// restart). The only meaningful actions are dropping it from the
@@ -14035,12 +14164,12 @@ func (h *Home) curatedContextHints(item session.Item) []footerHint {
 			// tmux (PR #1289 review nit 2b).
 			add(h.actionKey(hotkeyDelete), "delete")
 			add(newQuick, "new")
-		} else if sessionIsDead(s) {
+		} else if state.status == session.StatusStopped || state.status == session.StatusError {
 			// Dead (stopped or error): restart, then restart-fresh when the
 			// tool tracks a session id, then delete — the actions for a session
 			// that broke or was parked, in order of likely intent.
 			add(h.actionKey(hotkeyRestart), "restart")
-			if s.CanRestartFresh() {
+			if state.canRestartFresh {
 				add(h.actionKey(hotkeyRestartFresh), "restart fresh")
 			}
 			add(h.actionKey(hotkeyDelete), "delete")
@@ -14049,7 +14178,7 @@ func (h *Home) curatedContextHints(item session.Item) []footerHint {
 			// most relevant follow-up (fork while forkable, else new).
 			add("⏎", "attach")
 			add(h.actionKey(hotkeyRestart), "restart")
-			if s.CanFork() {
+			if state.canForkHint {
 				add(h.actionKey(hotkeyQuickFork), "fork")
 			} else {
 				add(newQuick, "new")
@@ -14070,22 +14199,6 @@ func (h *Home) curatedContextHints(item session.Item) []footerHint {
 	return hints
 }
 
-// sessionIsDead reports whether a session is stopped or errored — the states
-// for which restart, rather than attach, is the relevant footer action. Reads
-// the status via the thread-safe getter since the render goroutine runs
-// concurrently with backgroundStatusUpdate (PR #1289 review nit 2).
-func sessionIsDead(s *session.Instance) bool {
-	status := s.GetStatusThreadSafe()
-	return status == session.StatusStopped || status == session.StatusError
-}
-
-// sessionIsQueued reports whether a session is waiting for a group slot and has
-// no tmux yet — so it is neither attachable nor restartable. Reads the status
-// via the thread-safe getter for the same concurrency reason as sessionIsDead.
-func sessionIsQueued(s *session.Instance) bool {
-	return s.GetStatusThreadSafe() == session.StatusQueued
-}
-
 // renderHelpBarCurated renders the lighter, context-aware footer (the default
 // "curated" style). It shows dim, plain inline hints for only the actions
 // relevant to the selected row, and always keeps the settings key then the help
@@ -14099,6 +14212,7 @@ func (h *Home) renderHelpBarCurated() string {
 	// lower-priority and listed in descending priority order, so they are the
 	// ones dropped first when the bar is too narrow.
 	var contextHints []footerHint
+	snapshot := h.getSessionRenderSnapshot()
 
 	switch {
 	case h.jumpMode:
@@ -14118,7 +14232,7 @@ func (h *Home) renderHelpBarCurated() string {
 		add(h.actionKey(hotkeyImport), "import")
 		add(h.actionKey(hotkeyCreateGroup), "group")
 	case h.cursor >= 0 && h.cursor < len(h.flatItems):
-		contextHints = append(contextHints, h.curatedContextHints(h.flatItems[h.cursor])...)
+		contextHints = append(contextHints, h.curatedContextHints(h.flatItems[h.cursor], snapshot)...)
 	}
 
 	// Settings then help are the always-kept global hints, in that order. They
@@ -14837,18 +14951,16 @@ func (h *Home) renderSessionItem(
 		if selected {
 			tsStyle = SessionStatusSelStyle
 		}
-		var hookStatus *session.HookStatus
-		if h.hookWatcher != nil {
-			hookStatus = h.hookWatcher.GetHookStatus(inst.ID)
+		ts := instState.badgeTime
+		if ts.IsZero() {
+			ts = pickBadgeTime(inst.CreatedAt, inst.LastStartedAt, nil, instState.lastObservedActivity, instState.hasLastObservedActive)
 		}
-		confirmedTs, confirmedObserved := inst.LastObservedActivity()
-		ts := pickBadgeTime(inst.CreatedAt, inst.LastStartedAt, hookStatus, confirmedTs, confirmedObserved)
 		timestampBadge = tsStyle.Render(" " + formatRelativeTime(ts))
 	}
 
 	// Window expand/collapse chevron for sessions with 2+ windows
 	windowChevron := " " // space placeholder to keep status icons aligned
-	if h.sessionHasWindows(item) {
+	if instState.hasWindows {
 		chevronChar := "▾"
 		if h.windowsCollapsed[inst.ID] {
 			chevronChar = "▸"
@@ -14866,7 +14978,7 @@ func (h *Home) renderSessionItem(
 	// paneTitle) falls back to the handle automatically. paneSubtitle is the dim
 	// trailing pane title for non-auto-named rows ("" when auto-named, since the
 	// pane title is already promoted to displayTitle) — see sessionDisplayLabels.
-	displayTitle, paneSubtitle := sessionDisplayLabels(inst, instState.paneTitle)
+	displayTitle, paneSubtitle := sessionDisplayLabelsFromState(inst, instState)
 	// Pin marker (pin-sessions): a 📌 prefix flags any pinned row. Position in
 	// the list conveys top vs bottom; the emoji conveys "this is pinned".
 	// Prepended before the AutoName truncation budget so width accounting below
@@ -14878,7 +14990,7 @@ func (h *Home) renderSessionItem(
 	if isMaestro {
 		displayTitle = "⬢ " + displayTitle
 	}
-	if inst.GetAutoName() && listWidth > 0 {
+	if instState.autoName && listWidth > 0 {
 		// Task descriptions can be long; truncate to the row's free width so the
 		// tool label and badges stay on-row. Keep the reserved terms below in
 		// sync with the row format that follows.
@@ -15529,9 +15641,9 @@ func (h *Home) renderSessionInfoCard(inst *session.Instance, width, height int) 
 
 	var b strings.Builder
 
-	// Snapshot status/tool under read lock for thread safety
-	cardStatus := inst.GetStatusThreadSafe()
-	cardTool := inst.GetToolThreadSafe()
+	cardState := h.getSessionRenderState(inst)
+	cardStatus := cardState.status
+	cardTool := cardState.tool
 
 	// Header with tool icon
 	icon := ToolIcon(cardTool)
@@ -15705,8 +15817,8 @@ func (h *Home) renderPreviewPane(width, height int) string {
 	}
 
 	// Session info header box
-	// Cache status once to avoid races with background status updates
-	selectedStatus := selected.GetStatusThreadSafe()
+	selectedState := h.getSessionRenderState(selected)
+	selectedStatus := selectedState.status
 	statusIcon := "○"
 	statusColor := ColorTextDim
 	switch selectedStatus {
@@ -15739,7 +15851,7 @@ func (h *Home) renderPreviewPane(width, height int) string {
 	b.WriteString("\n")
 
 	// Activity time - shows when session was last active
-	activityTime := selected.GetLastActivityTime()
+	activityTime := selectedState.lastActivity
 	activityStr := formatRelativeTime(activityTime)
 	if selectedStatus == session.StatusRunning {
 		activityStr = "active now"
@@ -16032,7 +16144,7 @@ func (h *Home) renderPreviewPane(width, height int) string {
 		}
 
 		// Fork hint when session can be forked
-		if selected.CanFork() {
+		if selectedState.canForkHint {
 			quickForkKey := h.actionKey(hotkeyQuickFork)
 			forkWithOptionsKey := h.actionKey(hotkeyForkWithOptions)
 			if quickForkKey != "" || forkWithOptionsKey != "" {
@@ -16141,7 +16253,7 @@ func (h *Home) renderPreviewPane(width, height int) string {
 			}
 
 			// Fork hint for OpenCode
-			if selected.CanFork() {
+			if selectedState.canForkHint {
 				h.renderForkHintLine(&b)
 			}
 		} else {
@@ -16220,7 +16332,7 @@ func (h *Home) renderPreviewPane(width, height int) string {
 					b.WriteString("\n")
 				}
 			}
-			if selected.CanRestartFresh() {
+			if selectedState.canRestartFresh {
 				if restartFreshKey := h.actionKey(hotkeyRestartFresh); restartFreshKey != "" {
 					hintStyle := lipgloss.NewStyle().Foreground(ColorText).Italic(true)
 					keyStyle := lipgloss.NewStyle().Foreground(ColorAccent).Bold(true)
@@ -16281,7 +16393,7 @@ func (h *Home) renderPreviewPane(width, height int) string {
 			b.WriteString(dimStyle.Render(" Resume  - restart with session resume"))
 			b.WriteString("\n")
 		}
-		if selected.CanRestartFresh() {
+		if selectedState.canRestartFresh {
 			if restartFreshKey := h.actionKey(hotkeyRestartFresh); restartFreshKey != "" {
 				b.WriteString("  ")
 				b.WriteString(keyStyle.Render(restartFreshKey))
@@ -16354,7 +16466,7 @@ func (h *Home) renderPreviewPane(width, height int) string {
 			b.WriteString(dimStyle.Render(" Start   - create and start tmux session"))
 			b.WriteString("\n")
 		}
-		if selected.CanRestartFresh() {
+		if selectedState.canRestartFresh {
 			if restartFreshKey := h.actionKey(hotkeyRestartFresh); restartFreshKey != "" {
 				b.WriteString("  ")
 				b.WriteString(keyStyle.Render(restartFreshKey))

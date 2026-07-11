@@ -1,7 +1,11 @@
 package ui
 
 import (
+	"encoding/json"
+	"os"
+	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/asheshgoplani/agent-deck/internal/session"
 	"github.com/asheshgoplani/agent-deck/internal/tmux"
@@ -52,6 +56,45 @@ func newHomeForSnapshotTest() *Home {
 	return h
 }
 
+func TestSessionHasWindowsUsesLiveWindowCache(t *testing.T) {
+	const tmuxName = "agentdeck-snapshot-window-current"
+	inst := instWithTmuxName(t, "inst-window", tmuxName)
+	h := newHomeForSnapshotTest()
+	h.sessionRenderSnapshot.Store(map[string]sessionRenderState{
+		inst.ID: {tmuxName: "agentdeck-snapshot-window-old", hasWindows: false},
+	})
+	tmux.SeedWindowCacheForTest(t, map[string][]tmux.WindowInfo{
+		tmuxName: {
+			{Index: 0, Name: "main"},
+			{Index: 1, Name: "tests"},
+		},
+	})
+
+	if !h.sessionHasWindows(session.Item{Type: session.ItemTypeSession, Session: inst}) {
+		t.Fatal("sessionHasWindows must use current tmux window cache, not stale render snapshot")
+	}
+}
+
+func TestRecordFocusedSessionUsesCurrentTmuxName(t *testing.T) {
+	const currentTmuxName = "agentdeck-snapshot-focus-current"
+	inst := instWithTmuxName(t, "inst-focus", currentTmuxName)
+	h := newHomeForSnapshotTest()
+	h.flatItems = []session.Item{{Type: session.ItemTypeSession, Session: inst}}
+	h.cursor = 0
+	h.sessionRenderSnapshot.Store(map[string]sessionRenderState{
+		inst.ID: {tmuxName: "agentdeck-snapshot-focus-old"},
+	})
+
+	h.recordFocusedSession()
+
+	h.focusMu.Lock()
+	got := h.focusedSessionName
+	h.focusMu.Unlock()
+	if got != currentTmuxName {
+		t.Fatalf("focusedSessionName = %q, want current tmux name %q", got, currentTmuxName)
+	}
+}
+
 // TestRefreshSessionRenderSnapshot_PaneTitleUpdatesEachRefresh is the sanity
 // check: when the tmux pane cache is fresh on every call,
 // refreshSessionRenderSnapshot must propagate the latest title into the
@@ -89,12 +132,10 @@ func TestRefreshSessionRenderSnapshot_PaneTitleUpdatesEachRefresh(t *testing.T) 
 // show the task description. Today's implementation clears it to "", which
 // the user reads as "the title stopped updating."
 //
-// Why this matters: only backgroundStatusUpdate calls RefreshPaneInfoCache.
-// processStatusUpdate (Bubble Tea ticker) calls refreshSessionRenderSnapshot
-// without first refreshing the cache. If the background goroutine is
-// suppressed (navigationHotUntil, dead tmux server, slow list-panes), the
-// cache crosses the 4-second freshness boundary while processStatusUpdate
-// keeps rebuilding the snapshot — and every rebuild zeroes paneTitle.
+// Why this matters: snapshot rebuilds can happen after RefreshPaneInfoCache
+// was skipped or failed. If the pane cache crosses the 4-second freshness
+// boundary while a later path keeps rebuilding the snapshot, every rebuild
+// used to zero paneTitle.
 func TestRefreshSessionRenderSnapshot_PaneTitlePreservedWhenCacheStale(t *testing.T) {
 	const tmuxName = "agentdeck-snapshot-test-B"
 	inst := instWithTmuxName(t, "inst-B", tmuxName)
@@ -117,5 +158,56 @@ func TestRefreshSessionRenderSnapshot_PaneTitlePreservedWhenCacheStale(t *testin
 
 	if got := h.getSessionRenderSnapshot()[inst.ID].paneTitle; got != "long-running task" {
 		t.Errorf("stale-cache refresh: paneTitle = %q, want %q preserved (REGRESSION: rebuild zeroes title when cache is stale, PR #474)", got, "long-running task")
+	}
+}
+
+func TestRefreshSessionRenderSnapshot_UsesHookBadgeTimeWithoutTmux(t *testing.T) {
+	inst := session.NewInstance("hook-no-tmux", t.TempDir())
+	inst.ID = "inst-hook-no-tmux"
+	inst.CreatedAt = time.Now().Add(-10 * time.Minute).Truncate(time.Second)
+	inst.LastStartedAt = inst.CreatedAt.Add(2 * time.Minute)
+	hookTime := inst.CreatedAt.Add(7 * time.Minute)
+
+	hooksDir := session.GetHooksDir()
+	if err := os.MkdirAll(hooksDir, 0o755); err != nil {
+		t.Fatalf("mkdir hooks: %v", err)
+	}
+	hookPath := filepath.Join(hooksDir, inst.ID+".json")
+	data, err := json.Marshal(map[string]any{
+		"status":     "waiting",
+		"session_id": "sess-hook-no-tmux",
+		"event":      "Stop",
+		"ts":         hookTime.Unix(),
+	})
+	if err != nil {
+		t.Fatalf("marshal hook status: %v", err)
+	}
+	if err := os.WriteFile(hookPath, data, 0o644); err != nil {
+		t.Fatalf("write hook status: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Remove(hookPath) })
+
+	watcher, err := session.NewStatusFileWatcher(nil)
+	if err != nil {
+		t.Fatalf("NewStatusFileWatcher: %v", err)
+	}
+	t.Cleanup(watcher.Stop)
+	go watcher.Start()
+
+	deadline := time.Now().Add(time.Second)
+	for watcher.GetHookStatus(inst.ID) == nil && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if watcher.GetHookStatus(inst.ID) == nil {
+		t.Fatal("watcher did not load hook status")
+	}
+
+	h := newHomeForSnapshotTest()
+	h.hookWatcher = watcher
+	h.refreshSessionRenderSnapshot([]*session.Instance{inst})
+
+	want := time.Unix(hookTime.Unix(), 0)
+	if got := h.getSessionRenderSnapshot()[inst.ID].badgeTime; !got.Equal(want) {
+		t.Fatalf("badgeTime = %s, want hook UpdatedAt %s for no-tmux session", got, want)
 	}
 }

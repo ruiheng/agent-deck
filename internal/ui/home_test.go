@@ -1792,6 +1792,34 @@ func TestRenderHelpBarCompactWithSession(t *testing.T) {
 	}
 }
 
+func TestForkHintAvailableMatchesActionGate(t *testing.T) {
+	t.Run("pi without local jsonl", func(t *testing.T) {
+		t.Setenv("HOME", t.TempDir())
+		inst := session.NewInstanceWithTool("Pi Parent", "/tmp/project", "pi")
+
+		if got, want := forkHintAvailable(inst), inst.CanFork(); got != want {
+			t.Fatalf("forkHintAvailable() = %v, want CanFork() = %v", got, want)
+		}
+		if forkHintAvailable(inst) {
+			t.Fatal("Pi session without local JSONL must not advertise fork")
+		}
+	})
+
+	t.Run("codex without rollout", func(t *testing.T) {
+		t.Setenv("CODEX_HOME", t.TempDir())
+		inst := session.NewInstanceWithTool("Codex Parent", "/tmp/project", "codex")
+		inst.CodexSessionID = "11111111-2222-3333-4444-555555555555"
+		inst.CodexDetectedAt = time.Now()
+
+		if got, want := forkHintAvailable(inst), inst.CanFork(); got != want {
+			t.Fatalf("forkHintAvailable() = %v, want CanFork() = %v", got, want)
+		}
+		if forkHintAvailable(inst) {
+			t.Fatal("Codex session without flushed rollout must not advertise fork")
+		}
+	})
+}
+
 func TestRenderHelpBarCompactWithGroup(t *testing.T) {
 	home := NewHome()
 	home.width = 85 // Compact mode (70-99)
@@ -3354,8 +3382,24 @@ func TestStatusUpdateMsg_ReconcilesAttachedSessionBeforeRender(t *testing.T) {
 		t.Fatalf("write stale hook: %v", err)
 	}
 
-	model, _ := h.Update(statusUpdateMsg{attachedSessionID: inst.ID})
+	model, cmd := h.Update(statusUpdateMsg{attachedSessionID: inst.ID})
 	home := model.(*Home)
+	if cmd == nil {
+		t.Fatal("statusUpdateMsg returned nil cmd; attached-session reconciliation command missing")
+	}
+	batch, ok := cmd().(tea.BatchMsg)
+	if !ok {
+		t.Fatalf("statusUpdateMsg returned %T, want tea.BatchMsg", cmd())
+	}
+	if len(batch) == 0 || batch[0] == nil {
+		t.Fatal("statusUpdateMsg batch missing attached-session reconciliation command")
+	}
+	msg, ok := batch[0]().(attachedSessionStatusRefreshedMsg)
+	if !ok {
+		t.Fatalf("first statusUpdateMsg command returned %T, want attachedSessionStatusRefreshedMsg", msg)
+	}
+	model, _ = home.Update(msg)
+	home = model.(*Home)
 
 	if got := inst.GetStatusThreadSafe(); got != session.StatusError {
 		t.Fatalf("attached session status = %q, want %q", got, session.StatusError)
