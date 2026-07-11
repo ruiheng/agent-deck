@@ -1391,8 +1391,12 @@ func (i *Instance) resolveCodexModelFlag() string {
 }
 
 func (i *Instance) resolveCodexCommand(baseCommand string) string {
+	return resolveCodexCommandForTool(i.Tool, baseCommand)
+}
+
+func resolveCodexCommandForTool(tool, baseCommand string) string {
 	command := strings.TrimSpace(baseCommand)
-	if i.Tool == "codex" && (command == "" || command == "codex") {
+	if tool == "codex" && (command == "" || command == "codex") {
 		return GetCodexCommand()
 	}
 	if command == "" {
@@ -2756,17 +2760,56 @@ func (i *Instance) buildGenericCommand(baseCommand string) string {
 		baseCommand, dangerousFlag)
 }
 
+type instanceCapabilitySnapshot struct {
+	id                 string
+	tool               string
+	command            string
+	claudeSessionID    string
+	claudeDetectedAt   time.Time
+	geminiSessionID    string
+	openCodeSessionID  string
+	openCodeDetectedAt time.Time
+	codexSessionID     string
+	sshHost            string
+	sandboxed          bool
+	tmuxSession        *tmux.Session
+}
+
+func (i *Instance) capabilitySnapshot() instanceCapabilitySnapshot {
+	i.mu.RLock()
+	defer i.mu.RUnlock()
+	return instanceCapabilitySnapshot{
+		id:                 i.ID,
+		tool:               i.Tool,
+		command:            i.Command,
+		claudeSessionID:    i.ClaudeSessionID,
+		claudeDetectedAt:   i.ClaudeDetectedAt,
+		geminiSessionID:    i.GeminiSessionID,
+		openCodeSessionID:  i.OpenCodeSessionID,
+		openCodeDetectedAt: i.OpenCodeDetectedAt,
+		codexSessionID:     i.CodexSessionID,
+		sshHost:            i.SSHHost,
+		sandboxed:          i.Sandbox != nil && i.Sandbox.Enabled,
+		tmuxSession:        i.tmuxSession,
+	}
+}
+
 // GetGenericSessionID gets session ID from tmux environment for a custom tool
 // Uses the session_id_env field from tool config
 func (i *Instance) GetGenericSessionID() string {
-	toolDef := GetToolDef(i.Tool)
+	cap := i.capabilitySnapshot()
+	return genericSessionID(cap.tool, cap.tmuxSession)
+}
+
+func genericSessionID(tool string, tmuxSession *tmux.Session) string {
+	toolDef := GetToolDef(tool)
 	if toolDef == nil || toolDef.SessionIDEnv == "" {
 		return ""
 	}
-	if i.tmuxSession == nil {
+	if tmuxSession == nil {
 		return ""
 	}
-	sessionID, err := i.tmuxSession.GetEnvironment(toolDef.SessionIDEnv)
+	sessionID, err := tmuxSession.GetEnvironment(toolDef.SessionIDEnv)
 	if err != nil {
 		return ""
 	}
@@ -2794,7 +2837,12 @@ func (i *Instance) DisplaySessionID() string {
 
 // CanRestartGeneric returns true if a custom tool can be restarted with session resume
 func (i *Instance) CanRestartGeneric() bool {
-	toolDef := GetToolDef(i.Tool)
+	cap := i.capabilitySnapshot()
+	return canRestartGeneric(cap.tool, cap.tmuxSession)
+}
+
+func canRestartGeneric(tool string, tmuxSession *tmux.Session) bool {
+	toolDef := GetToolDef(tool)
 	if toolDef == nil {
 		return false
 	}
@@ -2802,7 +2850,7 @@ func (i *Instance) CanRestartGeneric() bool {
 	if toolDef.ResumeFlag == "" || toolDef.SessionIDEnv == "" {
 		return false
 	}
-	return i.GetGenericSessionID() != ""
+	return genericSessionID(tool, tmuxSession) != ""
 }
 
 func (i *Instance) applyWrapper(command string) (string, error) {
@@ -6651,79 +6699,91 @@ func (i *Instance) CanRestart() bool {
 // CanRestartFresh returns true when the session has a known tool session binding
 // that can be intentionally discarded to start with a new session ID.
 func (i *Instance) CanRestartFresh() bool {
-	if IsClaudeCompatible(i.Tool) {
-		return i.ClaudeSessionID != ""
+	cap := i.capabilitySnapshot()
+	if IsClaudeCompatible(cap.tool) {
+		return cap.claudeSessionID != ""
 	}
-	if i.Tool == "gemini" {
-		return i.GeminiSessionID != ""
+	if cap.tool == "gemini" {
+		return cap.geminiSessionID != ""
 	}
-	if i.Tool == "opencode" {
-		return i.OpenCodeSessionID != ""
+	if cap.tool == "opencode" {
+		return cap.openCodeSessionID != ""
 	}
-	if i.Tool == "codex" {
-		return i.CodexSessionID != ""
+	if cap.tool == "codex" {
+		return cap.codexSessionID != ""
 	}
-	return i.CanRestartGeneric()
+	return canRestartGeneric(cap.tool, cap.tmuxSession)
 }
 
 // CanFork returns true if this session can be forked
 func (i *Instance) CanFork() bool {
+	cap := i.capabilitySnapshot()
 	// Gemini CLI doesn't support forking
-	if i.Tool == "gemini" {
+	if cap.tool == "gemini" {
 		return false
 	}
 
 	// OpenCode sessions can fork if session ID is recent
-	if i.Tool == "opencode" {
-		return i.CanForkOpenCode()
+	if cap.tool == "opencode" {
+		return canForkOpenCode(cap.tool, cap.openCodeSessionID, cap.openCodeDetectedAt)
 	}
 
 	// Pi sessions fork by source JSONL path under Agent Deck's per-instance
 	// Pi session directory. The launch command validates that a JSONL exists.
-	if i.Tool == "pi" {
-		return i.CanForkPi()
+	if cap.tool == "pi" {
+		return canForkPi(cap.tool, cap.id, cap.sshHost, cap.sandboxed)
 	}
 
 	// Codex-compatible sessions fork via `codex fork <sid>`, gated on a
 	// flushed on-disk rollout (same invariant as `codex resume`).
-	if IsCodexCompatible(i.Tool) {
-		return i.CanForkCodex()
+	if IsCodexCompatible(cap.tool) {
+		return canForkCodex(cap.tool, cap.codexSessionID, cap.command)
 	}
 
 	// Claude sessions can fork if session ID is recent
-	if i.ClaudeSessionID == "" {
+	if cap.claudeSessionID == "" {
 		return false
 	}
-	return time.Since(i.ClaudeDetectedAt) < 5*time.Minute
+	return time.Since(cap.claudeDetectedAt) < 5*time.Minute
 }
 
 // CanForkOpenCode returns true if this OpenCode session can be forked
 func (i *Instance) CanForkOpenCode() bool {
-	sessionID, err := normalizeToolSessionID(FieldOpenCodeSessionID, i.OpenCodeSessionID)
-	return i.Tool == "opencode" && err == nil && sessionID != "" && sessionID == strings.TrimSpace(i.OpenCodeSessionID) && time.Since(i.OpenCodeDetectedAt) < 5*time.Minute
+	cap := i.capabilitySnapshot()
+	return canForkOpenCode(cap.tool, cap.openCodeSessionID, cap.openCodeDetectedAt)
+}
+
+func canForkOpenCode(tool, rawSessionID string, detectedAt time.Time) bool {
+	sessionID, err := normalizeToolSessionID(FieldOpenCodeSessionID, rawSessionID)
+	return tool == "opencode" && err == nil && sessionID != "" && sessionID == strings.TrimSpace(rawSessionID) && time.Since(detectedAt) < 5*time.Minute
 }
 
 // CanForkPi returns true if this Pi session can be forked by Agent Deck.
 func (i *Instance) CanForkPi() bool {
-	if i.Tool != "pi" || i.ID == "" {
+	cap := i.capabilitySnapshot()
+	return canForkPi(cap.tool, cap.id, cap.sshHost, cap.sandboxed)
+}
+
+func canForkPi(tool, id, sshHost string, sandboxed bool) bool {
+	if tool != "pi" || id == "" {
 		return false
 	}
 	// For local non-sandboxed Pi sessions, require an actual source JSONL so
 	// CLI/TUI fork attempts fail before creating an immediately-dead child tmux
 	// pane. Remote/sandboxed sessions use target-side $HOME, which this process
 	// cannot inspect, so the launch command performs the runtime validation.
-	if i.SSHHost == "" && !i.IsSandboxed() {
-		return i.hasLocalPiSessionFile()
+	if sshHost == "" && !sandboxed {
+		return hasLocalPiSessionFile(id)
 	}
 	return true
 }
 
-func (i *Instance) hasLocalPiSessionFile() bool {
+func hasLocalPiSessionFile(instanceID string) bool {
 	home, err := os.UserHomeDir()
 	if err != nil || home == "" {
 		return false
 	}
-	sessionDir := filepath.Join(home, ".pi", "agent-deck", i.ID)
+	sessionDir := filepath.Join(home, ".pi", "agent-deck", instanceID)
 	found := false
 	_ = filepath.WalkDir(sessionDir, func(path string, d os.DirEntry, err error) error {
 		if err != nil || d == nil || d.IsDir() {
@@ -7126,11 +7186,17 @@ func (i *Instance) CreateForkedPiInstanceWithOptions(
 // is a newer codex CLI subcommand; if the installed binary predates it the
 // launched command fails into a recoverable error state.
 func (i *Instance) CanForkCodex() bool {
-	if !IsCodexCompatible(i.Tool) || i.CodexSessionID == "" {
+	cap := i.capabilitySnapshot()
+	return canForkCodex(cap.tool, cap.codexSessionID, cap.command)
+}
+
+func canForkCodex(tool, rawSessionID, command string) bool {
+	if !IsCodexCompatible(tool) || rawSessionID == "" {
 		return false
 	}
-	sessionID, err := normalizeToolSessionID(FieldCodexSessionID, i.CodexSessionID)
-	return err == nil && sessionID != "" && sessionID == strings.TrimSpace(i.CodexSessionID) && codexRolloutExistsInHome(sessionID, i.getCodexHomeDir())
+	sessionID, err := normalizeToolSessionID(FieldCodexSessionID, rawSessionID)
+	codexHome := getCodexHomeDirForCommand(resolveCodexCommandForTool(tool, command))
+	return err == nil && sessionID != "" && sessionID == strings.TrimSpace(rawSessionID) && codexRolloutExistsInHome(sessionID, codexHome)
 }
 
 // buildCodexForkCommandForTarget builds the one-time `codex fork <parent-sid>`
