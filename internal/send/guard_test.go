@@ -107,6 +107,25 @@ func TestCodexComposerDraft_UsesBottomComposer(t *testing.T) {
 	}
 }
 
+func TestCodexComposerDraft_CollectsIndentedMultilineDraft(t *testing.T) {
+	raw := "\x1b[1m›\x1b[0m\n  first user line\n\n  second user line\n\n  gpt-5.6 · Context 56% left · ~/project · Ready\n"
+	draft, visible := CodexComposerDraft(raw)
+	if !visible {
+		t.Fatal("expected Codex composer to be visible")
+	}
+	if draft != "first user line second user line" {
+		t.Fatalf("expected multiline user draft, got %q", draft)
+	}
+}
+
+func TestCodexComposerDraft_DoesNotTreatStatusBarAsContinuation(t *testing.T) {
+	raw := "\x1b[1m›\x1b[0m \x1b[2mImprove docs\x1b[0m\n  gpt-5.6 · Context 56% left · ~/project · Ready\n"
+	draft, visible := CodexComposerDraft(raw)
+	if !visible || draft != "" {
+		t.Fatalf("expected dim placeholder to remain empty, got visible=%v draft=%q", visible, draft)
+	}
+}
+
 func TestGuardCodexComposerDraft_HoldsUntilDraftClears(t *testing.T) {
 	target := &fakeGuardTarget{captures: []string{
 		"› user draft\n",

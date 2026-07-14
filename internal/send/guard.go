@@ -70,7 +70,25 @@ func CodexComposerDraft(raw string) (draft string, composerVisible bool) {
 			continue
 		}
 
-		body := line[marker+1:]
+		body := append([]styledRune(nil), line[marker+1:]...)
+		for j := i + 1; j < len(lines); j++ {
+			continuation := lines[j]
+			indent := 0
+			for indent < len(continuation) && (continuation[indent].r == ' ' || continuation[indent].r == '\t') {
+				indent++
+			}
+			if indent == len(continuation) {
+				// Preserve the ability to find text after an explicitly inserted
+				// blank line; the Codex metadata line below bounds the composer.
+				continue
+			}
+			if indent == 0 || looksLikeCodexStatusMetadata(styledText(continuation)) {
+				break
+			}
+			body = append(body, styledRune{r: ' '})
+			body = append(body, continuation[indent:]...)
+		}
+
 		var visible strings.Builder
 		hasNonDimText := false
 		for _, sr := range body {
@@ -85,6 +103,19 @@ func CodexComposerDraft(raw string) (draft string, composerVisible bool) {
 		return NormalizePromptText(visible.String()), true
 	}
 	return "", false
+}
+
+func styledText(line []styledRune) string {
+	var text strings.Builder
+	for _, sr := range line {
+		text.WriteRune(sr.r)
+	}
+	return text.String()
+}
+
+func looksLikeCodexStatusMetadata(line string) bool {
+	parts := strings.Split(strings.TrimSpace(line), "·")
+	return len(parts) >= 4
 }
 
 // ansiStyledLines decodes the visible text and faint state from terminal ANSI
