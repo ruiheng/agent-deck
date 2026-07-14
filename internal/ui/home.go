@@ -3680,6 +3680,7 @@ func (h *Home) getDefaultPathForGroup(groupPath string) string {
 const (
 	baseStatusInterval = 2 * time.Second
 	maxStatusInterval  = 10 * time.Second
+	quietStatusWindow  = 5 * time.Second
 )
 
 // nextStatusInterval returns how long to wait before the next status sweep,
@@ -3694,6 +3695,17 @@ func nextStatusInterval(lastSweep, base, ceiling time.Duration) time.Duration {
 		return ceiling
 	}
 	return next
+}
+
+// shouldSkipQuietStatusSweep reports whether a connected session can avoid an
+// expensive status refresh after producing no output. Active states must keep
+// polling because an interrupted agent may return to its prompt without
+// emitting a completion hook or additional pane output.
+func shouldSkipQuietStatusSweep(status session.Status, lastOutput, now time.Time) bool {
+	if status == session.StatusRunning || status == session.StatusStarting {
+		return false
+	}
+	return !lastOutput.IsZero() && now.Sub(lastOutput) > quietStatusWindow
 }
 
 // statusWorker runs in a background goroutine with its own timer
@@ -3909,7 +3921,9 @@ func (h *Home) backgroundStatusUpdate() {
 	}
 
 	// Update status for all instances in parallel (I/O bound: tmux subprocess calls)
-	// With PipeManager, skip sessions idle for >5s (no %output events = no status change)
+	// With PipeManager, skip non-active sessions quiet for >5s. Running and
+	// starting sessions still need polling because an interrupt may return the
+	// agent to Ready without producing a completion hook or more pane output.
 	statusStart := time.Now()
 	var statusChanged atomic.Bool
 	var slowMu sync.Mutex
@@ -3928,12 +3942,13 @@ func (h *Home) backgroundStatusUpdate() {
 		}
 		inst := inst // capture loop variable
 
-		// Skip idle sessions when PipeManager knows they haven't produced output.
-		// Only skip if pipe is alive (otherwise we need UpdateStatus for Error detection).
+		// Skip quiet non-active sessions when PipeManager knows they haven't
+		// produced output. Only skip if pipe is alive (otherwise we need
+		// UpdateStatus for Error detection).
 		if pm != nil {
 			if ts := inst.GetTmuxSession(); ts != nil && pm.IsConnected(ts.Name) {
 				lastOut := pm.LastOutputTime(ts.Name)
-				if !lastOut.IsZero() && time.Since(lastOut) > 5*time.Second {
+				if shouldSkipQuietStatusSweep(inst.GetStatusThreadSafe(), lastOut, time.Now()) {
 					skipped++
 					continue
 				}
