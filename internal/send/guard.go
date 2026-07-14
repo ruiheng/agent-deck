@@ -1,8 +1,10 @@
 package send
 
 import (
+	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 )
 
 // IsComposerPlaceholder reports whether the visible composer text is Claude's
@@ -40,6 +42,176 @@ func ComposerDraft(content string) (draft string, composerVisible bool) {
 func ComposerHasDraft(content string) bool {
 	draft, visible := ComposerDraft(content)
 	return visible && draft != ""
+}
+
+type styledRune struct {
+	r   rune
+	dim bool
+}
+
+// CodexComposerDraft inspects raw capture-pane -e output and returns the text
+// in the bottom Codex composer. Codex renders empty-composer suggestions using
+// SGR faint/dim; those suggestions are placeholders, not operator drafts.
+// Raw ANSI is required so placeholder styling is not lost before detection.
+func CodexComposerDraft(raw string) (draft string, composerVisible bool) {
+	lines := ansiStyledLines(raw)
+	start := 0
+	if len(lines) > 40 {
+		start = len(lines) - 40
+	}
+
+	for i := len(lines) - 1; i >= start; i-- {
+		line := lines[i]
+		marker := 0
+		for marker < len(line) && (line[marker].r == ' ' || line[marker].r == '\t') {
+			marker++
+		}
+		if marker >= len(line) || line[marker].r != '›' {
+			continue
+		}
+
+		body := line[marker+1:]
+		var visible strings.Builder
+		hasNonDimText := false
+		for _, sr := range body {
+			visible.WriteRune(sr.r)
+			if !sr.dim && !strings.ContainsRune(" \t\r\n", sr.r) {
+				hasNonDimText = true
+			}
+		}
+		if !hasNonDimText {
+			return "", true
+		}
+		return NormalizePromptText(visible.String()), true
+	}
+	return "", false
+}
+
+// ansiStyledLines decodes the visible text and faint state from terminal ANSI
+// output. Only SGR intensity affects composer classification; other escape
+// sequences are consumed without contributing visible text.
+func ansiStyledLines(raw string) [][]styledRune {
+	lines := [][]styledRune{{}}
+	dim := false
+	for i := 0; i < len(raw); {
+		if raw[i] == '\x1b' {
+			i = consumeANSI(raw, i, &dim)
+			continue
+		}
+		r, size := utf8.DecodeRuneInString(raw[i:])
+		if r == utf8.RuneError && size == 0 {
+			break
+		}
+		i += size
+		switch r {
+		case '\n':
+			lines = append(lines, []styledRune{})
+		case '\r':
+			// capture-pane may include CRLF; CR has no visible width here.
+		default:
+			lines[len(lines)-1] = append(lines[len(lines)-1], styledRune{r: r, dim: dim})
+		}
+	}
+	return lines
+}
+
+func consumeANSI(raw string, start int, dim *bool) int {
+	if start+1 >= len(raw) {
+		return len(raw)
+	}
+	switch raw[start+1] {
+	case '[': // CSI
+		for i := start + 2; i < len(raw); i++ {
+			if raw[i] < 0x40 || raw[i] > 0x7e {
+				continue
+			}
+			if raw[i] == 'm' {
+				applySGR(raw[start+2:i], dim)
+			}
+			return i + 1
+		}
+		return len(raw)
+	case ']': // OSC, terminated by BEL or ST (ESC backslash)
+		for i := start + 2; i < len(raw); i++ {
+			if raw[i] == '\a' {
+				return i + 1
+			}
+			if raw[i] == '\x1b' && i+1 < len(raw) && raw[i+1] == '\\' {
+				return i + 2
+			}
+		}
+		return len(raw)
+	case '(', ')', '*', '+': // character-set selection plus one final byte
+		if start+2 < len(raw) {
+			return start + 3
+		}
+		return len(raw)
+	default:
+		return start + 2
+	}
+}
+
+func applySGR(params string, dim *bool) {
+	if params == "" {
+		*dim = false
+		return
+	}
+	for _, param := range strings.Split(params, ";") {
+		code, err := strconv.Atoi(param)
+		if err != nil {
+			continue
+		}
+		switch code {
+		case 0, 22:
+			*dim = false
+		case 2:
+			*dim = true
+		}
+	}
+}
+
+// CodexComposerGuardResult reports whether a Codex draft remained occupied
+// after the bounded hold. The guard never mutates the pane.
+type CodexComposerGuardResult struct {
+	Held    time.Duration
+	Draft   string
+	Blocked bool
+}
+
+// GuardCodexComposerDraft waits for an operator draft to clear on its own.
+// Unlike Claude's guard, it never sends Ctrl+C because that can interrupt the
+// active Codex turn. A draft still present at the deadline blocks delivery.
+func GuardCodexComposerDraft(t interface{ CapturePaneFresh() (string, error) }, holdWait, pollInterval time.Duration) CodexComposerGuardResult {
+	if pollInterval <= 0 {
+		pollInterval = 250 * time.Millisecond
+	}
+	start := time.Now()
+	deadline := start.Add(holdWait)
+
+	for {
+		raw, err := t.CapturePaneFresh()
+		if err != nil {
+			return CodexComposerGuardResult{Held: time.Since(start)}
+		}
+		draft, visible := CodexComposerDraft(raw)
+		if !visible || draft == "" {
+			return CodexComposerGuardResult{Held: time.Since(start)}
+		}
+		if !time.Now().Before(deadline) {
+			return CodexComposerGuardResult{
+				Held:    time.Since(start),
+				Draft:   draft,
+				Blocked: true,
+			}
+		}
+		sleepFor := pollInterval
+		if remaining := time.Until(deadline); remaining < sleepFor {
+			sleepFor = remaining
+		}
+		if sleepFor > 0 {
+			time.Sleep(sleepFor)
+		}
+	}
 }
 
 // ComposerGuardTarget is the minimal pane surface GuardComposerDraft needs to

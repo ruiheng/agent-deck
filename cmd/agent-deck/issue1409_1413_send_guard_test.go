@@ -352,12 +352,10 @@ func TestExecuteSend_NoWaitStillGuardsComposer(t *testing.T) {
 	}
 }
 
-func TestExecuteSend_NonClaudeToolSkipsGuard(t *testing.T) {
-	// Composer introspection is Claude-shaped; non-Claude tools must not pay
-	// the guard (no captures-before-send semantics change, no Ctrl+C).
+func TestExecuteSend_CodexDimPlaceholderSendsNormally(t *testing.T) {
 	mock := &mockSendRetryTarget{
 		statuses: []string{"waiting"},
-		panes:    []string{claudeComposer("looks like a draft")},
+		panes:    []string{"\x1b[1m›\x1b[0m \x1b[2mImprove documentation in @filename\x1b[0m\n"},
 	}
 	tun := testGuardTuning(sendRetryOptions{maxRetries: 2, checkDelay: 0})
 	res, err := executeSend(mock, "codex", "run tests", false, tun)
@@ -365,10 +363,58 @@ func TestExecuteSend_NonClaudeToolSkipsGuard(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if got := atomic.LoadInt32(&mock.sendCtrlCCalls); got != 0 {
-		t.Fatalf("non-Claude tool must not be composer-guarded, got %d Ctrl+C calls", got)
+		t.Fatalf("Codex guard must not send Ctrl+C, got %d calls", got)
 	}
 	if res.delivery != deliveryUnverified {
-		t.Fatalf("delivery: want %q (non-Claude skips verify), got %q", deliveryUnverified, res.delivery)
+		t.Fatalf("delivery: want %q, got %q", deliveryUnverified, res.delivery)
+	}
+}
+
+func TestExecuteSend_CodexOccupiedComposerFailsClosed(t *testing.T) {
+	mock := &mockSendRetryTarget{
+		statuses: []string{"waiting"},
+		panes:    []string{"\x1b[1;2m› \x1b[0muser draft\n"},
+	}
+	tun := testGuardTuning(sendRetryOptions{maxRetries: 2, checkDelay: 0})
+	res, err := executeSend(mock, "codex", "run tests", false, tun)
+	if err == nil {
+		t.Fatal("expected occupied Codex composer error")
+	}
+	if res.delivery != deliveryComposerOccupied {
+		t.Fatalf("delivery: want %q, got %q", deliveryComposerOccupied, res.delivery)
+	}
+	if res.composerDraft != "user draft" {
+		t.Fatalf("expected existing draft in result, got %q", res.composerDraft)
+	}
+	if got := atomic.LoadInt32(&mock.sendKeysCalls); got != 0 {
+		t.Fatalf("occupied composer must block SendKeysAndEnter, got %d calls", got)
+	}
+	if got := atomic.LoadInt32(&mock.sendCtrlCCalls); got != 0 {
+		t.Fatalf("Codex guard must never send Ctrl+C, got %d calls", got)
+	}
+	if got := res.jsonFields()["composer_draft"]; got != "user draft" {
+		t.Fatalf("composer_draft JSON field: got %v", got)
+	}
+}
+
+func TestExecuteSend_OtherNonClaudeToolStillSkipsGuard(t *testing.T) {
+	mock := &mockSendRetryTarget{
+		statuses: []string{"waiting"},
+		panes:    []string{claudeComposer("looks like a draft")},
+	}
+	tun := testGuardTuning(sendRetryOptions{maxRetries: 2, checkDelay: 0})
+	res, err := executeSend(mock, "gemini", "run tests", false, tun)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got := mock.paneIdx.Load(); got != 0 {
+		t.Fatalf("non-Claude/non-Codex tool must skip composer capture, got %d calls", got)
+	}
+	if got := atomic.LoadInt32(&mock.sendCtrlCCalls); got != 0 {
+		t.Fatalf("non-Claude/non-Codex tool must not send Ctrl+C, got %d calls", got)
+	}
+	if res.delivery != deliveryUnverified {
+		t.Fatalf("delivery: want %q, got %q", deliveryUnverified, res.delivery)
 	}
 }
 

@@ -69,6 +69,70 @@ func TestComposerHasDraft(t *testing.T) {
 	}
 }
 
+func TestCodexComposerDraft_DimPlaceholderIsEmpty(t *testing.T) {
+	raw := "prior output\n\x1b[1m›\x1b[0m \x1b[2mImprove documentation in @filename\x1b[0m\n"
+	draft, visible := CodexComposerDraft(raw)
+	if !visible {
+		t.Fatal("expected Codex composer to be visible")
+	}
+	if draft != "" {
+		t.Fatalf("dim placeholder must be empty, got %q", draft)
+	}
+}
+
+func TestCodexComposerDraft_NonDimUserTextIsDraft(t *testing.T) {
+	raw := "\x1b[1;2m› \x1b[0m我觉得这个教训的价值并不高\n"
+	draft, visible := CodexComposerDraft(raw)
+	if !visible {
+		t.Fatal("expected Codex composer to be visible")
+	}
+	if draft != "我觉得这个教训的价值并不高" {
+		t.Fatalf("expected user draft, got %q", draft)
+	}
+}
+
+func TestCodexComposerDraft_SGR22EndsDimPlaceholder(t *testing.T) {
+	raw := "› \x1b[2mplaceholder\x1b[22m actual input\n"
+	draft, visible := CodexComposerDraft(raw)
+	if !visible || draft != "placeholder actual input" {
+		t.Fatalf("expected mixed styled input to count as a draft, got visible=%v draft=%q", visible, draft)
+	}
+}
+
+func TestCodexComposerDraft_UsesBottomComposer(t *testing.T) {
+	raw := "› older output-like line\nstatus\n\x1b[1m›\x1b[0m \x1b[2mAdd tests for @filename\x1b[0m\n"
+	draft, visible := CodexComposerDraft(raw)
+	if !visible || draft != "" {
+		t.Fatalf("expected bottom dim composer, got visible=%v draft=%q", visible, draft)
+	}
+}
+
+func TestGuardCodexComposerDraft_HoldsUntilDraftClears(t *testing.T) {
+	target := &fakeGuardTarget{captures: []string{
+		"› user draft\n",
+		"› user draft\n",
+		"\x1b[1m›\x1b[0m \x1b[2mImprove docs\x1b[0m\n",
+	}}
+	res := GuardCodexComposerDraft(target, time.Second, time.Millisecond)
+	if res.Blocked || res.Draft != "" {
+		t.Fatalf("expected cleared draft to proceed, got %+v", res)
+	}
+	if target.ctrlCCalls != 0 {
+		t.Fatalf("Codex guard must never send Ctrl+C, got %d calls", target.ctrlCCalls)
+	}
+}
+
+func TestGuardCodexComposerDraft_BlocksWithoutClearing(t *testing.T) {
+	target := &fakeGuardTarget{captures: []string{"› user draft\n"}}
+	res := GuardCodexComposerDraft(target, 0, time.Millisecond)
+	if !res.Blocked || res.Draft != "user draft" {
+		t.Fatalf("expected occupied composer result, got %+v", res)
+	}
+	if target.ctrlCCalls != 0 {
+		t.Fatalf("Codex guard must never send Ctrl+C, got %d calls", target.ctrlCCalls)
+	}
+}
+
 // fakeGuardTarget scripts pane captures for GuardComposerDraft. captures[i] is
 // returned by the i-th CapturePaneFresh call; the last entry repeats once
 // exhausted. When clearOnCtrlC is set, every capture after a SendCtrlC call

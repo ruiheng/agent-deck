@@ -2409,6 +2409,9 @@ const (
 	deliveryNoEvidence = "no_evidence"
 	// deliverySendFailed: the initial tmux send-keys itself failed.
 	deliverySendFailed = "send_failed"
+	// deliveryComposerOccupied: an existing Codex operator draft remained in
+	// the composer after the bounded hold, so no message was injected.
+	deliveryComposerOccupied = "composer_occupied"
 )
 
 // sendDeliveryResult is the prompt-state-aware outcome of executeSend.
@@ -2431,6 +2434,9 @@ type sendDeliveryResult struct {
 	// the type-back failed (SendKeysChunked errored) — the draft is held in
 	// draftSaved for recovery and must be surfaced, not silently dropped.
 	draftRestoreFailed bool
+	// composerDraft is an existing Codex draft that prevented delivery. It is
+	// still present in the pane; unlike draftSaved, it was never cleared.
+	composerDraft string
 }
 
 // jsonFields returns the delivery-status fields added to `session send`
@@ -2451,6 +2457,9 @@ func (r sendDeliveryResult) jsonFields() map[string]interface{} {
 			fields["draft_restore_failed"] = true
 		}
 	}
+	if r.composerDraft != "" {
+		fields["composer_draft"] = r.composerDraft
+	}
 	return fields
 }
 
@@ -2459,10 +2468,11 @@ func (r sendDeliveryResult) jsonFields() map[string]interface{} {
 // tests can shrink them and production paths share one definition.
 type sendExecTuning struct {
 	// guardHold bounds the #1409 hold-and-retry phase: how long an automated
-	// send waits for a non-empty operator draft to clear on its own before
-	// falling back to save-clear-restore.
-	guardHold      time.Duration
-	guardPoll      time.Duration
+	// send waits for a non-empty operator draft to clear on its own. Claude
+	// then falls back to save-clear-restore; Codex fails closed.
+	guardHold time.Duration
+	guardPoll time.Duration
+	// guardClearWait is Claude-only: Codex never clears its composer.
 	guardClearWait time.Duration
 	// preflightWait/preflightPoll bound the --no-wait composer-visibility
 	// barrier (issue #616).
@@ -2476,7 +2486,8 @@ type sendExecTuning struct {
 
 // defaultSendTuning is the tuning for the default (readiness-waited) send
 // path. The guard hold is generous because the caller already waited for
-// readiness; an operator mid-keystroke gets up to 10s to finish or pause.
+// readiness; an operator mid-keystroke gets up to 10s to finish or pause
+// before Claude clears/restores or Codex rejects the automated send.
 func defaultSendTuning() sendExecTuning {
 	return sendExecTuning{
 		guardHold:      10 * time.Second,
@@ -2519,11 +2530,12 @@ func noWaitSendTuning() sendExecTuning {
 //     would merge into the stuck composer) — it is surfaced in the result
 //     instead so the caller can report it.
 //
-// Steps 1, 2 and 4 are Claude-only: composer introspection is Claude-shaped
-// and non-Claude tools gate readiness upstream.
+// Steps 1 and 4 are Claude-only. Step 2 uses separate guards: Claude may
+// save-clear-restore a draft, while Codex only waits and fails closed.
 func executeSend(target sendRetryTarget, tool, message string, noWait bool, tun sendExecTuning) (sendDeliveryResult, error) {
 	res := sendDeliveryResult{}
 	claudeLike := session.IsClaudeCompatible(tool)
+	codexLike := session.IsCodexCompatible(tool)
 
 	if noWait && claudeLike {
 		if awaitComposerReadyBestEffort(target, tun.preflightWait, tun.preflightPoll) {
@@ -2545,6 +2557,14 @@ func executeSend(target sendRetryTarget, tool, message string, noWait bool, tun 
 		res.held = guard.Held
 		res.draftSaved = guard.SavedDraft
 		res.draftCleared = guard.DraftCleared
+	} else if codexLike {
+		guard := send.GuardCodexComposerDraft(target, tun.guardHold, tun.guardPoll)
+		res.held = guard.Held
+		if guard.Blocked {
+			res.delivery = deliveryComposerOccupied
+			res.composerDraft = guard.Draft
+			return res, fmt.Errorf("Codex composer contains an existing draft; message was not sent")
+		}
 	}
 
 	delivery, err := sendWithRetryTarget(target, message, skipClaudeDeliveryVerify(tool), tun.retry)
