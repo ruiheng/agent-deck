@@ -902,6 +902,7 @@ type Session struct {
 
 	// Custom patterns for generic tool support
 	customToolName       string
+	compatibleTool       string
 	customBusyPatterns   []string
 	customPromptPatterns []string
 	customDetectPatterns []string
@@ -1303,6 +1304,15 @@ func (s *Session) SetPatterns(p *ResolvedPatterns) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.resolvedPatterns = p
+}
+
+// SetCompatibleTool records the built-in behavior a custom tool opts into.
+// The custom identity remains intact while capability-specific detectors can
+// still apply built-in semantics such as Codex's structured status bar.
+func (s *Session) SetCompatibleTool(toolName string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.compatibleTool = strings.ToLower(strings.TrimSpace(toolName))
 }
 
 // SetDetectPatterns sets tool auto-detection patterns (separate from busy/prompt patterns).
@@ -3838,7 +3848,7 @@ func (s *Session) hasBusyIndicatorResolved(content string) bool {
 
 	// BusyPatterns (regex + string) are authoritative because they capture
 	// real active-line semantics for each tool.
-	if strings.EqualFold(tool, "codex") && hasCodexActiveStatusBar(content) {
+	if (strings.EqualFold(tool, "codex") || s.compatibleTool == "codex") && hasCodexActiveStatusBar(content) {
 		tracker.MarkBusy()
 		statusLog.Debug("codex_active_status_bar", slog.String("session", shortName))
 		return true

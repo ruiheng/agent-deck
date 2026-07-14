@@ -1097,6 +1097,19 @@ func TestCodexWorkingSuffixInOrdinaryOutputIsNotBusy(t *testing.T) {
 	}
 }
 
+func TestCodexCompatibleCustomToolUsesStructuredBusyStatus(t *testing.T) {
+	content := `› Improve documentation in @filename
+
+  gpt-5.6-sol medium · Context 56% left · ~/lyceum/stage-test · Working`
+
+	sess := NewSession("custom-codex-working", "/tmp")
+	sess.SetCustomPatterns("my-codex-wrapper", nil, nil, nil)
+	sess.SetCompatibleTool("codex")
+	if !sess.hasBusyIndicator(content) {
+		t.Fatal("Codex-compatible custom tool must use structured Codex busy detection")
+	}
+}
+
 func TestCodexReadyPromptIsNotBusy(t *testing.T) {
 	content := `› Summarize recent commits
 

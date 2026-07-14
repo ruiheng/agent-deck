@@ -2889,6 +2889,14 @@ func (i *Instance) loadCustomPatternsFromConfig() {
 		return
 	}
 
+	compatibleTool := ""
+	if IsCodexCompatible(i.Tool) {
+		compatibleTool = "codex"
+	} else if IsClaudeCompatible(i.Tool) {
+		compatibleTool = "claude"
+	}
+	i.tmuxSession.SetCompatibleTool(compatibleTool)
+
 	// Merge built-in defaults with any user config overrides/extras
 	raw := MergeToolPatterns(i.Tool)
 	if raw != nil {
