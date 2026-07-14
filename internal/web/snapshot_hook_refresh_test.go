@@ -73,6 +73,32 @@ func TestRefreshSnapshotHookStatuses_WaitingHookOverridesAnyNonStopped(t *testin
 	}
 }
 
+// Codex's legacy notify integration emits agent-turn-complete but no matching
+// turn-start event. Once the TUI/tmux sweep observes a later active turn, the
+// web overlay must not repaint that authoritative running state as waiting.
+func TestRefreshSnapshotHookStatuses_CodexWaitingDoesNotOverrideRunning(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 7, 13, 23, 57, 0, 0, time.Local)
+	hooks := map[string]*session.HookStatus{
+		"sess-codex": {
+			Status:    "waiting",
+			Event:     "agent-turn-complete",
+			UpdatedAt: now.Add(-30 * time.Second),
+		},
+	}
+
+	for _, snapshotState := range []session.Status{session.StatusRunning, session.StatusStarting} {
+		snapshotState := snapshotState
+		t.Run(string(snapshotState), func(t *testing.T) {
+			snap := snapshotWithSession("sess-codex", "codex", snapshotState)
+			refreshSnapshotHookStatusesAt(snap, hooks, now)
+			if got := snap.Items[0].Session.Status; got != snapshotState {
+				t.Fatalf("active codex snapshot=%q must not be overwritten by waiting hook: got %q", snapshotState, got)
+			}
+		})
+	}
+}
+
 // TestRefreshSnapshotHookStatuses_StaleWaitingOverridesSnapshotError covers the
 // long-tail bug case: hook says waiting but is older than the fast-path window
 // (e.g. Claude has been sitting at its prompt for 19 minutes). The TUI's

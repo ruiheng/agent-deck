@@ -143,6 +143,15 @@ func Derive(in Input) Decision {
 		return Decision{Status: session.StatusRunning, Applied: true}
 
 	case "waiting":
+		// Codex legacy notify only emits turn completion; it does not replace
+		// that record when a later turn starts. On the web read path, preserve
+		// an active snapshot produced by the TUI/tmux sweep instead of letting
+		// an older completion record force it back to waiting. Instance-mode
+		// callers still apply fresh completion hooks normally.
+		if in.AllowStaleWaiting && session.IsCodexCompatible(in.Tool) &&
+			(in.PriorStatus == session.StatusRunning || in.PriorStatus == session.StatusStarting) {
+			return keep
+		}
 		// Acknowledged + claude/gemini → idle. Codex always surfaces
 		// waiting because completion is attention-needed.
 		if !fresh && !in.AllowStaleWaiting {

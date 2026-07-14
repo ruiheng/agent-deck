@@ -166,6 +166,33 @@ func TestDerive_AllowStaleWaiting_False_StaleHookFallsThrough(t *testing.T) {
 	}
 }
 
+func TestDerive_AllowStaleWaiting_CodexDoesNotOverrideActiveSnapshot(t *testing.T) {
+	t.Parallel()
+	for _, snapshotState := range []session.Status{
+		session.StatusRunning,
+		session.StatusStarting,
+	} {
+		t.Run(string(snapshotState), func(t *testing.T) {
+			out := sessionstatus.Derive(sessionstatus.Input{
+				Tool:        "codex",
+				PriorStatus: snapshotState,
+				Hook: &session.HookStatus{
+					Status:    "waiting",
+					UpdatedAt: fixedNow.Add(-30 * time.Second),
+				},
+				Now:               fixedNow,
+				AllowStaleWaiting: true,
+			})
+			if out.Status != snapshotState {
+				t.Fatalf("active codex snapshot=%q must win over completion-only web hook: got %q", snapshotState, out.Status)
+			}
+			if out.Applied {
+				t.Fatal("active codex snapshot should not report the waiting hook as applied")
+			}
+		})
+	}
+}
+
 // TestDerive_CodexRunning20sWindow is the codex-specific parity bug: the
 // snapshot_hook_refresh.go path uses a single 2-minute freshness window for
 // every "running" hook, but instance.go uses a 20-second window for codex
