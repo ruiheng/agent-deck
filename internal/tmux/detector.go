@@ -99,10 +99,24 @@ func hasCodexActiveStatusBar(content string) bool {
 	}
 	for _, line := range lines[start:] {
 		clean := strings.TrimSpace(StripANSI(line))
-		if strings.Contains(clean, "· Thinking ·") ||
-			strings.Contains(clean, "· Working ·") ||
-			strings.HasSuffix(clean, "· Thinking") ||
-			strings.HasSuffix(clean, "· Working") {
+		if isCodexActiveStatusLine(clean) {
+			return true
+		}
+	}
+	return false
+}
+
+func isCodexActiveStatusLine(line string) bool {
+	parts := strings.Split(strings.TrimSpace(line), "·")
+	// Codex status bars have at least four metadata segments, for example:
+	// model · Context ... · path · Working [· diff stats]. Requiring that
+	// structure avoids treating ordinary output ending in "· Working" as busy.
+	if len(parts) < 4 {
+		return false
+	}
+	for _, part := range parts[1:] {
+		switch strings.TrimSpace(part) {
+		case "Thinking", "Working":
 			return true
 		}
 	}

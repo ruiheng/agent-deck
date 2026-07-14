@@ -3838,6 +3838,11 @@ func (s *Session) hasBusyIndicatorResolved(content string) bool {
 
 	// BusyPatterns (regex + string) are authoritative because they capture
 	// real active-line semantics for each tool.
+	if strings.EqualFold(tool, "codex") && hasCodexActiveStatusBar(content) {
+		tracker.MarkBusy()
+		statusLog.Debug("codex_active_status_bar", slog.String("session", shortName))
+		return true
+	}
 	if patterns != nil {
 		recentLines := lastNLines(content, 25)
 		recentContent := strings.Join(recentLines, "\n")

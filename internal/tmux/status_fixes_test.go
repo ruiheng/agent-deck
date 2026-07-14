@@ -1078,6 +1078,25 @@ func TestCodexActiveStatusAtEndOfLineIsBusy(t *testing.T) {
 	}
 }
 
+func TestCodexWorkingSuffixInOrdinaryOutputIsNotBusy(t *testing.T) {
+	content := `Build notes: the footer currently ends with · Working
+
+› Improve documentation in @filename
+
+  gpt-5.6-sol medium · Context 56% left · ~/lyceum/stage-test · Ready`
+
+	sess := NewSession("codex-working-prose", "/tmp")
+	sess.Command = "codex"
+	if sess.hasBusyIndicator(content) {
+		t.Fatal("ordinary output ending in · Working must not be treated as a Codex status bar")
+	}
+
+	detector := NewPromptDetector("codex")
+	if !detector.HasPrompt(content) {
+		t.Fatal("ordinary Working prose must not suppress the visible Codex prompt")
+	}
+}
+
 func TestCodexReadyPromptIsNotBusy(t *testing.T) {
 	content := `› Summarize recent commits
 
