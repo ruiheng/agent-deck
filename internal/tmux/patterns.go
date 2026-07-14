@@ -77,7 +77,7 @@ func DefaultRawPatterns(toolName string) *RawPatterns {
 				"ctrl+c to interrupt",
 				"esc to interrupt",
 				"press esc to interrupt",
-				`re:(?m)·\s*(?:Thinking|Working)\s*·`,
+				`re:(?m)·\s*(?:Thinking|Working)\s*(?:·|$)`,
 			},
 			PromptPatterns: []string{"How can I help", "codex>", "Continue?", `re:(?m)^\s*›\s`},
 		}

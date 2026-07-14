@@ -1059,6 +1059,25 @@ func TestCodexActiveStatusBarIsBusy(t *testing.T) {
 	}
 }
 
+func TestCodexActiveStatusAtEndOfLineIsBusy(t *testing.T) {
+	content := `• Working (3s • esc to interrupt)
+
+› Improve documentation in @filename
+
+  gpt-5.6-sol medium · Context 56% left · ~/lyceum/stage-test · Working`
+
+	sess := NewSession("codex-working-line-end", "/tmp")
+	sess.Command = "codex"
+	if !sess.hasBusyIndicator(content) {
+		t.Fatal("Codex Working at end of status line must be busy")
+	}
+
+	detector := NewPromptDetector("codex")
+	if detector.HasPrompt(content) {
+		t.Fatal("session-state detection must let the active status override the simultaneously visible empty composer")
+	}
+}
+
 func TestCodexReadyPromptIsNotBusy(t *testing.T) {
 	content := `› Summarize recent commits
 

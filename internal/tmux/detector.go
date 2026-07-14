@@ -92,8 +92,21 @@ func (d *PromptDetector) HasPrompt(content string) bool {
 }
 
 func hasCodexActiveStatusBar(content string) bool {
-	return strings.Contains(content, "· Thinking ·") ||
-		strings.Contains(content, "· Working ·")
+	lines := strings.Split(content, "\n")
+	start := len(lines) - 8
+	if start < 0 {
+		start = 0
+	}
+	for _, line := range lines[start:] {
+		clean := strings.TrimSpace(StripANSI(line))
+		if strings.Contains(clean, "· Thinking ·") ||
+			strings.Contains(clean, "· Working ·") ||
+			strings.HasSuffix(clean, "· Thinking") ||
+			strings.HasSuffix(clean, "· Working") {
+			return true
+		}
+	}
+	return false
 }
 
 // hasClaudePrompt detects if Claude Code is waiting for input
