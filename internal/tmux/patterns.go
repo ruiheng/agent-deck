@@ -74,6 +74,9 @@ func DefaultRawPatterns(toolName string) *RawPatterns {
 	case "codex":
 		return &RawPatterns{
 			BusyPatterns: []string{
+				// Codex 0.147+ renders its active row above the persistent composer/footer;
+				// keep the full line shape anchored to contain false positives from prose.
+				`re:(?mi)^[ \t]*•[ \t]+working[ \t]*\([^\n)]*\besc[ \t]+to[ \t]+interrupt\b[^\n)]*\)[ \t]*$`,
 				"ctrl+c to interrupt",
 				"esc to interrupt",
 				"press esc to interrupt",

@@ -569,6 +569,40 @@ esc to interrupt`,
 	}
 }
 
+// TestCodex0147WorkingRowAboveComposerIsBusy covers Codex 0.147+, which puts
+// its active row above the persistent composer and footer rather than in the
+// final status-bar lines.
+func TestCodex0147WorkingRowAboveComposerIsBusy(t *testing.T) {
+	const workingLayout = `Prior response from Codex.
+• Working (47s • esc to interrupt)
+
+›
+
+  gpt-5.4 · ~/agent-deck · task/codex-pane-status-impl · 87% context left
+  ? for shortcuts`
+
+	lastThree := strings.Join(lastNLines(workingLayout, 3), "\n")
+	if strings.Contains(strings.ToLower(lastThree), "esc to interrupt") {
+		t.Fatalf("working row must sit outside the final three lines:\n%s", lastThree)
+	}
+
+	working := &Session{DisplayName: "codex-0147-working", detectedTool: "codex"}
+	if !working.hasBusyIndicator(workingLayout) {
+		t.Errorf("Codex 0.147 working row above composer was not detected as busy:\n%s", workingLayout)
+	}
+
+	const proseOnlyLayout = `Codex explained that “esc to interrupt” cancels a running task.
+
+›
+
+  gpt-5.4 · ~/agent-deck · task/codex-pane-status-impl · 87% context left
+  ? for shortcuts`
+	proseOnly := &Session{DisplayName: "codex-0147-prose", detectedTool: "codex"}
+	if proseOnly.hasBusyIndicator(proseOnlyLayout) {
+		t.Errorf("ordinary Codex prose mentioning esc to interrupt must not be busy:\n%s", proseOnlyLayout)
+	}
+}
+
 // =============================================================================
 // VALIDATION 5.0: thinkingPattern Requires Spinner Prefix
 // =============================================================================
