@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -14,6 +15,14 @@ const codexNotifyMarkerBegin = "# BEGIN AGENTDECK CODEX NOTIFY"
 const codexNotifyMarkerEnd = "# END AGENTDECK CODEX NOTIFY"
 const codexNotifyLine = `notify = ["agent-deck", "codex-notify"]`
 
+const codexLifecycleDescription = "Agent Deck Codex lifecycle status hooks."
+const codexLifecycleCommand = "agent-deck codex-notify"
+
+// Codex lifecycle edges are advisory observations. They improve the common
+// running/waiting path while the existing notify and pane/process fallbacks
+// remain responsible for stale, blocked, or continued turns.
+var codexLifecycleEvents = []string{"UserPromptSubmit", "Stop"}
+
 var codexNotifyTableRe = regexp.MustCompile(`(?m)^\s*\[notify\]\s*$`)
 var codexNotifyKeyRe = regexp.MustCompile(`(?m)^\s*notify\s*=`)
 var codexNotifyExactRe = regexp.MustCompile(`(?m)^\s*notify\s*=\s*\[\s*["']agent-deck["']\s*,\s*["']codex-notify["']\s*\]\s*$`)
@@ -21,14 +30,15 @@ var codexNotifyExactLineRe = regexp.MustCompile(`^\s*notify\s*=\s*\[\s*["']agent
 var codexLegacyNotifyProgramLineRe = regexp.MustCompile(`(?i)^\s*program\s*=\s*\[\s*["']agent-deck["']\s*,\s*["']codex-notify["']\s*\]\s*$`)
 
 type codexNotifyPayload struct {
-	Type         string `json:"type"`
-	Event        string `json:"event"`
-	Method       string `json:"method"`
-	SessionID    string `json:"session_id"`
-	ThreadID     string `json:"thread_id"`
-	ThreadIDDash string `json:"thread-id"`
-	Params       map[string]json.RawMessage
-	Payload      map[string]json.RawMessage
+	HookEventName string                     `json:"hook_event_name"`
+	Type          string                     `json:"type"`
+	Event         string                     `json:"event"`
+	Method        string                     `json:"method"`
+	SessionID     string                     `json:"session_id"`
+	ThreadID      string                     `json:"thread_id"`
+	ThreadIDDash  string                     `json:"thread-id"`
+	Params        map[string]json.RawMessage `json:"params"`
+	Payload       map[string]json.RawMessage `json:"payload"`
 }
 
 func mapCodexNotifyToStatus(event string) string {
@@ -38,6 +48,10 @@ func mapCodexNotifyToStatus(event string) string {
 	}
 
 	switch e {
+	case "userpromptsubmit":
+		return "running"
+	case "stop":
+		return "waiting"
 	case "thread.started", "thread/started", "thread-started",
 		"session.configured", "session/configured", "session-configured":
 		return "waiting"
@@ -95,7 +109,10 @@ func parseCodexNotifyPayload(data []byte) (event, sessionID string) {
 		return "", ""
 	}
 
-	event = strings.TrimSpace(payload.Type)
+	event = strings.TrimSpace(payload.HookEventName)
+	if event == "" {
+		event = strings.TrimSpace(payload.Type)
+	}
 	if event == "" {
 		event = strings.TrimSpace(payload.Event)
 	}
@@ -103,10 +120,10 @@ func parseCodexNotifyPayload(data []byte) (event, sessionID string) {
 		event = strings.TrimSpace(payload.Method)
 	}
 	if event == "" {
-		event = decodeStringField(payload.Params, "type", "event", "method")
+		event = decodeStringField(payload.Params, "hook_event_name", "type", "event", "method")
 	}
 	if event == "" {
-		event = decodeStringField(payload.Payload, "type", "event", "method")
+		event = decodeStringField(payload.Payload, "hook_event_name", "type", "event", "method")
 	}
 
 	sessionID = strings.TrimSpace(payload.SessionID)
@@ -137,7 +154,11 @@ func handleCodexNotify() {
 	var data []byte
 	// Codex notify may pass payload in argv and/or stdin.
 	if len(os.Args) > 2 {
-		for _, arg := range os.Args[2:] {
+		for _, rawArg := range os.Args[2:] {
+			if len(rawArg) > maxHookPayloadSize {
+				return
+			}
+			arg := rawArg
 			arg = strings.TrimSpace(arg)
 			if arg == "" {
 				continue
@@ -153,8 +174,8 @@ func handleCodexNotify() {
 	}
 
 	if len(data) == 0 {
-		readData, err := io.ReadAll(os.Stdin)
-		if err != nil || len(readData) == 0 {
+		readData, err := io.ReadAll(io.LimitReader(os.Stdin, maxHookPayloadSize+1))
+		if err != nil || len(readData) == 0 || len(readData) > maxHookPayloadSize {
 			readData = nil
 		}
 		if len(readData) > 0 {
@@ -213,157 +234,78 @@ func handleCodexHooks(args []string) {
 func printCodexHooksUsage(w io.Writer) {
 	fmt.Fprintln(w, "Usage: agent-deck codex-hooks <command>")
 	fmt.Fprintln(w)
-	fmt.Fprintln(w, "Manage Codex notify hook integration.")
+	fmt.Fprintln(w, "Manage Codex notify and lifecycle hook integration.")
+	fmt.Fprintln(w, "Lifecycle status edges are advisory; notify and pane/process fallbacks remain active.")
 	fmt.Fprintln(w)
 	fmt.Fprintln(w, "Commands:")
-	fmt.Fprintln(w, "  install      Install or upgrade agent-deck Codex notify hook")
-	fmt.Fprintln(w, "  uninstall    Remove agent-deck Codex notify hook")
-	fmt.Fprintln(w, "  status       Show current hook install status")
+	fmt.Fprintln(w, "  install      Install or upgrade Codex notify and lifecycle hooks")
+	fmt.Fprintln(w, "  uninstall    Remove agent-deck Codex notify and lifecycle hooks")
+	fmt.Fprintln(w, "  status       Show current notify and lifecycle hook status")
 }
 
 func handleCodexHooksInstall() {
 	configPath := getCodexConfigPath()
-	content, _ := readFileOrEmpty(configPath)
-
-	block := codexNotifyMarkerBegin + "\n" +
-		codexNotifyLine + "\n" +
-		codexNotifyMarkerEnd + "\n"
-
-	if strings.Contains(content, codexNotifyMarkerBegin) {
-		begin := strings.Index(content, codexNotifyMarkerBegin)
-		endRel := strings.Index(content[begin:], codexNotifyMarkerEnd)
-		if endRel != -1 {
-			end := begin + endRel + len(codexNotifyMarkerEnd)
-			updated := strings.TrimSpace(content[:begin] + content[end:])
-			updated = prependCodexNotifyBlock(block, updated)
-			if err := os.MkdirAll(filepath.Dir(configPath), 0755); err != nil {
-				fmt.Fprintf(os.Stderr, "Error creating codex config dir: %v\n", err)
-				os.Exit(1)
-			}
-			if err := os.WriteFile(configPath, []byte(updated), 0644); err != nil {
-				fmt.Fprintf(os.Stderr, "Error writing codex config: %v\n", err)
-				os.Exit(1)
-			}
-			fmt.Println("Codex notify hook upgraded successfully.")
-			fmt.Printf("Config: %s\n", configPath)
-			return
-		}
-	}
-
-	if updated, removed := removeLegacyCodexNotifyTable(content); removed {
-		updated = prependCodexNotifyBlock(block, strings.TrimSpace(updated))
-		if err := os.MkdirAll(filepath.Dir(configPath), 0755); err != nil {
-			fmt.Fprintf(os.Stderr, "Error creating codex config dir: %v\n", err)
-			os.Exit(1)
-		}
-		if err := os.WriteFile(configPath, []byte(updated), 0644); err != nil {
-			fmt.Fprintf(os.Stderr, "Error writing codex config: %v\n", err)
-			os.Exit(1)
-		}
-		fmt.Println("Codex notify hook upgraded successfully.")
-		fmt.Printf("Config: %s\n", configPath)
-		return
-	}
-
-	if codexNotifyExactRe.MatchString(content) {
-		fmt.Println("Codex notify hook is already installed.")
-		fmt.Printf("Config: %s\n", configPath)
-		return
-	}
-
-	if codexNotifyKeyRe.MatchString(content) || codexNotifyTableRe.MatchString(content) {
-		fmt.Fprintf(os.Stderr, "Error: existing notify setting found in %s\n", configPath)
-		fmt.Fprintln(os.Stderr, "Please merge manually by setting:")
-		fmt.Fprintln(os.Stderr, `  notify = ["agent-deck", "codex-notify"]`)
+	hooksPath := getCodexHooksPath()
+	notifyChanged, lifecycleChanged, err := installCodexHooks(configPath, hooksPath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error installing Codex hooks: %v\n", err)
 		os.Exit(1)
 	}
 
-	newContent := prependCodexNotifyBlock(block, content)
-
-	if err := os.MkdirAll(filepath.Dir(configPath), 0755); err != nil {
-		fmt.Fprintf(os.Stderr, "Error creating codex config dir: %v\n", err)
-		os.Exit(1)
+	if notifyChanged {
+		fmt.Println("Notify: INSTALLED")
+	} else {
+		fmt.Println("Notify: ALREADY INSTALLED")
 	}
-	if err := os.WriteFile(configPath, []byte(newContent), 0644); err != nil {
-		fmt.Fprintf(os.Stderr, "Error writing codex config: %v\n", err)
-		os.Exit(1)
+	if lifecycleChanged {
+		fmt.Println("Lifecycle: INSTALLED")
+	} else {
+		fmt.Println("Lifecycle: ALREADY INSTALLED")
 	}
-
-	fmt.Println("Codex notify hook installed successfully.")
 	fmt.Printf("Config: %s\n", configPath)
+	fmt.Printf("Hooks: %s\n", hooksPath)
+	printCodexLifecycleTrustGuidance(os.Stdout)
 }
 
 func handleCodexHooksUninstall() {
 	configPath := getCodexConfigPath()
-	content, err := readFileOrEmpty(configPath)
+	hooksPath := getCodexHooksPath()
+	notifyChanged, lifecycleChanged, err := uninstallCodexHooks(configPath, hooksPath)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error reading codex config: %v\n", err)
+		fmt.Fprintf(os.Stderr, "Error uninstalling Codex hooks: %v\n", err)
 		os.Exit(1)
 	}
 
-	begin := strings.Index(content, codexNotifyMarkerBegin)
-	if begin != -1 {
-		endRel := strings.Index(content[begin:], codexNotifyMarkerEnd)
-		if endRel == -1 {
-			fmt.Fprintln(os.Stderr, "Error: malformed agent-deck Codex hook block in config.")
-			os.Exit(1)
-		}
-		end := begin + endRel + len(codexNotifyMarkerEnd)
-		updated := content[:begin] + content[end:]
-		updated = strings.TrimSpace(updated)
-		if updated != "" {
-			updated += "\n"
-		}
-
-		if err := os.WriteFile(configPath, []byte(updated), 0644); err != nil {
-			fmt.Fprintf(os.Stderr, "Error writing codex config: %v\n", err)
-			os.Exit(1)
-		}
-		fmt.Println("Codex notify hook removed successfully.")
-		return
+	if lifecycleChanged {
+		fmt.Println("Lifecycle: REMOVED")
+	} else {
+		fmt.Println("Lifecycle: NOT INSTALLED")
 	}
-
-	if updated, removed := removeLegacyCodexNotifyTable(content); removed {
-		if err := os.WriteFile(configPath, []byte(updated), 0644); err != nil {
-			fmt.Fprintf(os.Stderr, "Error writing codex config: %v\n", err)
-			os.Exit(1)
-		}
-		fmt.Println("Codex notify hook removed successfully.")
-		return
+	if notifyChanged {
+		fmt.Println("Notify: REMOVED")
+	} else {
+		fmt.Println("Notify: NOT INSTALLED OR CUSTOM")
 	}
-
-	if updated, removed := removeExactCodexNotifyLine(content); removed {
-		if err := os.WriteFile(configPath, []byte(updated), 0644); err != nil {
-			fmt.Fprintf(os.Stderr, "Error writing codex config: %v\n", err)
-			os.Exit(1)
-		}
-		fmt.Println("Codex notify hook removed successfully.")
-		return
-	}
-
-	fmt.Println("No agent-deck Codex hook found to remove.")
+	fmt.Printf("Config: %s\n", configPath)
+	fmt.Printf("Hooks: %s\n", hooksPath)
 }
 
 func handleCodexHooksStatus() {
 	configPath := getCodexConfigPath()
-	content, _ := readFileOrEmpty(configPath)
+	hooksPath := getCodexHooksPath()
+	overall, notify, lifecycle, err := codexHooksStatus(configPath, hooksPath)
 
-	switch {
-	case strings.Contains(content, codexNotifyMarkerBegin), codexNotifyExactRe.MatchString(content):
-		fmt.Println("Status: INSTALLED")
-	case hasLegacyCodexNotifyTable(content):
-		fmt.Println("Status: LEGACY_NOTIFY_TABLE")
-		fmt.Println("Run 'agent-deck codex-hooks install' to migrate to current Codex format.")
-	case codexNotifyTableRe.MatchString(content):
-		fmt.Println("Status: LEGACY_NOTIFY_TABLE")
-		fmt.Println("Run 'agent-deck codex-hooks install' to migrate to current Codex format.")
-	case codexNotifyKeyRe.MatchString(content):
-		fmt.Println("Status: CUSTOM_NOTIFY")
-	default:
-		fmt.Println("Status: NOT INSTALLED")
-		fmt.Println("Run 'agent-deck codex-hooks install' to install.")
-	}
+	fmt.Printf("Status: %s\n", overall)
+	fmt.Printf("Notify: %s\n", notify)
+	fmt.Printf("Lifecycle: %s\n", lifecycle)
 	fmt.Printf("Config: %s\n", configPath)
+	fmt.Printf("Hooks: %s\n", hooksPath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Status error: %v\n", err)
+	}
+	if lifecycle == codexComponentInstalled || lifecycle == codexComponentPartial {
+		printCodexLifecycleTrustGuidance(os.Stdout)
+	}
 }
 
 func getCodexConfigPath() string {
@@ -459,4 +401,587 @@ func removeExactCodexNotifyLine(content string) (string, bool) {
 		updated += "\n"
 	}
 	return updated, true
+}
+
+type codexComponentState string
+
+const (
+	codexComponentInstalled    codexComponentState = "INSTALLED"
+	codexComponentLegacy       codexComponentState = "LEGACY"
+	codexComponentCustom       codexComponentState = "CUSTOM"
+	codexComponentPartial      codexComponentState = "PARTIAL"
+	codexComponentNotInstalled codexComponentState = "NOT INSTALLED"
+	codexComponentInvalid      codexComponentState = "INVALID"
+	codexComponentError        codexComponentState = "ERROR"
+)
+
+type codexLifecycleDocument struct {
+	top          map[string]json.RawMessage
+	hooks        map[string]json.RawMessage
+	hooksPresent bool
+}
+
+func getCodexHooksPath() string {
+	return filepath.Join(filepath.Dir(getCodexConfigPath()), "hooks.json")
+}
+
+func codexNotifyBlock() string {
+	return codexNotifyMarkerBegin + "\n" +
+		codexNotifyLine + "\n" +
+		codexNotifyMarkerEnd + "\n"
+}
+
+func codexNotifyMarkerBounds(content string) (begin, end int, found bool, err error) {
+	begin = strings.Index(content, codexNotifyMarkerBegin)
+	if begin == -1 {
+		return 0, 0, false, nil
+	}
+
+	endRel := strings.Index(content[begin:], codexNotifyMarkerEnd)
+	if endRel == -1 {
+		return 0, 0, true, fmt.Errorf("malformed agent-deck Codex notify block")
+	}
+	return begin, begin + endRel + len(codexNotifyMarkerEnd), true, nil
+}
+
+func planCodexNotifyInstall(content string) (string, bool, error) {
+	block := codexNotifyBlock()
+	begin, end, found, err := codexNotifyMarkerBounds(content)
+	if err != nil {
+		return content, false, err
+	}
+	if found {
+		outside := content[:begin] + content[end:]
+		if codexNotifyKeyRe.MatchString(outside) || codexNotifyTableRe.MatchString(outside) {
+			return content, false, fmt.Errorf("existing conflicting notify setting found")
+		}
+		if strings.TrimSpace(content[begin:end]) == strings.TrimSpace(block) {
+			return content, false, nil
+		}
+		updated := prependCodexNotifyBlock(block, outside)
+		return updated, updated != content, nil
+	}
+
+	if updated, removed := removeLegacyCodexNotifyTable(content); removed {
+		updated = prependCodexNotifyBlock(block, updated)
+		return updated, updated != content, nil
+	}
+	if codexNotifyExactRe.MatchString(content) {
+		return content, false, nil
+	}
+	if codexNotifyKeyRe.MatchString(content) || codexNotifyTableRe.MatchString(content) {
+		return content, false, fmt.Errorf("existing conflicting notify setting found")
+	}
+
+	updated := prependCodexNotifyBlock(block, content)
+	return updated, updated != content, nil
+}
+
+func planCodexNotifyUninstall(content string) (string, bool, error) {
+	begin, end, found, err := codexNotifyMarkerBounds(content)
+	if err != nil {
+		return content, false, err
+	}
+	if found {
+		updated := strings.TrimSpace(content[:begin] + content[end:])
+		if updated != "" {
+			updated += "\n"
+		}
+		return updated, updated != content, nil
+	}
+	if updated, removed := removeLegacyCodexNotifyTable(content); removed {
+		return updated, true, nil
+	}
+	if updated, removed := removeExactCodexNotifyLine(content); removed {
+		return updated, true, nil
+	}
+	return content, false, nil
+}
+
+func codexNotifyStatus(content string) (codexComponentState, error) {
+	_, _, found, err := codexNotifyMarkerBounds(content)
+	if err != nil {
+		return codexComponentError, err
+	}
+	if found || codexNotifyExactRe.MatchString(content) {
+		return codexComponentInstalled, nil
+	}
+	if hasLegacyCodexNotifyTable(content) {
+		return codexComponentLegacy, nil
+	}
+	if codexNotifyKeyRe.MatchString(content) || codexNotifyTableRe.MatchString(content) {
+		return codexComponentCustom, nil
+	}
+	return codexComponentNotInstalled, nil
+}
+
+func readCodexHooksFile(path string) ([]byte, bool, error) {
+	data, err := os.ReadFile(path)
+	if os.IsNotExist(err) {
+		return nil, false, nil
+	}
+	if err != nil {
+		return nil, false, err
+	}
+	return data, true, nil
+}
+
+func decodeJSONObject(data []byte, label string) (map[string]json.RawMessage, error) {
+	trimmed := bytes.TrimSpace(data)
+	if len(trimmed) == 0 || trimmed[0] != '{' {
+		return nil, fmt.Errorf("%s must be a JSON object", label)
+	}
+	var object map[string]json.RawMessage
+	if err := json.Unmarshal(trimmed, &object); err != nil {
+		return nil, fmt.Errorf("invalid %s: %w", label, err)
+	}
+	if object == nil {
+		return nil, fmt.Errorf("%s must be a JSON object", label)
+	}
+	return object, nil
+}
+
+func decodeJSONArray(data []byte, label string) ([]json.RawMessage, error) {
+	trimmed := bytes.TrimSpace(data)
+	if len(trimmed) == 0 || trimmed[0] != '[' {
+		return nil, fmt.Errorf("%s must be a JSON array", label)
+	}
+	var array []json.RawMessage
+	if err := json.Unmarshal(trimmed, &array); err != nil {
+		return nil, fmt.Errorf("invalid %s: %w", label, err)
+	}
+	if array == nil {
+		return nil, fmt.Errorf("%s must be a JSON array", label)
+	}
+	return array, nil
+}
+
+func parseCodexLifecycleDocument(data []byte, exists bool) (*codexLifecycleDocument, error) {
+	if !exists {
+		return &codexLifecycleDocument{
+			top:   make(map[string]json.RawMessage),
+			hooks: make(map[string]json.RawMessage),
+		}, nil
+	}
+
+	top, err := decodeJSONObject(data, "Codex hooks.json")
+	if err != nil {
+		return nil, err
+	}
+	doc := &codexLifecycleDocument{
+		top:   top,
+		hooks: make(map[string]json.RawMessage),
+	}
+	if rawHooks, ok := top["hooks"]; ok {
+		hooks, err := decodeJSONObject(rawHooks, "hooks")
+		if err != nil {
+			return nil, err
+		}
+		doc.hooks = hooks
+		doc.hooksPresent = true
+	}
+
+	for _, event := range codexLifecycleEvents {
+		if rawEvent, ok := doc.hooks[event]; ok {
+			if _, _, err := inspectCodexLifecycleEvent(rawEvent, event); err != nil {
+				return nil, err
+			}
+		}
+	}
+	return doc, nil
+}
+
+func inspectCodexLifecycleEvent(rawEvent json.RawMessage, event string) ([]json.RawMessage, bool, error) {
+	groups, err := decodeJSONArray(rawEvent, "hooks."+event)
+	if err != nil {
+		return nil, false, err
+	}
+
+	installed := false
+	for index, rawGroup := range groups {
+		group, err := decodeJSONObject(rawGroup, fmt.Sprintf("hooks.%s[%d]", event, index))
+		if err != nil {
+			return nil, false, err
+		}
+		rawHandlers, ok := group["hooks"]
+		if !ok {
+			continue
+		}
+		handlers, err := decodeJSONArray(rawHandlers, fmt.Sprintf("hooks.%s[%d].hooks", event, index))
+		if err != nil {
+			return nil, false, err
+		}
+		for handlerIndex, rawHandler := range handlers {
+			handler, err := decodeJSONObject(rawHandler, fmt.Sprintf("hooks.%s[%d].hooks[%d]", event, index, handlerIndex))
+			if err != nil {
+				return nil, false, err
+			}
+			if isAgentDeckCodexLifecycleHandler(handler) {
+				installed = true
+			}
+		}
+	}
+	return groups, installed, nil
+}
+
+func isAgentDeckCodexLifecycleHandler(handler map[string]json.RawMessage) bool {
+	var handlerType, command string
+	if err := json.Unmarshal(handler["type"], &handlerType); err != nil {
+		return false
+	}
+	if err := json.Unmarshal(handler["command"], &command); err != nil {
+		return false
+	}
+	return handlerType == "command" && strings.TrimSpace(command) == codexLifecycleCommand
+}
+
+func canonicalCodexLifecycleGroup() json.RawMessage {
+	return json.RawMessage(`{"hooks":[{"type":"command","command":"agent-deck codex-notify","timeout":3}]}`)
+}
+
+func marshalCodexLifecycleDocument(doc *codexLifecycleDocument) ([]byte, error) {
+	if doc.hooksPresent {
+		rawHooks, err := json.Marshal(doc.hooks)
+		if err != nil {
+			return nil, err
+		}
+		doc.top["hooks"] = rawHooks
+	}
+	data, err := json.MarshalIndent(doc.top, "", "  ")
+	if err != nil {
+		return nil, err
+	}
+	return append(data, '\n'), nil
+}
+
+func codexLifecycleHandlerCount(doc *codexLifecycleDocument) (int, error) {
+	count := 0
+	for _, event := range codexLifecycleEvents {
+		rawEvent, ok := doc.hooks[event]
+		if !ok {
+			continue
+		}
+		_, installed, err := inspectCodexLifecycleEvent(rawEvent, event)
+		if err != nil {
+			return 0, err
+		}
+		if installed {
+			count++
+		}
+	}
+	return count, nil
+}
+
+func planCodexLifecycleInstall(data []byte, exists bool) ([]byte, bool, error) {
+	doc, err := parseCodexLifecycleDocument(data, exists)
+	if err != nil {
+		return data, false, err
+	}
+
+	changed := false
+	for _, event := range codexLifecycleEvents {
+		rawEvent, eventExists := doc.hooks[event]
+		groups := []json.RawMessage(nil)
+		installed := false
+		if eventExists {
+			groups, installed, err = inspectCodexLifecycleEvent(rawEvent, event)
+			if err != nil {
+				return data, false, err
+			}
+		}
+		if installed {
+			continue
+		}
+		groups = append(groups, canonicalCodexLifecycleGroup())
+		encodedGroups, err := json.Marshal(groups)
+		if err != nil {
+			return data, false, err
+		}
+		doc.hooks[event] = encodedGroups
+		doc.hooksPresent = true
+		changed = true
+	}
+	if !exists {
+		description, err := json.Marshal(codexLifecycleDescription)
+		if err != nil {
+			return data, false, err
+		}
+		doc.top["description"] = description
+		changed = true
+	}
+	if !changed {
+		return data, false, nil
+	}
+
+	updated, err := marshalCodexLifecycleDocument(doc)
+	if err != nil {
+		return data, false, err
+	}
+	return updated, true, nil
+}
+
+func removeAgentDeckCodexLifecycleHandlers(groups []json.RawMessage, event string) ([]json.RawMessage, bool, error) {
+	updated := make([]json.RawMessage, 0, len(groups))
+	removed := false
+
+	for groupIndex, rawGroup := range groups {
+		group, err := decodeJSONObject(rawGroup, fmt.Sprintf("hooks.%s[%d]", event, groupIndex))
+		if err != nil {
+			return nil, false, err
+		}
+		rawHandlers, hasHandlers := group["hooks"]
+		if !hasHandlers {
+			updated = append(updated, rawGroup)
+			continue
+		}
+		handlers, err := decodeJSONArray(rawHandlers, fmt.Sprintf("hooks.%s[%d].hooks", event, groupIndex))
+		if err != nil {
+			return nil, false, err
+		}
+		kept := make([]json.RawMessage, 0, len(handlers))
+		removedFromGroup := false
+		for handlerIndex, rawHandler := range handlers {
+			handler, err := decodeJSONObject(rawHandler, fmt.Sprintf("hooks.%s[%d].hooks[%d]", event, groupIndex, handlerIndex))
+			if err != nil {
+				return nil, false, err
+			}
+			if isAgentDeckCodexLifecycleHandler(handler) {
+				removed = true
+				removedFromGroup = true
+				continue
+			}
+			kept = append(kept, rawHandler)
+		}
+		if !removedFromGroup {
+			updated = append(updated, rawGroup)
+			continue
+		}
+		if len(kept) == 0 && len(group) == 1 {
+			continue
+		}
+		encodedHandlers, err := json.Marshal(kept)
+		if err != nil {
+			return nil, false, err
+		}
+		group["hooks"] = encodedHandlers
+		encodedGroup, err := json.Marshal(group)
+		if err != nil {
+			return nil, false, err
+		}
+		updated = append(updated, encodedGroup)
+	}
+	return updated, removed, nil
+}
+
+func hasAgentDeckCodexLifecycleDescription(top map[string]json.RawMessage) bool {
+	rawDescription, ok := top["description"]
+	if !ok {
+		return false
+	}
+	var description string
+	return json.Unmarshal(rawDescription, &description) == nil && description == codexLifecycleDescription
+}
+
+func planCodexLifecycleUninstall(data []byte, exists bool) ([]byte, bool, error) {
+	if !exists {
+		return data, false, nil
+	}
+	doc, err := parseCodexLifecycleDocument(data, true)
+	if err != nil {
+		return data, false, err
+	}
+
+	changed := false
+	for _, event := range codexLifecycleEvents {
+		rawEvent, eventExists := doc.hooks[event]
+		if !eventExists {
+			continue
+		}
+		groups, _, err := inspectCodexLifecycleEvent(rawEvent, event)
+		if err != nil {
+			return data, false, err
+		}
+		updatedGroups, removed, err := removeAgentDeckCodexLifecycleHandlers(groups, event)
+		if err != nil {
+			return data, false, err
+		}
+		if !removed {
+			continue
+		}
+		changed = true
+		if len(updatedGroups) == 0 {
+			delete(doc.hooks, event)
+			continue
+		}
+		encodedGroups, err := json.Marshal(updatedGroups)
+		if err != nil {
+			return data, false, err
+		}
+		doc.hooks[event] = encodedGroups
+	}
+
+	remaining, err := codexLifecycleHandlerCount(doc)
+	if err != nil {
+		return data, false, err
+	}
+	if remaining == 0 && hasAgentDeckCodexLifecycleDescription(doc.top) {
+		delete(doc.top, "description")
+		changed = true
+	}
+	if !changed {
+		return data, false, nil
+	}
+
+	updated, err := marshalCodexLifecycleDocument(doc)
+	if err != nil {
+		return data, false, err
+	}
+	return updated, true, nil
+}
+
+func codexLifecycleStatus(data []byte, exists bool) (codexComponentState, error) {
+	if !exists {
+		return codexComponentNotInstalled, nil
+	}
+	doc, err := parseCodexLifecycleDocument(data, true)
+	if err != nil {
+		return codexComponentInvalid, err
+	}
+	count, err := codexLifecycleHandlerCount(doc)
+	if err != nil {
+		return codexComponentInvalid, err
+	}
+	switch count {
+	case 0:
+		return codexComponentNotInstalled, nil
+	case len(codexLifecycleEvents):
+		return codexComponentInstalled, nil
+	default:
+		return codexComponentPartial, nil
+	}
+}
+
+func installCodexHooks(configPath, hooksPath string) (notifyChanged, lifecycleChanged bool, err error) {
+	configContent, err := readFileOrEmpty(configPath)
+	if err != nil {
+		return false, false, fmt.Errorf("read config: %w", err)
+	}
+	hooksContent, hooksExists, err := readCodexHooksFile(hooksPath)
+	if err != nil {
+		return false, false, fmt.Errorf("read hooks: %w", err)
+	}
+
+	updatedConfig, notifyChanged, err := planCodexNotifyInstall(configContent)
+	if err != nil {
+		return false, false, err
+	}
+	updatedHooks, lifecycleChanged, err := planCodexLifecycleInstall(hooksContent, hooksExists)
+	if err != nil {
+		return false, false, err
+	}
+
+	if notifyChanged {
+		if err := os.MkdirAll(filepath.Dir(configPath), 0755); err != nil {
+			return false, false, fmt.Errorf("create config directory: %w", err)
+		}
+	}
+	if lifecycleChanged {
+		if err := os.MkdirAll(filepath.Dir(hooksPath), 0755); err != nil {
+			return false, false, fmt.Errorf("create hooks directory: %w", err)
+		}
+	}
+	if notifyChanged {
+		if err := os.WriteFile(configPath, []byte(updatedConfig), 0644); err != nil {
+			return false, false, fmt.Errorf("write config: %w", err)
+		}
+	}
+	if lifecycleChanged {
+		if err := os.WriteFile(hooksPath, updatedHooks, 0644); err != nil {
+			return false, false, fmt.Errorf("write hooks: %w", err)
+		}
+	}
+	return notifyChanged, lifecycleChanged, nil
+}
+
+func uninstallCodexHooks(configPath, hooksPath string) (notifyChanged, lifecycleChanged bool, err error) {
+	configContent, err := readFileOrEmpty(configPath)
+	if err != nil {
+		return false, false, fmt.Errorf("read config: %w", err)
+	}
+	hooksContent, hooksExists, err := readCodexHooksFile(hooksPath)
+	if err != nil {
+		return false, false, fmt.Errorf("read hooks: %w", err)
+	}
+
+	updatedConfig, notifyChanged, err := planCodexNotifyUninstall(configContent)
+	if err != nil {
+		return false, false, err
+	}
+	updatedHooks, lifecycleChanged, err := planCodexLifecycleUninstall(hooksContent, hooksExists)
+	if err != nil {
+		return false, false, err
+	}
+
+	if lifecycleChanged {
+		if err := os.MkdirAll(filepath.Dir(hooksPath), 0755); err != nil {
+			return false, false, fmt.Errorf("create hooks directory: %w", err)
+		}
+		if err := os.WriteFile(hooksPath, updatedHooks, 0644); err != nil {
+			return false, false, fmt.Errorf("write hooks: %w", err)
+		}
+	}
+	if notifyChanged {
+		if err := os.MkdirAll(filepath.Dir(configPath), 0755); err != nil {
+			return false, false, fmt.Errorf("create config directory: %w", err)
+		}
+		if err := os.WriteFile(configPath, []byte(updatedConfig), 0644); err != nil {
+			return false, false, fmt.Errorf("write config: %w", err)
+		}
+	}
+	return notifyChanged, lifecycleChanged, nil
+}
+
+func codexHooksStatus(configPath, hooksPath string) (string, codexComponentState, codexComponentState, error) {
+	configContent, configErr := readFileOrEmpty(configPath)
+	notify := codexComponentError
+	var statusErr error
+	if configErr != nil {
+		statusErr = fmt.Errorf("read config: %w", configErr)
+	} else {
+		var err error
+		notify, err = codexNotifyStatus(configContent)
+		if err != nil {
+			statusErr = err
+		}
+	}
+
+	hooksContent, hooksExists, hooksErr := readCodexHooksFile(hooksPath)
+	lifecycle := codexComponentError
+	if hooksErr != nil {
+		if statusErr == nil {
+			statusErr = fmt.Errorf("read hooks: %w", hooksErr)
+		}
+	} else {
+		var err error
+		lifecycle, err = codexLifecycleStatus(hooksContent, hooksExists)
+		if err != nil && statusErr == nil {
+			statusErr = err
+		}
+	}
+
+	if statusErr != nil || notify == codexComponentError || lifecycle == codexComponentInvalid || lifecycle == codexComponentError {
+		return "ERROR", notify, lifecycle, statusErr
+	}
+	if notify == codexComponentInstalled && lifecycle == codexComponentInstalled {
+		return "INSTALLED", notify, lifecycle, nil
+	}
+	if notify == codexComponentNotInstalled && lifecycle == codexComponentNotInstalled {
+		return "NOT INSTALLED", notify, lifecycle, nil
+	}
+	return "PARTIAL", notify, lifecycle, nil
+}
+
+func printCodexLifecycleTrustGuidance(w io.Writer) {
+	fmt.Fprintln(w, "Open /hooks in Codex and trust the Agent Deck UserPromptSubmit and Stop hooks.")
+	fmt.Fprintln(w, "Until trusted and enabled, Agent Deck continues using notify and pane/process fallback.")
 }
