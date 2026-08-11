@@ -474,6 +474,11 @@ func TestHandleCodexNotify_RejectsOversizedPayloads(t *testing.T) {
 			args:  []string{"agent-deck", "codex-notify", overflowJSON},
 			input: nil,
 		},
+		{
+			name:  "plain argv event plus stdin",
+			args:  []string{"agent-deck", "codex-notify", "Stop"},
+			input: []byte(overflowJSON),
+		},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			instanceID := "inst-oversized"

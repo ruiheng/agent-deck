@@ -175,8 +175,10 @@ func handleCodexNotify() {
 
 	if len(data) == 0 {
 		readData, err := io.ReadAll(io.LimitReader(os.Stdin, maxHookPayloadSize+1))
-		if err != nil || len(readData) == 0 || len(readData) > maxHookPayloadSize {
+		if err != nil || len(readData) == 0 {
 			readData = nil
+		} else if len(readData) > maxHookPayloadSize {
+			return
 		}
 		if len(readData) > 0 {
 			data = readData
