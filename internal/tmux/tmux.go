@@ -899,8 +899,8 @@ type StateTracker struct {
 	lastCodexTitleState           CodexTitleState
 	// codexWorkingContradicted blocks title-only Working promotion after a
 	// failed, indeterminate, or visibly non-busy Working reconciliation. It
-	// is cleared only by a semantic Ready transition or decisive visible busy
-	// evidence; a missing title or spinner-frame churn must not renew trust.
+	// is cleared only by a semantic transition away from Working or decisive
+	// visible busy evidence; spinner-frame churn must not renew trust.
 	codexWorkingContradicted bool
 }
 

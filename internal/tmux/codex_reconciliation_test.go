@@ -213,6 +213,31 @@ func TestCodexWorkingReconciliationBlocksRePromotionAfterFailure(t *testing.T) {
 	}
 }
 
+func TestCodexWorkingAwayAndBackClearsContradiction(t *testing.T) {
+	now := time.Now()
+	s, captures := newCodexStatusTestSession("codex-working-away-and-back", "waiting", now)
+	s.stateTracker.lastCodexTitleState = CodexTitleWorking
+	s.stateTracker.codexWorkingContradicted = true
+	seedCodexPaneTitle(t, s.Name, "agent-deck | ambiguous", now)
+
+	got, sample, err := s.GetStatusSample()
+	if err != nil || got != "waiting" || sample.EvidenceStatus != "" {
+		t.Fatalf("Working away edge = (%q,%+v,%v), want waiting without evidence", got, sample, err)
+	}
+	if s.stateTracker.codexWorkingContradicted {
+		t.Fatal("a title transition away from Working must clear the contradiction latch")
+	}
+
+	seedCodexPaneTitle(t, s.Name, "agent-deck | Working ⠋", time.Now())
+	got, sample, err = s.GetStatusSample()
+	if err != nil || got != "active" || sample.Observation != CodexStatusObservationTitleWorking || sample.EvidenceStatus != "active" {
+		t.Fatalf("Working away-and-back edge = (%q,%+v,%v), want immediate title promotion", got, sample, err)
+	}
+	if captures.calls != 0 {
+		t.Fatalf("warm away-and-back title edges must not capture; calls=%d", captures.calls)
+	}
+}
+
 func TestCodexWorkingReconciliationLatchesVisibleNoBusyPrompt(t *testing.T) {
 	for _, tc := range []struct {
 		name        string
@@ -300,6 +325,33 @@ func TestConfirmCodexDemotionRejectsIndeterminatePane(t *testing.T) {
 	}
 	if captures.calls != 1 || len(captures.fresh) != 1 || !captures.fresh[0] {
 		t.Fatalf("confirmation must make exactly one fresh attempt; calls=%d fresh=%v", captures.calls, captures.fresh)
+	}
+}
+
+func TestCodexFailedConfirmationUnderWorkingDoesNotRepromote(t *testing.T) {
+	now := time.Now()
+	s, captures := newCodexStatusTestSession(
+		"codex-failed-working-confirmation",
+		"waiting",
+		now,
+		codexCaptureResult{err: errors.New("confirmation capture unavailable")},
+	)
+	seedCodexPaneTitle(t, s.Name, "agent-deck | Working", now)
+
+	confirmed, observedAt := s.ConfirmCodexDemotion("waiting")
+	if confirmed || !observedAt.IsZero() {
+		t.Fatalf("failed Working confirmation = (%v,%v), want rejected zero observation", confirmed, observedAt)
+	}
+	if captures.calls != 1 || !captures.fresh[0] || !s.stateTracker.codexWorkingContradicted {
+		t.Fatalf("failed Working confirmation must latch once; calls=%d fresh=%v contradicted=%v", captures.calls, captures.fresh, s.stateTracker.codexWorkingContradicted)
+	}
+
+	got, sample, err := s.GetStatusSample()
+	if err != nil || got != "waiting" || sample.EvidenceStatus != "" {
+		t.Fatalf("same Working title after failed confirmation = (%q,%+v,%v), want preserved waiting", got, sample, err)
+	}
+	if captures.calls != 1 {
+		t.Fatalf("failed confirmation must not trigger a third same-call/next-edge capture; calls=%d", captures.calls)
 	}
 }
 

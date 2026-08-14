@@ -4260,6 +4260,13 @@ func shouldPollStatusInLoop(inst *session.Instance) bool {
 	return inst != nil && !inst.IsArchived()
 }
 
+// shouldSkipQuietStatusPoll preserves the quiet-session fast path unless a
+// compatible Codex session has reconciliation work due. Keeping this decision
+// pure makes the PipeManager and idle-row gates share the same cadence rule.
+func shouldSkipQuietStatusPoll(codexCompatible, codexReconciliationDue bool) bool {
+	return !codexCompatible || !codexReconciliationDue
+}
+
 // backgroundStatusUpdate runs independently of the TUI
 // Updates session statuses and syncs notification bar directly to tmux
 // This is called by the internal ticker even when TUI is paused (tea.Exec)
@@ -4467,8 +4474,10 @@ func (h *Home) backgroundStatusUpdate() {
 		if pm != nil {
 			if ts := inst.GetTmuxSession(); ts != nil && pm.IsConnected(ts.Name) {
 				lastOut := pm.LastOutputTime(ts.Name)
+				codexCompatible := session.IsCodexCompatible(inst.GetToolThreadSafe())
+				codexDue := codexCompatible && ts.CodexReconciliationDue()
 				if !lastOut.IsZero() && time.Since(lastOut) > 5*time.Second &&
-					(!session.IsCodexCompatible(inst.GetToolThreadSafe()) || !ts.CodexReconciliationDue()) {
+					shouldSkipQuietStatusPoll(codexCompatible, codexDue) {
 					skipped++
 					continue
 				}
@@ -5071,8 +5080,10 @@ func (h *Home) processStatusUpdate(req statusUpdateRequest) {
 		if inst.GetStatusThreadSafe() == session.StatusIdle {
 			if ts := inst.GetTmuxSession(); ts != nil {
 				fp := ts.GetCachedWindowActivity()
+				codexCompatible := session.IsCodexCompatible(inst.GetToolThreadSafe())
+				codexDue := codexCompatible && ts.CodexReconciliationDue()
 				if fp != 0 && fp == h.visibleRefreshFingerprint[inst.ID] &&
-					(!session.IsCodexCompatible(inst.GetToolThreadSafe()) || !ts.CodexReconciliationDue()) {
+					shouldSkipQuietStatusPoll(codexCompatible, codexDue) {
 					continue
 				}
 			}
@@ -5121,12 +5132,14 @@ func (h *Home) processStatusUpdate(req statusUpdateRequest) {
 		// Skip idle sessions - they require user interaction to change state
 		// Background polling will catch any activity when user interacts
 		if inst.GetStatusThreadSafe() == session.StatusIdle {
-			if ts := inst.GetTmuxSession(); ts != nil && session.IsCodexCompatible(inst.GetToolThreadSafe()) && ts.CodexReconciliationDue() {
-				// A due Codex reconciliation is live status work even with a quiet
-				// window_activity value; let it reach UpdateStatus below.
-			} else {
+			ts := inst.GetTmuxSession()
+			codexCompatible := session.IsCodexCompatible(inst.GetToolThreadSafe())
+			codexDue := ts != nil && codexCompatible && ts.CodexReconciliationDue()
+			if ts == nil || shouldSkipQuietStatusPoll(codexCompatible, codexDue) {
 				continue
 			}
+			// A due Codex reconciliation is live status work even with a quiet
+			// window_activity value; let it reach UpdateStatus below.
 		}
 
 		oldStatus, _, oldEvidenceRevision := inst.StatusEvidenceSnapshot()

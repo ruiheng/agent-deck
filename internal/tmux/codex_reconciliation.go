@@ -56,10 +56,11 @@ func (s *Session) getCodexStatusSample() (string, CodexStatusSample, error) {
 		preStatus = "waiting"
 	}
 
-	// Only an explicit semantic Ready transition clears a Working contradiction.
-	// An unavailable/ambiguous title is not evidence that the same stale Working
-	// title became trustworthy again.
-	if title == CodexTitleReady {
+	// A semantic transition away from Working resets the contradiction latch so
+	// a later Working edge can promote again. Unknown is an away state here: it
+	// represents the current strict-title observation becoming unavailable or
+	// ambiguous, not a braille-frame change (which remains CodexTitleWorking).
+	if titleEdge && previousTitle == CodexTitleWorking && title != CodexTitleWorking {
 		s.stateTracker.codexWorkingContradicted = false
 	}
 
@@ -279,6 +280,12 @@ func (s *Session) ConfirmCodexDemotion(expected string) (bool, time.Time) {
 
 	raw, observedAt, err := s.captureStatusPane(true)
 	if err != nil {
+		// A forced confirmation is still a pane verification. When its current
+		// title says Working, fail closed just as the regular reconciliation
+		// path does so this unverified title cannot immediately re-promote.
+		s.mu.Lock()
+		s.contradictCodexWorkingLocked(title)
+		s.mu.Unlock()
 		return false, time.Time{}
 	}
 	got, sample, _ := s.classifyCodexCapturedPane(StripANSI(raw), title, observedAt, expected)

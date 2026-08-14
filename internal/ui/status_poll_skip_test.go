@@ -29,3 +29,25 @@ func TestShouldPollStatusInLoop_SkipsArchived(t *testing.T) {
 		t.Fatalf("nil instance must not be polled")
 	}
 }
+
+func TestShouldSkipQuietStatusPoll_CodexDueBypassesTUIIdleGates(t *testing.T) {
+	tests := []struct {
+		name       string
+		compatible bool
+		due        bool
+		wantSkip   bool
+	}{
+		{name: "due Codex work reaches status update", compatible: true, due: true, wantSkip: false},
+		{name: "between-deadline Codex retains quiet skip", compatible: true, due: false, wantSkip: true},
+		{name: "non-Codex retains quiet skip even when a caller marks due", compatible: false, due: true, wantSkip: true},
+		{name: "non-Codex ordinary quiet skip", compatible: false, due: false, wantSkip: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := shouldSkipQuietStatusPoll(tt.compatible, tt.due); got != tt.wantSkip {
+				t.Fatalf("shouldSkipQuietStatusPoll(%v, %v) = %v, want %v", tt.compatible, tt.due, got, tt.wantSkip)
+			}
+		})
+	}
+}

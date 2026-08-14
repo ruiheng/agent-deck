@@ -445,6 +445,12 @@ type Instance struct {
 	tmuxSession *tmux.Session // Internal tmux session
 
 	paneDeadExitStatusForTest func() (int, bool) // nil uses tmuxSession.PaneDeadExitStatus
+	// Narrow per-instance status seams keep the one-call Codex outer-demotion
+	// contract deterministic in tests. Production leaves these nil and calls the
+	// tmux session directly.
+	tmuxStatusExistsForTest         func() bool
+	tmuxStatusSampleForTest         func() (string, tmux.CodexStatusSample, error)
+	tmuxCodexDemotionConfirmForTest func(string) (bool, time.Time)
 
 	// Hook-based status detection (set by StatusFileWatcher from Claude Code hooks)
 	hookStatus     string    // running, idle, waiting, dead (empty = no hook data)
@@ -4680,6 +4686,33 @@ func classifyTerminatedPane(exitCode int, haveExitCode bool, tool string) Status
 	return StatusError
 }
 
+// statusTmuxExistsLocked returns the liveness verdict for UpdateStatus. Call
+// with i.mu held.
+func (i *Instance) statusTmuxExistsLocked() bool {
+	if i.tmuxStatusExistsForTest != nil {
+		return i.tmuxStatusExistsForTest()
+	}
+	return i.tmuxSession != nil && i.tmuxSession.Exists()
+}
+
+// statusSampleForUpdateLocked returns the status sampler for UpdateStatus.
+// Call with i.mu held and invoke the returned function after releasing i.mu.
+func (i *Instance) statusSampleForUpdateLocked() func() (string, tmux.CodexStatusSample, error) {
+	if i.tmuxStatusSampleForTest != nil {
+		return i.tmuxStatusSampleForTest
+	}
+	return i.tmuxSession.GetStatusSample
+}
+
+// codexDemotionConfirmForUpdateLocked returns the bounded confirmation
+// function. Call with i.mu held and invoke it after releasing i.mu.
+func (i *Instance) codexDemotionConfirmForUpdateLocked() func(string) (bool, time.Time) {
+	if i.tmuxCodexDemotionConfirmForTest != nil {
+		return i.tmuxCodexDemotionConfirmForTest
+	}
+	return i.tmuxSession.ConfirmCodexDemotion
+}
+
 func (i *Instance) UpdateStatus() error {
 	i.mu.Lock()
 	defer i.mu.Unlock()
@@ -4695,7 +4728,7 @@ func (i *Instance) UpdateStatus() error {
 	// Don't block status detection once tmux session exists
 	if time.Since(graceTime) < 1500*time.Millisecond {
 		// Only skip if tmux session doesn't exist yet
-		if i.tmuxSession == nil || !i.tmuxSession.Exists() {
+		if i.tmuxSession == nil || !i.statusTmuxExistsLocked() {
 			if i.Status != StatusRunning && i.Status != StatusIdle {
 				i.Status = StatusStarting
 			}
@@ -4728,7 +4761,7 @@ func (i *Instance) UpdateStatus() error {
 	}
 
 	// Check if tmux session exists
-	if !i.tmuxSession.Exists() {
+	if !i.statusTmuxExistsLocked() {
 		if i.neverStarted() {
 			// Added but never started: no tmux session was ever created, so an
 			// absent tmux is expected — classify as idle, not error (✕ → ○).
@@ -4950,8 +4983,9 @@ func (i *Instance) UpdateStatus() error {
 
 tmuxStatusPath:
 	// Release lock for potentially slow tmux calls (GetStatus calls CapturePane)
+	getStatusSample := i.statusSampleForUpdateLocked()
 	i.mu.Unlock()
-	status, codexSample, err := i.tmuxSession.GetStatusSample()
+	status, codexSample, err := getStatusSample()
 	i.mu.Lock()
 
 	// Issue #953: a concurrent Kill() may have published StatusStopped
@@ -5054,8 +5088,9 @@ tmuxStatusPath:
 				if i.Status == StatusError {
 					expected = "error"
 				}
+				confirmDemotion := i.codexDemotionConfirmForUpdateLocked()
 				i.mu.Unlock()
-				confirmed, confirmedAt = i.tmuxSession.ConfirmCodexDemotion(expected)
+				confirmed, confirmedAt = confirmDemotion(expected)
 				i.mu.Lock()
 				if i.Status == StatusStopped {
 					return nil
