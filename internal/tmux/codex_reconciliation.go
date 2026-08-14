@@ -56,13 +56,12 @@ func (s *Session) getCodexStatusSample() (string, CodexStatusSample, error) {
 		preStatus = "waiting"
 	}
 
-	// A semantic transition away from Working resets the contradiction latch so
-	// a later Working edge can promote again. Unknown is an away state here: it
-	// represents the current strict-title observation becoming unavailable or
-	// ambiguous, not a braille-frame change (which remains CodexTitleWorking).
-	if titleEdge && previousTitle == CodexTitleWorking && title != CodexTitleWorking {
-		s.stateTracker.codexWorkingContradicted = false
-	}
+	// A latch records distrust of the current Working observation, not just the
+	// last title edge. ConfirmCodexDemotion intentionally leaves title-edge
+	// state untouched, so its failed Working verification must also be cleared
+	// by the next observed title-away state. Spinner-frame churn remains Working
+	// and therefore cannot clear the latch.
+	s.clearCodexWorkingContradictionOnTitleAwayLocked(title)
 
 	// A warm, non-contradicted Working edge can promote immediately. The
 	// periodic deadline makes cold/restarted wrappers go through a pane read
@@ -147,6 +146,18 @@ func (s *Session) contradictCodexWorkingLocked(title CodexTitleState) {
 	if title == CodexTitleWorking && s.codexStatusCompatible {
 		s.ensureStateTrackerLocked()
 		s.stateTracker.codexWorkingContradicted = true
+	}
+}
+
+// clearCodexWorkingContradictionOnTitleAwayLocked accepts a current semantic
+// title observation away from Working as the lifecycle boundary for a prior
+// Working contradiction. It is intentionally independent of
+// lastCodexTitleState because forced confirmation does not mutate title-edge
+// bookkeeping. Call with s.mu held.
+func (s *Session) clearCodexWorkingContradictionOnTitleAwayLocked(title CodexTitleState) {
+	if title != CodexTitleWorking && s.codexStatusCompatible {
+		s.ensureStateTrackerLocked()
+		s.stateTracker.codexWorkingContradicted = false
 	}
 }
 

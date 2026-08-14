@@ -238,6 +238,37 @@ func TestCodexWorkingAwayAndBackClearsContradiction(t *testing.T) {
 	}
 }
 
+func TestCodexWorkingContradictionTitleAwayPolicy(t *testing.T) {
+	tests := []struct {
+		name     string
+		previous CodexTitleState
+		current  CodexTitleState
+		want     bool
+	}{
+		{name: "regular Working history clears on unknown", previous: CodexTitleWorking, current: CodexTitleUnknown, want: false},
+		{name: "confirmation leaves unknown history but unknown still clears", previous: CodexTitleUnknown, current: CodexTitleUnknown, want: false},
+		{name: "regular Working history clears on Ready", previous: CodexTitleWorking, current: CodexTitleReady, want: false},
+		{name: "confirmation leaves unknown history but Ready still clears", previous: CodexTitleUnknown, current: CodexTitleReady, want: false},
+		{name: "Working spinner state remains latched", previous: CodexTitleWorking, current: CodexTitleWorking, want: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			s := &Session{codexStatusCompatible: true, stateTracker: &StateTracker{
+				lastCodexTitleState:      tt.previous,
+				codexWorkingContradicted: true,
+			}}
+			s.mu.Lock()
+			s.clearCodexWorkingContradictionOnTitleAwayLocked(tt.current)
+			got := s.stateTracker.codexWorkingContradicted
+			s.mu.Unlock()
+			if got != tt.want {
+				t.Fatalf("title state %v with prior %v leaves contradiction=%v, want %v", tt.current, tt.previous, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestCodexWorkingReconciliationLatchesVisibleNoBusyPrompt(t *testing.T) {
 	for _, tc := range []struct {
 		name        string
@@ -352,6 +383,43 @@ func TestCodexFailedConfirmationUnderWorkingDoesNotRepromote(t *testing.T) {
 	}
 	if captures.calls != 1 {
 		t.Fatalf("failed confirmation must not trigger a third same-call/next-edge capture; calls=%d", captures.calls)
+	}
+}
+
+func TestCodexFailedConfirmationWorkingAwayAndBackClearsContradiction(t *testing.T) {
+	now := time.Now()
+	s, captures := newCodexStatusTestSession(
+		"codex-failed-confirmation-away-and-back",
+		"waiting",
+		now,
+		codexCaptureResult{err: errors.New("confirmation capture unavailable")},
+	)
+	if s.stateTracker.lastCodexTitleState != CodexTitleUnknown {
+		t.Fatalf("initial title state = %v, want Unknown", s.stateTracker.lastCodexTitleState)
+	}
+	seedCodexPaneTitle(t, s.Name, "agent-deck | Working", now)
+
+	confirmed, observedAt := s.ConfirmCodexDemotion("waiting")
+	if confirmed || !observedAt.IsZero() || !s.stateTracker.codexWorkingContradicted {
+		t.Fatalf("failed Working confirmation = (%v,%v), contradicted=%v; want rejected and latched", confirmed, observedAt, s.stateTracker.codexWorkingContradicted)
+	}
+
+	seedCodexPaneTitle(t, s.Name, "agent-deck | ambiguous", time.Now())
+	got, sample, err := s.GetStatusSample()
+	if err != nil || got != "waiting" || sample.EvidenceStatus != "" {
+		t.Fatalf("confirmation-created Working away edge = (%q,%+v,%v), want waiting without evidence", got, sample, err)
+	}
+	if s.stateTracker.codexWorkingContradicted {
+		t.Fatal("an observed title away from confirmation-created Working must clear the latch")
+	}
+
+	seedCodexPaneTitle(t, s.Name, "agent-deck | Working ⠋", time.Now())
+	got, sample, err = s.GetStatusSample()
+	if err != nil || got != "active" || sample.Observation != CodexStatusObservationTitleWorking || sample.EvidenceStatus != "active" {
+		t.Fatalf("confirmation-created Working away-and-back = (%q,%+v,%v), want immediate title promotion", got, sample, err)
+	}
+	if captures.calls != 1 {
+		t.Fatalf("away-and-back after failed confirmation must not add a capture; calls=%d", captures.calls)
 	}
 }
 
