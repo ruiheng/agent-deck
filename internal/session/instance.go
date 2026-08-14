@@ -5039,7 +5039,7 @@ tmuxStatusPath:
 	// confirmation in this public UpdateStatus call.
 	if IsCodexCompatible(i.Tool) && prevStatus == StatusRunning &&
 		(i.Status == StatusWaiting || i.Status == StatusError) && status != "inactive" {
-		if !codexSample.PaneRead || codexSample.EvidenceStatus != status {
+		if !codexSample.HasDecisivePaneEvidence(status) {
 			// A reused tracker fallback, prompt/spinner hold, or indeterminate
 			// sample is not an independent demotion observation. In particular a
 			// fresh wrapper's local lastStableStatus must not overwrite its

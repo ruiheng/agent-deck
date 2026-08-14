@@ -186,3 +186,33 @@ func TestCodexCompatibleHookAndEvidenceIdentity(t *testing.T) {
 		t.Fatalf("leaving Codex compatibility must clear outward evidence, got %d", evidence)
 	}
 }
+
+func TestCodexStatusEvidenceSnapshotPairsStatusAndRevision(t *testing.T) {
+	inst := NewInstanceWithTool("evidence", "/tmp", "codex")
+	inst.mu.Lock()
+	inst.Status = StatusRunning
+	inst.noteCodexStatusEvidenceLocked(StatusRunning, time.Unix(100, 0))
+	inst.mu.Unlock()
+
+	status, evidence, revision := inst.StatusEvidenceSnapshot()
+	if status != StatusRunning || evidence != 100 || revision == 0 {
+		t.Fatalf("first evidence snapshot = (%q,%d,%d), want running/100/nonzero", status, evidence, revision)
+	}
+
+	inst.mu.Lock()
+	inst.noteCodexStatusEvidenceLocked(StatusRunning, time.Unix(100, 0))
+	inst.mu.Unlock()
+	_, _, sameRevision := inst.StatusEvidenceSnapshot()
+	if sameRevision != revision {
+		t.Fatalf("same status/second must not advance revision: got %d want %d", sameRevision, revision)
+	}
+
+	inst.mu.Lock()
+	inst.noteCodexStatusEvidenceLocked(StatusRunning, time.Unix(101, 0))
+	inst.Status = StatusWaiting
+	inst.mu.Unlock()
+	status, evidence, nextRevision := inst.StatusEvidenceSnapshot()
+	if status != StatusWaiting || evidence != 0 || nextRevision <= revision {
+		t.Fatalf("mismatched outward status must hide evidence while preserving revision: (%q,%d,%d)", status, evidence, nextRevision)
+	}
+}

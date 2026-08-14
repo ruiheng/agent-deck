@@ -28,14 +28,15 @@ func (s *Session) GetStatusSample() (string, CodexStatusSample, error) {
 func (s *Session) getCodexStatusSample() (string, CodexStatusSample, error) {
 	// Preserve normal dead-session precedence before interpreting cached title
 	// metadata. A stale cache title must never revive a missing/dead pane.
-	if !s.Exists() {
+	exists, paneDead := s.statusLiveness()
+	if !exists {
 		s.mu.Lock()
 		s.lastStableStatus = "inactive"
 		s.lastSubstate = SubstateNone
 		s.mu.Unlock()
 		return "inactive", CodexStatusSample{}, nil
 	}
-	if s.IsPaneDead() {
+	if paneDead {
 		s.mu.Lock()
 		s.lastStableStatus = "inactive"
 		s.lastSubstate = SubstateNone
@@ -46,7 +47,7 @@ func (s *Session) getCodexStatusSample() (string, CodexStatusSample, error) {
 	now := time.Now()
 	s.mu.Lock()
 	s.ensureStateTrackerLocked()
-	title := s.codexTitleStateFromCacheLocked()
+	title, titleObservedAt := s.codexTitleObservationFromCacheLocked()
 	previousTitle := s.stateTracker.lastCodexTitleState
 	titleEdge := title != previousTitle
 	due := s.codexPaneReconciliationDueLocked(now)
@@ -55,8 +56,10 @@ func (s *Session) getCodexStatusSample() (string, CodexStatusSample, error) {
 		preStatus = "waiting"
 	}
 
-	// A transition away from Working is what clears its contradiction marker.
-	if title != CodexTitleWorking {
+	// Only an explicit semantic Ready transition clears a Working contradiction.
+	// An unavailable/ambiguous title is not evidence that the same stale Working
+	// title became trustworthy again.
+	if title == CodexTitleReady {
 		s.stateTracker.codexWorkingContradicted = false
 	}
 
@@ -70,7 +73,8 @@ func (s *Session) getCodexStatusSample() (string, CodexStatusSample, error) {
 		return "active", CodexStatusSample{
 			TitleState:     title,
 			EvidenceStatus: "active",
-			EvidenceAt:     now,
+			EvidenceAt:     titleObservedAt,
+			Observation:    CodexStatusObservationTitleWorking,
 		}, nil
 	}
 
@@ -80,11 +84,10 @@ func (s *Session) getCodexStatusSample() (string, CodexStatusSample, error) {
 		s.stateTracker.lastCodexTitleState = title
 		s.markCodexTitleWorkingLocked()
 		s.mu.Unlock()
-		return "active", CodexStatusSample{
-			TitleState:     title,
-			EvidenceStatus: "active",
-			EvidenceAt:     now,
-		}, nil
+		// A stable title is a lightweight local hold, not a new live
+		// observation. Renewing its evidence on every poll could let it mask a
+		// newer hook on another surface.
+		return "active", CodexStatusSample{TitleState: title}, nil
 	}
 
 	// New Ready must obtain an independent fresh pane observation immediately;
@@ -118,11 +121,43 @@ func (s *Session) getCodexStatusSample() (string, CodexStatusSample, error) {
 	if err != nil {
 		// The design is fail-closed: a title-only edge never manufactures a
 		// new result on a capture failure. The deadline was deliberately
-		// advanced before the request, so retry is bounded.
-		return preStatus, CodexStatusSample{TitleState: title, Preserved: true}, nil
+		// advanced before the request, so retry is bounded. A failed Working
+		// verification also blocks the same cached title from promoting on the
+		// next lightweight poll.
+		s.mu.Lock()
+		s.ensureStateTrackerLocked()
+		if title == CodexTitleWorking {
+			s.stateTracker.codexWorkingContradicted = true
+		}
+		s.mu.Unlock()
+		return preStatus, CodexStatusSample{
+			TitleState:  title,
+			Preserved:   true,
+			Observation: CodexStatusObservationCaptureFailure,
+		}, nil
 	}
 
 	return s.classifyCodexCapturedPane(StripANSI(raw), title, observedAt, preStatus)
+}
+
+// contradictCodexWorkingLocked records that the current strict Working title
+// disagreed with a readable pane result. Call with s.mu held.
+func (s *Session) contradictCodexWorkingLocked(title CodexTitleState) {
+	if title == CodexTitleWorking && s.codexStatusCompatible {
+		s.ensureStateTrackerLocked()
+		s.stateTracker.codexWorkingContradicted = true
+	}
+}
+
+// clearCodexWorkingContradictionOnVisibleBusyLocked accepts only current
+// visible busy evidence as confirmation that a previously contradicted title
+// is trustworthy again. Spinner grace is intentionally not sufficient.
+// Call with s.mu held.
+func (s *Session) clearCodexWorkingContradictionOnVisibleBusyLocked() {
+	if s.codexStatusCompatible {
+		s.ensureStateTrackerLocked()
+		s.stateTracker.codexWorkingContradicted = false
+	}
 }
 
 // classifyCodexCapturedPane reuses the established precedence in a compact
@@ -147,46 +182,51 @@ func (s *Session) classifyCodexCapturedPane(content string, title CodexTitleStat
 		content,
 	)
 	if s.lastSubstate == SubstateModelUnavailable {
+		s.contradictCodexWorkingLocked(title)
 		s.resetPromptNoBusyHoldLocked()
 		s.lastStableStatus = "error"
 		s.startupAt = time.Time{}
-		sample.EvidenceStatus = "error"
-		sample.EvidenceAt = observedAt
+		noteCodexDecisivePane(&sample, "error", observedAt, CodexStatusObservationError)
 		return "error", sample, nil
 	}
 
 	if s.hasErrorBannerIndicator(content) {
+		s.contradictCodexWorkingLocked(title)
 		s.resetPromptNoBusyHoldLocked()
 		s.lastStableStatus = "error"
 		s.startupAt = time.Time{}
-		sample.EvidenceStatus = "error"
-		sample.EvidenceAt = observedAt
+		noteCodexDecisivePane(&sample, "error", observedAt, CodexStatusObservationError)
 		return "error", sample, nil
 	}
-	if s.hasBusyIndicator(content) {
+	busy := s.observeBusyIndicator(content)
+	if busy.Active {
 		s.stateTracker.lastChangeTime = observedAt
 		s.stateTracker.realActivityConfirmed = true
 		s.stateTracker.acknowledged = false
 		s.resetPromptNoBusyHoldLocked()
 		s.lastStableStatus = "active"
 		s.startupAt = time.Time{}
-		s.stateTracker.codexWorkingContradicted = false
-		sample.EvidenceStatus = "active"
-		sample.EvidenceAt = observedAt
+		if busy.Visible {
+			s.clearCodexWorkingContradictionOnVisibleBusyLocked()
+			noteCodexDecisivePane(&sample, "active", observedAt, CodexStatusObservationVisibleBusy)
+		} else {
+			noteCodexStatusObservation(&sample, CodexStatusObservationBusyGrace)
+		}
 		return "active", sample, nil
 	}
 	if s.markBackgroundWorkActiveLocked(content, 0, s.DisplayName) {
-		sample.EvidenceStatus = "active"
-		sample.EvidenceAt = observedAt
+		noteCodexDecisivePane(&sample, "active", observedAt, CodexStatusObservationBackgroundWork)
 		return "active", sample, nil
 	}
 	if s.hasPromptIndicator(content) {
+		// Set the disagreement before the acknowledged/hold returns: all prompt
+		// outcomes are visible no-busy evidence against a current Working title.
+		s.contradictCodexWorkingLocked(title)
 		if s.stateTracker.acknowledged {
 			s.resetPromptNoBusyHoldLocked()
 			s.lastStableStatus = "idle"
 			s.startupAt = time.Time{}
-			sample.EvidenceStatus = "idle"
-			sample.EvidenceAt = observedAt
+			noteCodexDecisivePane(&sample, "idle", observedAt, CodexStatusObservationPrompt)
 			return "idle", sample, nil
 		}
 
@@ -197,31 +237,26 @@ func (s *Session) classifyCodexCapturedPane(content string, title CodexTitleStat
 			s.lastStableStatus = "waiting"
 			s.startupAt = time.Time{}
 			sample.ReadyPromptAgreement = true
-			sample.EvidenceStatus = "waiting"
-			sample.EvidenceAt = observedAt
+			noteCodexDecisivePane(&sample, "waiting", observedAt, CodexStatusObservationPrompt)
 			return "waiting", sample, nil
 		}
 
-		if title == CodexTitleWorking {
-			s.stateTracker.codexWorkingContradicted = true
-		}
 		if s.shouldHoldActiveOnPromptLocked() {
+			noteCodexStatusObservation(&sample, CodexStatusObservationPromptHold)
 			return "active", sample, nil
 		}
 		s.resetPromptNoBusyHoldLocked()
 		s.lastStableStatus = "waiting"
 		s.startupAt = time.Time{}
-		sample.EvidenceStatus = "waiting"
-		sample.EvidenceAt = observedAt
+		noteCodexDecisivePane(&sample, "waiting", observedAt, CodexStatusObservationPrompt)
 		return "waiting", sample, nil
 	}
 
-	if title == CodexTitleWorking {
-		s.stateTracker.codexWorkingContradicted = true
-	}
+	s.contradictCodexWorkingLocked(title)
 	// Indeterminate capture preserves the prior stable result. It contributes no
 	// evidence and does not let title promotion create waiting/error.
 	sample.Preserved = true
+	sample.Observation = CodexStatusObservationIndeterminate
 	return preStatus, sample, nil
 }
 
@@ -247,5 +282,8 @@ func (s *Session) ConfirmCodexDemotion(expected string) (bool, time.Time) {
 		return false, time.Time{}
 	}
 	got, sample, _ := s.classifyCodexCapturedPane(StripANSI(raw), title, observedAt, expected)
-	return got == expected && sample.PaneRead, sample.EvidenceAt
+	if got != expected || !sample.HasDecisivePaneEvidence(expected) {
+		return false, time.Time{}
+	}
+	return true, sample.EvidenceAt
 }

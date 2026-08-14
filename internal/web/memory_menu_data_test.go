@@ -1,6 +1,8 @@
 package web
 
 import (
+	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 
@@ -165,5 +167,46 @@ func TestMemoryMenuData_UpdateSessionStates(t *testing.T) {
 	}
 	if !snapshot.GeneratedAt.Equal(ts) {
 		t.Fatalf("generatedAt = %s, want %s", snapshot.GeneratedAt, ts)
+	}
+}
+
+func TestMenuSessionCodexStatusEvidenceJSONAndSnapshotClone(t *testing.T) {
+	zero, err := json.Marshal(MenuSession{ID: "sess-zero", Status: session.StatusRunning})
+	if err != nil {
+		t.Fatalf("marshal zero evidence: %v", err)
+	}
+	if strings.Contains(string(zero), "codexStatusEvidenceAt") {
+		t.Fatalf("zero evidence must be omitted from JSON: %s", zero)
+	}
+
+	nonZero, err := json.Marshal(MenuSession{ID: "sess-live", Status: session.StatusRunning, CodexStatusEvidenceAt: 123})
+	if err != nil {
+		t.Fatalf("marshal live evidence: %v", err)
+	}
+	if !strings.Contains(string(nonZero), `"codexStatusEvidenceAt":123`) {
+		t.Fatalf("non-zero evidence must be serialized: %s", nonZero)
+	}
+
+	store := NewMemoryMenuData(nil)
+	store.SetSnapshot(&MenuSnapshot{Items: []MenuItem{{
+		Type: MenuItemTypeSession,
+		Session: &MenuSession{
+			ID:                    "sess-live",
+			Status:                session.StatusRunning,
+			CodexStatusEvidenceAt: 123,
+		},
+	}}})
+	first, err := store.LoadMenuSnapshot()
+	if err != nil {
+		t.Fatalf("LoadMenuSnapshot: %v", err)
+	}
+	first.Items[0].Session.CodexStatusEvidenceAt = 999
+
+	second, err := store.LoadMenuSnapshot()
+	if err != nil {
+		t.Fatalf("second LoadMenuSnapshot: %v", err)
+	}
+	if got := second.Items[0].Session.CodexStatusEvidenceAt; got != 123 {
+		t.Fatalf("snapshot clone evidence = %d, want 123", got)
 	}
 }

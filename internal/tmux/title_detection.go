@@ -292,7 +292,11 @@ func AnalyzeCodexPaneTitle(title string) CodexTitleState {
 		return CodexTitleUnknown
 	}
 	for _, r := range title {
-		if r == '\n' || r == '\r' || unicode.IsControl(r) {
+		// Horizontal tabs are permitted around the separator and optional
+		// spinner, matching the title grammar below. All other controls are
+		// rejected so a multiline or otherwise ambiguous title cannot promote
+		// a status.
+		if r == '\n' || r == '\r' || (unicode.IsControl(r) && r != '\t') {
 			return CodexTitleUnknown
 		}
 	}

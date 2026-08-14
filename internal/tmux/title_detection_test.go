@@ -118,7 +118,10 @@ func TestAnalyzeCodexPaneTitle(t *testing.T) {
 	}{
 		{"working", "agent-deck | Working", CodexTitleWorking},
 		{"working with spinner", "agent-deck | Working ⠼", CodexTitleWorking},
+		{"outer tabs", "\tagent-deck\t|\tWorking\t", CodexTitleWorking},
+		{"prefix and suffix tabs", "agent\tdeck | Working\t⠼", CodexTitleWorking},
 		{"ready", "agent-deck | Ready", CodexTitleReady},
+		{"ready with tabs", "\tagent-deck\t|\tReady\t", CodexTitleReady},
 		{"final separator wins", "prefix | ignored | Ready", CodexTitleReady},
 		{"ansi presentation stripped", "\x1b[31magent-deck | Ready\x1b[0m", CodexTitleReady},
 		{"no separator", "Working", CodexTitleUnknown},
