@@ -65,6 +65,9 @@ type MenuSession struct {
 	ModelVersion string         `json:"modelVersion,omitempty"`
 	CanFork      bool           `json:"canFork"`
 	Status       session.Status `json:"status"`
+	// CodexStatusEvidenceAt is the whole-second live title/pane observation
+	// paired with Status. It is optional so old clients naturally ignore it.
+	CodexStatusEvidenceAt int64 `json:"codexStatusEvidenceAt,omitempty"`
 	// Substate is the additive Honest-Status-v2 refinement of Status
 	// (e.g. "model-unavailable", "auth-401", "idle-at-empty-prompt"). It
 	// explains WHY a session is in its coarse status so consumers like the
@@ -292,55 +295,57 @@ func toMenuSession(inst *session.Instance) *MenuSession {
 	}
 	modelInfo := inst.LaunchModelInfo()
 
+	status, evidenceAt, _ := inst.StatusEvidenceSnapshot()
 	return &MenuSession{
-		ID:                 inst.ID,
-		Title:              inst.Title,
-		Tool:               inst.GetToolThreadSafe(),
-		ModelID:            modelInfo.ModelID,
-		Model:              modelInfo.Model,
-		ModelVersion:       modelInfo.Version,
-		CanFork:            inst.CanFork(),
-		Status:             inst.GetStatusThreadSafe(),
-		Substate:           string(inst.CachedSubstate()),
-		GroupPath:          inst.GroupPath,
-		ProjectPath:        inst.ProjectPath,
-		ParentSessionID:    inst.ParentSessionID,
-		Order:              inst.Order,
-		TmuxSession:        tmuxName,
-		TmuxSocketName:     inst.TmuxSocketName,
-		CreatedAt:          inst.CreatedAt,
-		LastAccessedAt:     inst.LastAccessedAt,
-		ArchivedAt:         inst.ArchivedAt,
-		IsConductor:        inst.IsConductor,
-		ClaudeSessionID:    inst.ClaudeSessionID,
-		GeminiSessionID:    inst.GeminiSessionID,
-		GeminiModel:        inst.GeminiModel,
-		GeminiYoloMode:     inst.GeminiYoloMode,
-		CodexSessionID:     inst.CodexSessionID,
-		OpenCodeSessionID:  inst.OpenCodeSessionID,
-		LatestPrompt:       inst.LatestPrompt,
-		Notes:              inst.Notes,
-		Color:              inst.Color,
-		Command:            inst.Command,
-		Wrapper:            inst.Wrapper,
-		Channels:           inst.Channels,
-		ExtraArgs:          inst.ExtraArgs,
-		ToolOptionsJSON:    inst.ToolOptionsJSON,
-		Sandbox:            inst.Sandbox,
-		SandboxContainer:   inst.SandboxContainer,
-		SSHHost:            inst.SSHHost,
-		SSHRemotePath:      inst.SSHRemotePath,
-		MultiRepoEnabled:   inst.MultiRepoEnabled,
-		AdditionalPaths:    inst.AdditionalPaths,
-		MultiRepoTempDir:   inst.MultiRepoTempDir,
-		MultiRepoWorktrees: inst.MultiRepoWorktrees,
-		WorktreePath:       inst.WorktreePath,
-		WorktreeRepoRoot:   inst.WorktreeRepoRoot,
-		WorktreeBranch:     inst.WorktreeBranch,
-		TitleLocked:        inst.TitleLocked,
-		NoTransitionNotify: inst.NoTransitionNotify,
-		LoadedMCPNames:     inst.LoadedMCPNames,
-		GeminiAnalytics:    inst.GeminiAnalytics,
+		ID:                    inst.ID,
+		Title:                 inst.Title,
+		Tool:                  inst.GetToolThreadSafe(),
+		ModelID:               modelInfo.ModelID,
+		Model:                 modelInfo.Model,
+		ModelVersion:          modelInfo.Version,
+		CanFork:               inst.CanFork(),
+		Status:                status,
+		CodexStatusEvidenceAt: evidenceAt,
+		Substate:              string(inst.CachedSubstate()),
+		GroupPath:             inst.GroupPath,
+		ProjectPath:           inst.ProjectPath,
+		ParentSessionID:       inst.ParentSessionID,
+		Order:                 inst.Order,
+		TmuxSession:           tmuxName,
+		TmuxSocketName:        inst.TmuxSocketName,
+		CreatedAt:             inst.CreatedAt,
+		LastAccessedAt:        inst.LastAccessedAt,
+		ArchivedAt:            inst.ArchivedAt,
+		IsConductor:           inst.IsConductor,
+		ClaudeSessionID:       inst.ClaudeSessionID,
+		GeminiSessionID:       inst.GeminiSessionID,
+		GeminiModel:           inst.GeminiModel,
+		GeminiYoloMode:        inst.GeminiYoloMode,
+		CodexSessionID:        inst.CodexSessionID,
+		OpenCodeSessionID:     inst.OpenCodeSessionID,
+		LatestPrompt:          inst.LatestPrompt,
+		Notes:                 inst.Notes,
+		Color:                 inst.Color,
+		Command:               inst.Command,
+		Wrapper:               inst.Wrapper,
+		Channels:              inst.Channels,
+		ExtraArgs:             inst.ExtraArgs,
+		ToolOptionsJSON:       inst.ToolOptionsJSON,
+		Sandbox:               inst.Sandbox,
+		SandboxContainer:      inst.SandboxContainer,
+		SSHHost:               inst.SSHHost,
+		SSHRemotePath:         inst.SSHRemotePath,
+		MultiRepoEnabled:      inst.MultiRepoEnabled,
+		AdditionalPaths:       inst.AdditionalPaths,
+		MultiRepoTempDir:      inst.MultiRepoTempDir,
+		MultiRepoWorktrees:    inst.MultiRepoWorktrees,
+		WorktreePath:          inst.WorktreePath,
+		WorktreeRepoRoot:      inst.WorktreeRepoRoot,
+		WorktreeBranch:        inst.WorktreeBranch,
+		TitleLocked:           inst.TitleLocked,
+		NoTransitionNotify:    inst.NoTransitionNotify,
+		LoadedMCPNames:        inst.LoadedMCPNames,
+		GeminiAnalytics:       inst.GeminiAnalytics,
 	}
 }
 
@@ -443,10 +448,11 @@ func (s *SessionDataService) refreshStatuses(instances []*session.Instance) {
 			}
 		}
 
-		// Without fresh hook data, force a full tmux status check for Claude
-		// sessions. This avoids staying in stale idle state when hooks are not
-		// emitting for an existing long-running session.
-		if inst.GetToolThreadSafe() == "claude" && !haveHookStatus {
+		// Without fresh hook data, force a full tmux status check for Claude and
+		// Codex-compatible sessions. Codex's bounded title/pane reconciliation
+		// has the same cold-wrapper requirement: an idle shortcut must not hide
+		// a due live pane check in a storage-backed web request.
+		if (inst.GetToolThreadSafe() == "claude" || session.IsCodexCompatible(inst.GetToolThreadSafe())) && !haveHookStatus {
 			inst.ForceNextStatusCheck()
 		}
 

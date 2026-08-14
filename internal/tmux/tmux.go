@@ -891,7 +891,19 @@ type StateTracker struct {
 
 	// Spinner activity tracking: grace period between tool calls
 	spinnerTracker *SpinnerActivityTracker
+
+	// Codex reconciliation is transient status metadata. Codex redraws do not
+	// reliably advance window_activity, so a compatible session gets one bounded
+	// pane observation per interval even while the activity timestamp is still.
+	lastCodexPaneReconcileAttempt time.Time
+	lastCodexTitleState           CodexTitleState
+	codexWorkingContradicted      bool
 }
+
+// codexPaneReconcileInterval bounds the *additional* steady-state pane work
+// introduced for Codex-compatible sessions. Existing activity, fallback, and
+// active-state capture paths remain eligible as before.
+const codexPaneReconcileInterval = 10 * time.Second
 
 // SpinnerActivityTracker tracks when the spinner was last detected on screen.
 // Used for the grace period between tool calls where the spinner briefly disappears.
@@ -999,6 +1011,11 @@ type Session struct {
 
 	// mu protects all mutable fields below from concurrent access
 	mu sync.Mutex
+	// statusMu serializes status sampling. A Codex status sample carries
+	// per-invocation title/pane evidence; serializing the short sampling path
+	// keeps that evidence paired with the status call that produced it without
+	// widening the normal session mutex across tmux I/O.
+	statusMu sync.Mutex
 
 	// PERFORMANCE: Lazy initialization flag
 	// When true, ConfigureStatusBar/EnableMouseMode have been run
@@ -1030,6 +1047,15 @@ type Session struct {
 
 	// Simple state tracking (hash-based)
 	stateTracker *StateTracker
+
+	// codexStatusCompatible is status-detection-only identity supplied by the
+	// owning Instance. Do not infer it from pane titles or pane_current_command:
+	// both are user/tool-controlled and commonly say "bash" while Codex works.
+	codexStatusCompatible bool
+	// paneGenerationStartedAt is non-zero only after Agent Deck creates or
+	// respawns this pane. A lazy reconnect has no trustworthy birth boundary, so
+	// it intentionally relies on the pane-cache TTL alone.
+	paneGenerationStartedAt time.Time
 
 	// Last status returned (for debugging)
 	lastStableStatus string
@@ -1486,6 +1512,117 @@ func (s *Session) resetPromptNoBusyHoldLocked() {
 	}
 }
 
+// codexTitleStateFromCacheLocked reads the already-warmed, shared pane-info
+// cache. It never performs a per-session title query. Call with s.mu held.
+func (s *Session) codexTitleStateFromCacheLocked() CodexTitleState {
+	if !s.codexStatusCompatible {
+		return CodexTitleUnknown
+	}
+	paneInfo, snapshotAt, ok := GetCachedPaneInfoSnapshot(s.Name)
+	if !ok || paneInfo.Dead {
+		return CodexTitleUnknown
+	}
+	if !s.paneGenerationStartedAt.IsZero() && snapshotAt.Before(s.paneGenerationStartedAt) {
+		return CodexTitleUnknown
+	}
+	return AnalyzeCodexPaneTitle(paneInfo.Title)
+}
+
+func (s *Session) codexPaneReconciliationDueLocked(now time.Time) bool {
+	if !s.codexStatusCompatible || s.stateTracker == nil {
+		return s.codexStatusCompatible
+	}
+	return s.stateTracker.lastCodexPaneReconcileAttempt.IsZero() ||
+		now.Sub(s.stateTracker.lastCodexPaneReconcileAttempt) >= codexPaneReconcileInterval
+}
+
+// noteCodexPaneCaptureLocked advances the periodic deadline before every
+// Codex pane read, including existing demand-driven reads. That makes one such
+// read satisfy the next periodic observation rather than immediately spawning
+// a redundant capture. Call with s.mu held.
+func (s *Session) noteCodexPaneCaptureLocked(now time.Time) {
+	if !s.codexStatusCompatible {
+		return
+	}
+	s.ensureStateTrackerLocked()
+	s.stateTracker.lastCodexPaneReconcileAttempt = now
+}
+
+// captureStatusPane is the one status-path capture wrapper. It accounts for a
+// Codex periodic observation before invoking the existing cached/fresh capture
+// primitive, but does not rate-limit any pre-existing activity safety path.
+func (s *Session) captureStatusPane(fresh bool) (string, time.Time, error) {
+	s.mu.Lock()
+	s.noteCodexPaneCaptureLocked(time.Now())
+	s.mu.Unlock()
+	if fresh {
+		content, err := s.CapturePaneFresh()
+		if err != nil {
+			return "", time.Time{}, err
+		}
+		return content, time.Now(), nil
+	}
+	content, err := s.CapturePane()
+	if err != nil {
+		return "", time.Time{}, err
+	}
+	return content, time.Now(), nil
+}
+
+func (s *Session) expireSpinnerGraceLocked() {
+	if s.stateTracker != nil && s.stateTracker.spinnerTracker != nil {
+		s.stateTracker.spinnerTracker.lastBusyTime = time.Time{}
+	}
+}
+
+func (s *Session) markCodexTitleWorkingLocked() {
+	s.ensureStateTrackerLocked()
+	s.stateTracker.lastChangeTime = time.Now()
+	s.stateTracker.realActivityConfirmed = true
+	s.stateTracker.acknowledged = false
+	s.resetPromptNoBusyHoldLocked()
+	s.stateTracker.spinnerTracker.MarkBusy()
+	s.lastStableStatus = "active"
+	s.startupAt = time.Time{}
+}
+
+// CodexStatusSample is the per-invocation data Instance.UpdateStatus needs to
+// finish Codex's bounded running-demotion confirmation and publish live status
+// evidence. It is intentionally transient; no session persistence changes.
+type CodexStatusSample struct {
+	PaneRead bool
+	// Preserved reports a failed Codex title/periodic capture. The raw status
+	// returned beside it is the tmux session's local fallback, which a cold
+	// wrapper may not share with the caller's persisted outward status.
+	Preserved            bool
+	TitleState           CodexTitleState
+	ReadyPromptAgreement bool
+	EvidenceStatus       string
+	EvidenceAt           time.Time
+}
+
+// noteCodexPaneRead records that this status invocation reached a successful
+// visible-pane observation. It deliberately does not itself make the
+// observation status evidence: holds and indeterminate branches preserve an
+// older outward state and must not manufacture ordering metadata.
+func noteCodexPaneRead(sample *CodexStatusSample, _ time.Time) {
+	if sample != nil {
+		sample.PaneRead = true
+	}
+}
+
+// noteCodexDecisivePane records pane evidence only for a classification that
+// directly determined the returned raw status. The pointer is nil for all
+// non-Codex calls, keeping the generic path behaviorally unchanged.
+func noteCodexDecisivePane(sample *CodexStatusSample, status string, observedAt time.Time) {
+	if sample == nil || observedAt.IsZero() {
+		return
+	}
+	sample.PaneRead = true
+	sample.EvidenceStatus = status
+	sample.EvidenceAt = observedAt
+}
+
 // inStartupWindowLocked returns true when the session is still in its startup phase.
 // MUST be called with s.mu held.
 func (s *Session) inStartupWindowLocked() bool {
@@ -1517,6 +1654,58 @@ func (s *Session) SetDetectPatterns(toolName string, detectPatterns []string) {
 	defer s.mu.Unlock()
 	s.customToolName = toolName
 	s.customDetectPatterns = detectPatterns
+}
+
+// SetCodexStatusCompatible marks whether this session is backed by built-in
+// Codex or a custom Codex-compatible tool. It is intentionally separate from
+// pattern and visible-tool identity so custom wrappers retain their configured
+// names while receiving Codex's narrow status reconciliation.
+func (s *Session) SetCodexStatusCompatible(compatible bool) {
+	s.mu.Lock()
+	changed := s.codexStatusCompatible != compatible
+	s.codexStatusCompatible = compatible
+	if changed && s.stateTracker != nil {
+		s.stateTracker.lastCodexTitleState = CodexTitleUnknown
+		s.stateTracker.codexWorkingContradicted = false
+		s.stateTracker.lastCodexPaneReconcileAttempt = time.Time{}
+	}
+	s.mu.Unlock()
+}
+
+// IsCodexStatusCompatible reports the status-only compatibility identity.
+func (s *Session) IsCodexStatusCompatible() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.codexStatusCompatible
+}
+
+// CodexTitleState returns the strict, cache-backed Codex title state. It is a
+// local metadata read only; callers use it to decide whether a fresh hook may
+// take its usual fast path.
+func (s *Session) CodexTitleState() CodexTitleState {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.codexTitleStateFromCacheLocked()
+}
+
+// CodexReconciliationDue is a cheap local query used by outer polling gates.
+// It never executes tmux. A semantic title edge is also due work because it
+// needs to be processed even between periodic pane deadlines.
+func (s *Session) CodexReconciliationDue() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if !s.codexStatusCompatible {
+		return false
+	}
+	state := s.codexTitleStateFromCacheLocked()
+	if s.stateTracker == nil {
+		return true
+	}
+	if state != s.stateTracker.lastCodexTitleState {
+		return true
+	}
+	return s.stateTracker.lastCodexPaneReconcileAttempt.IsZero() ||
+		time.Since(s.stateTracker.lastCodexPaneReconcileAttempt) >= codexPaneReconcileInterval
 }
 
 // SetInjectStatusLine controls whether ConfigureStatusBar modifies tmux settings.
@@ -2185,6 +2374,7 @@ func (s *Session) Start(command string) error {
 	s.Command = command
 	s.invalidateCache()
 	s.Created = time.Now()
+	s.paneGenerationStartedAt = s.Created
 	s.startupAt = s.Created
 	s.mu.Lock()
 	s.lastStableStatus = "waiting"
@@ -3213,6 +3403,7 @@ func (s *Session) RespawnPane(command string) error {
 	// Reset startup/status trackers so GetStatus can classify the fresh process correctly.
 	s.mu.Lock()
 	s.startupAt = time.Now()
+	s.paneGenerationStartedAt = s.startupAt
 	s.lastStableStatus = "waiting"
 	s.stateTracker = nil
 	s.cachedPromptDetector = nil
@@ -3617,7 +3808,11 @@ func (s *Session) AcknowledgeWithSnapshot() {
 // 4. Check cooldown → GREEN if within
 // 5. Cooldown expired → YELLOW or GRAY based on acknowledged
 
-func (s *Session) GetStatus() (string, error) {
+// getStatusLegacy retains the established generic status classifier. Codex
+// callers enter through GetStatusSample (codex_reconciliation.go), which adds
+// narrow title/pane scheduling around this classifier without changing the
+// public GetStatus API used by existing callers.
+func (s *Session) getStatusLegacy(codexSample *CodexStatusSample) (string, error) {
 	finish := logging.TraceOp(perfLog, "get_status", 100*time.Millisecond,
 		slog.String("session", s.Name))
 	defer finish()
@@ -3652,7 +3847,7 @@ func (s *Session) GetStatus() (string, error) {
 	// FAST PATH: Title-based state detection for Claude Code sessions.
 	// Claude Code sets pane titles via OSC sequences: Braille spinner while working,
 	// ✳ markers when done. One character check replaces full CapturePane + content scan.
-	if paneInfo, ok := GetCachedPaneInfo(s.Name); ok {
+	if paneInfo, ok := GetCachedPaneInfo(s.Name); ok && !s.IsCodexStatusCompatible() {
 		titleState := AnalyzePaneTitle(paneInfo.Title, paneInfo.CurrentCommand)
 		switch titleState {
 		case TitleStateWorking:
@@ -3684,7 +3879,7 @@ func (s *Session) GetStatus() (string, error) {
 	currentTS, err := s.GetWindowActivity()
 	if err != nil {
 		// Fallback to content-hash based detection
-		return s.getStatusFallback()
+		return s.getStatusFallback(codexSample)
 	}
 
 	s.mu.Lock()
@@ -3711,7 +3906,7 @@ func (s *Session) GetStatus() (string, error) {
 	if needsBusyCheck {
 		// Release lock for slow CapturePane operation
 		s.mu.Unlock()
-		rawContent, err := s.CapturePane()
+		rawContent, observedAt, err := s.captureStatusPane(false)
 		s.mu.Lock()
 
 		// Strip ANSI escape sequences for pattern matching.
@@ -3732,6 +3927,7 @@ func (s *Session) GetStatus() (string, error) {
 			// No previous state, fall through to default logic
 			statusLog.Debug("capture_timeout_no_previous", slog.String("session", shortName))
 		} else if err == nil {
+			noteCodexPaneRead(codexSample, observedAt)
 			s.ensureStateTrackerLocked()
 
 			// Honest Status v2: compute the additive substate from the content we
@@ -3765,6 +3961,7 @@ func (s *Session) GetStatus() (string, error) {
 				s.lastStableStatus = "error"
 				s.startupAt = time.Time{}
 				statusLog.Debug("model_unavailable_noop", slog.String("session", shortName))
+				noteCodexDecisivePane(codexSample, "error", observedAt)
 				return "error", nil
 			}
 
@@ -3782,6 +3979,7 @@ func (s *Session) GetStatus() (string, error) {
 				s.lastStableStatus = "error"
 				s.startupAt = time.Time{}
 				statusLog.Debug("error_banner_detected", slog.String("session", shortName), slog.String("substate", string(s.lastSubstate)))
+				noteCodexDecisivePane(codexSample, "error", observedAt)
 				return "error", nil
 			}
 
@@ -3815,6 +4013,7 @@ func (s *Session) GetStatus() (string, error) {
 				s.lastStableStatus = "active"
 				s.startupAt = time.Time{}
 				statusLog.Debug("busy_indicator_active", slog.String("session", shortName))
+				noteCodexDecisivePane(codexSample, "active", observedAt)
 				return "active", nil
 			}
 
@@ -3827,6 +4026,7 @@ func (s *Session) GetStatus() (string, error) {
 			// until the work actually completes (then the next poll settles to
 			// waiting and notifies — "done" now means foreground AND background).
 			if s.markBackgroundWorkActiveLocked(content, currentTS, shortName) {
+				noteCodexDecisivePane(codexSample, "active", observedAt)
 				return "active", nil
 			}
 
@@ -3857,6 +4057,7 @@ func (s *Session) GetStatus() (string, error) {
 					s.lastStableStatus = "idle"
 					s.startupAt = time.Time{}
 					statusLog.Debug("prompt_detected_idle", slog.String("session", shortName))
+					noteCodexDecisivePane(codexSample, "idle", observedAt)
 					return "idle", nil
 				}
 				if s.shouldHoldActiveOnPromptLocked() {
@@ -3873,6 +4074,7 @@ func (s *Session) GetStatus() (string, error) {
 				s.lastStableStatus = "waiting"
 				s.startupAt = time.Time{}
 				statusLog.Debug("prompt_detected_waiting", slog.String("session", shortName))
+				noteCodexDecisivePane(codexSample, "waiting", observedAt)
 				return "waiting", nil
 			}
 
@@ -3959,10 +4161,11 @@ func (s *Session) GetStatus() (string, error) {
 			if s.stateTracker.activityChangeCount >= 2 {
 				// Gate the spike: confirm with content check before setting GREEN
 				s.mu.Unlock()
-				content, captureErr := s.CapturePane()
+				content, observedAt, captureErr := s.captureStatusPane(false)
 				s.mu.Lock()
 
 				if captureErr == nil {
+					noteCodexPaneRead(codexSample, observedAt)
 					// Check for explicit busy indicator (spinner, "ctrl+c to interrupt")
 					isExplicitlyBusy := s.hasBusyIndicator(content)
 
@@ -3979,6 +4182,7 @@ func (s *Session) GetStatus() (string, error) {
 						s.lastStableStatus = "active"
 						s.startupAt = time.Time{}
 						statusLog.Debug("sustained_confirmed", slog.String("session", shortName))
+						noteCodexDecisivePane(codexSample, "active", observedAt)
 						return "active", nil
 					}
 
@@ -3998,6 +4202,7 @@ func (s *Session) GetStatus() (string, error) {
 						s.lastStableStatus = "error"
 						s.startupAt = time.Time{}
 						statusLog.Debug("sustained_error_banner", slog.String("session", shortName))
+						noteCodexDecisivePane(codexSample, "error", observedAt)
 						return "error", nil
 					}
 
@@ -4008,6 +4213,7 @@ func (s *Session) GetStatus() (string, error) {
 					if s.markBackgroundWorkActiveLocked(content, currentTS, shortName) {
 						s.stateTracker.activityCheckStart = time.Time{}
 						s.stateTracker.activityChangeCount = 0
+						noteCodexDecisivePane(codexSample, "active", observedAt)
 						return "active", nil
 					}
 
@@ -4019,6 +4225,7 @@ func (s *Session) GetStatus() (string, error) {
 							statusLog.Debug("sustained_prompt_idle", slog.String("session", shortName))
 							s.stateTracker.activityCheckStart = time.Time{}
 							s.stateTracker.activityChangeCount = 0
+							noteCodexDecisivePane(codexSample, "idle", observedAt)
 							return "idle", nil
 						}
 						if s.shouldHoldActiveOnPromptLocked() {
@@ -4039,6 +4246,7 @@ func (s *Session) GetStatus() (string, error) {
 						statusLog.Debug("sustained_prompt_waiting", slog.String("session", shortName))
 						s.stateTracker.activityCheckStart = time.Time{}
 						s.stateTracker.activityChangeCount = 0
+						noteCodexDecisivePane(codexSample, "waiting", observedAt)
 						return "waiting", nil
 					}
 
@@ -4088,13 +4296,17 @@ func (s *Session) GetStatus() (string, error) {
 	if s.lastStableStatus == "active" && !needsBusyCheck {
 		// Re-check busy indicator before dropping out of GREEN
 		s.mu.Unlock()
-		content, captureErr := s.CapturePane()
+		content, observedAt, captureErr := s.captureStatusPane(false)
 		s.mu.Lock()
+		if captureErr == nil {
+			noteCodexPaneRead(codexSample, observedAt)
+		}
 		if captureErr == nil && s.hasBusyIndicator(content) {
 			// Busy indicator is authoritative (includes spinner grace period).
 			s.resetPromptNoBusyHoldLocked()
 			s.startupAt = time.Time{}
 			statusLog.Debug("still_busy", slog.String("session", shortName))
+			noteCodexDecisivePane(codexSample, "active", observedAt)
 			return "active", nil
 		}
 		// Error banner takes precedence over prompt detection (#1400).
@@ -4103,6 +4315,7 @@ func (s *Session) GetStatus() (string, error) {
 			s.lastStableStatus = "error"
 			s.startupAt = time.Time{}
 			statusLog.Debug("error_banner_recheck", slog.String("session", shortName))
+			noteCodexDecisivePane(codexSample, "error", observedAt)
 			return "error", nil
 		}
 		if captureErr == nil && s.hasPromptIndicator(content) {
@@ -4122,12 +4335,14 @@ func (s *Session) GetStatus() (string, error) {
 				s.lastStableStatus = "waiting"
 				s.startupAt = time.Time{}
 				statusLog.Debug("prompt_recheck_waiting", slog.String("session", shortName))
+				noteCodexDecisivePane(codexSample, "waiting", observedAt)
 				return "waiting", nil
 			}
 			s.resetPromptNoBusyHoldLocked()
 			s.lastStableStatus = "idle"
 			s.startupAt = time.Time{}
 			statusLog.Debug("prompt_recheck_idle", slog.String("session", shortName))
+			noteCodexDecisivePane(codexSample, "idle", observedAt)
 			return "idle", nil
 		}
 		statusLog.Debug("no_longer_busy", slog.String("session", shortName))
@@ -4169,7 +4384,7 @@ func (s *Session) GetStatus() (string, error) {
 
 // getStatusFallback uses content-hash based detection as fallback
 // when activity timestamp detection fails
-func (s *Session) getStatusFallback() (string, error) {
+func (s *Session) getStatusFallback(codexSample *CodexStatusSample) (string, error) {
 	// Once-per-session WARN landmark; closes logging-review G8.
 	s.recordHashFallbackUsed()
 
@@ -4178,7 +4393,7 @@ func (s *Session) getStatusFallback() (string, error) {
 		shortName = shortName[:12]
 	}
 
-	rawContent, err := s.CapturePane()
+	rawContent, observedAt, err := s.captureStatusPane(false)
 	if err != nil {
 		if errors.Is(err, ErrCaptureTimeout) {
 			// Timeout: preserve previous state instead of going inactive
@@ -4203,6 +4418,7 @@ func (s *Session) getStatusFallback() (string, error) {
 
 	// Strip ANSI for reliable pattern matching (CapturePane now returns ANSI-rich content)
 	content := StripANSI(rawContent)
+	noteCodexPaneRead(codexSample, observedAt)
 
 	// Keep precedence aligned with the main path:
 	// 1) busy (authoritative), 2) prompt, 3) waiting/idle.
@@ -4217,6 +4433,7 @@ func (s *Session) getStatusFallback() (string, error) {
 		s.lastStableStatus = "active"
 		s.startupAt = time.Time{}
 		statusLog.Debug("fallback_active", slog.String("session", shortName))
+		noteCodexDecisivePane(codexSample, "active", observedAt)
 		return "active", nil
 	}
 
@@ -4229,6 +4446,7 @@ func (s *Session) getStatusFallback() (string, error) {
 		s.lastStableStatus = "error"
 		s.startupAt = time.Time{}
 		statusLog.Debug("fallback_error_banner", slog.String("session", shortName))
+		noteCodexDecisivePane(codexSample, "error", observedAt)
 		return "error", nil
 	}
 
@@ -4241,6 +4459,7 @@ func (s *Session) getStatusFallback() (string, error) {
 			s.lastStableStatus = "idle"
 			s.startupAt = time.Time{}
 			statusLog.Debug("fallback_idle_prompt_ack", slog.String("session", shortName))
+			noteCodexDecisivePane(codexSample, "idle", observedAt)
 			return "idle", nil
 		}
 		if s.shouldHoldActiveOnPromptLocked() {
@@ -4258,6 +4477,7 @@ func (s *Session) getStatusFallback() (string, error) {
 		s.lastStableStatus = "waiting"
 		s.startupAt = time.Time{}
 		statusLog.Debug("fallback_waiting_prompt", slog.String("session", shortName))
+		noteCodexDecisivePane(codexSample, "waiting", observedAt)
 		return "waiting", nil
 	}
 
@@ -4456,6 +4676,16 @@ func (s *Session) isClaudeTool() bool {
 	return strings.EqualFold(inferToolFromSessionFields(s.detectedTool, s.customToolName, s.Command), "claude")
 }
 
+// statusDetectionToolLocked keeps a custom Codex-compatible tool's visible
+// identity intact while using Codex's established pane grammar. Callers in the
+// status classifier already hold s.mu.
+func (s *Session) statusDetectionToolLocked() string {
+	if s.codexStatusCompatible {
+		return "codex"
+	}
+	return inferToolFromSessionFields(s.detectedTool, s.customToolName, s.Command)
+}
+
 // bgWorkCacheTTL bounds how often BackgroundWorkPending captures the pane while a
 // session sits at the prompt. CapturePane has its own 500ms cache; this adds a
 // coarser ceiling so the per-tick hook-fast-path probe stays cheap at scale.
@@ -4609,7 +4839,7 @@ func (s *Session) hasBusyIndicatorResolved(content string) bool {
 		shortName = shortName[:12]
 	}
 
-	tool := inferToolFromSessionFields(s.detectedTool, s.customToolName, s.Command)
+	tool := s.statusDetectionToolLocked()
 	patterns := s.resolvedPatterns
 	if patterns == nil {
 		patterns = defaultResolvedPatternsForTool(tool)
@@ -4704,7 +4934,7 @@ func (s *Session) hasBusyIndicatorResolved(content string) bool {
 // NOTE: This method reads s.detectedTool and s.customToolName without locking.
 // Callers in GetStatus() already hold s.mu, so we must not re-lock.
 func (s *Session) hasPromptIndicator(content string) bool {
-	tool := inferToolFromSessionFields(s.detectedTool, s.customToolName, s.Command)
+	tool := s.statusDetectionToolLocked()
 	patterns := s.resolvedPatterns
 	if patterns == nil {
 		patterns = defaultResolvedPatternsForTool(tool)
@@ -4746,7 +4976,7 @@ func (s *Session) hasPromptIndicator(content string) bool {
 // redraws its input prompt below the banner, so prompt detection alone would
 // report "waiting" for a session that cannot make progress).
 func (s *Session) hasErrorBannerIndicator(content string) bool {
-	tool := inferToolFromSessionFields(s.detectedTool, s.customToolName, s.Command)
+	tool := s.statusDetectionToolLocked()
 	if tool == "" {
 		return false
 	}
@@ -4763,7 +4993,7 @@ func (s *Session) hasErrorBannerIndicator(content string) bool {
 // from the session's fields exactly as hasErrorBannerIndicator does, so the two
 // verdicts always agree on which tool's renderings are being read.
 func (s *Session) isAuthFailureIndicator(content string) bool {
-	tool := inferToolFromSessionFields(s.detectedTool, s.customToolName, s.Command)
+	tool := s.statusDetectionToolLocked()
 	if tool == "" {
 		return false
 	}

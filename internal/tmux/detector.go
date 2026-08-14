@@ -2,6 +2,7 @@ package tmux
 
 import (
 	"strings"
+	"unicode/utf8"
 )
 
 // SessionState represents the detected state of a session
@@ -717,6 +718,16 @@ func StripANSI(content string) string {
 			}
 		}
 		// Check for CSI without ESC (8-bit CSI: 0x9B)
+		// Copy valid multi-byte UTF-8 as a unit before inspecting C1 bytes. In
+		// particular, 0x9B is the final continuation byte of some braille
+		// spinner runes, but is also the raw 8-bit CSI control when standalone.
+		if content[i] >= utf8.RuneSelf {
+			if _, size := utf8.DecodeRuneInString(content[i:]); size > 1 {
+				b.WriteString(content[i : i+size])
+				i += size
+				continue
+			}
+		}
 		if content[i] == '\x9B' {
 			j := i + 1
 			for j < len(content) {

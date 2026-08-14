@@ -449,3 +449,72 @@ func TestDerive_ToolGate_CodexAndGemini(t *testing.T) {
 		})
 	}
 }
+
+func TestDerive_CodexCompatibleToolUsesCodexHookRules(t *testing.T) {
+	t.Parallel()
+	// The compatibility lookup normally comes from config. A command-shaped
+	// custom name is sufficient for this pure gate and preserves its visible ID.
+	tool := "codex"
+	if !sessionstatus.IsHookEmittingTool(tool) {
+		t.Fatal("Codex-compatible tool must be accepted by the hook gate")
+	}
+	out := sessionstatus.Derive(sessionstatus.Input{
+		Tool:        tool,
+		PriorStatus: session.StatusIdle,
+		Hook: &session.HookStatus{
+			Status:    "running",
+			UpdatedAt: fixedNow.Add(-19 * time.Second),
+		},
+		Now: fixedNow,
+	})
+	if out.Status != session.StatusRunning || !out.Applied {
+		t.Fatalf("fresh Codex-compatible running hook = (%q,%v)", out.Status, out.Applied)
+	}
+}
+
+func TestDerive_CodexLiveEvidenceOrdersHooksConservatively(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name       string
+		hookSecond int64
+		want       session.Status
+		applied    bool
+	}{
+		{"older hook loses", fixedNow.Add(-2 * time.Second).Unix(), session.StatusRunning, false},
+		{"same second loses", fixedNow.Unix(), session.StatusRunning, false},
+		{"strictly newer hook wins", fixedNow.Add(time.Second).Unix(), session.StatusWaiting, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			out := sessionstatus.Derive(sessionstatus.Input{
+				Tool:                  "codex",
+				PriorStatus:           session.StatusRunning,
+				CodexStatusEvidenceAt: fixedNow.Unix(),
+				Hook: &session.HookStatus{
+					Status:    "waiting",
+					UpdatedAt: time.Unix(tc.hookSecond, 0),
+				},
+				Now: fixedNow.Add(2 * time.Second),
+			})
+			if out.Status != tc.want || out.Applied != tc.applied {
+				t.Fatalf("Derive() = (%q,%v), want (%q,%v)", out.Status, out.Applied, tc.want, tc.applied)
+			}
+		})
+	}
+}
+
+func TestDerive_CodexStaleWaitingFallsThroughInWebMode(t *testing.T) {
+	t.Parallel()
+	out := sessionstatus.Derive(sessionstatus.Input{
+		Tool:              "codex",
+		PriorStatus:       session.StatusRunning,
+		AllowStaleWaiting: true,
+		Hook: &session.HookStatus{
+			Status:    "waiting",
+			UpdatedAt: fixedNow.Add(-3 * time.Minute),
+		},
+		Now: fixedNow,
+	})
+	if out.Status != session.StatusRunning || out.Applied {
+		t.Fatalf("stale Codex waiting must fall through: got (%q,%v)", out.Status, out.Applied)
+	}
+}

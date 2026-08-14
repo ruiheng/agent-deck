@@ -170,6 +170,12 @@ func SetField(inst *Instance, field, value string, extraArgsTokens []string) (ol
 	case FieldTool:
 		oldValue = inst.Tool
 		inst.Tool = value
+		if !IsCodexCompatible(value) {
+			inst.clearCodexStatusEvidenceLocked()
+		}
+		if inst.tmuxSession != nil {
+			inst.tmuxSession.SetCodexStatusCompatible(IsCodexCompatible(value))
+		}
 		// Leaving claude → drop encoded ClaudeOptions so a same-submit
 		// skip/auto toggle (Tool applies last) doesn't leave ghost flags
 		// for a future shell→claude switch. UnmarshalClaudeOptions

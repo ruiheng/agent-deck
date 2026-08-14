@@ -517,6 +517,14 @@ type Instance struct {
 	// settled (running/idle) outcome or once the flip is confirmed. Not serialized.
 	tmuxFlipFromRunningPending bool
 
+	// Codex live-evidence is transient status metadata paired with the outward
+	// status that accepted it. Web snapshots use its whole-second bucket to keep
+	// an older or same-second hook file from undoing a newer live pane/title
+	// observation. Revision is internal publication change detection only.
+	codexStatusEvidenceSecond   int64
+	codexStatusEvidenceStatus   Status
+	codexStatusEvidenceRevision uint64
+
 	// Auth-hold state (see auth_hold.go). authFailureSeenAt is when a live
 	// credential-failure banner was last observed, used to attribute a LATER
 	// pane death to authentication within authHoldDeathWindow. authHeld mirrors
@@ -846,7 +854,74 @@ func (inst *Instance) SetTitleThreadSafe(t string) {
 func (inst *Instance) SetToolThreadSafe(t string) {
 	inst.mu.Lock()
 	inst.Tool = t
+	if !IsCodexCompatible(t) {
+		inst.clearCodexStatusEvidenceLocked()
+	}
+	if inst.tmuxSession != nil {
+		inst.tmuxSession.SetCodexStatusCompatible(IsCodexCompatible(t))
+	}
 	inst.mu.Unlock()
+}
+
+func (i *Instance) clearCodexStatusEvidenceLocked() {
+	i.codexStatusEvidenceSecond = 0
+	i.codexStatusEvidenceStatus = ""
+}
+
+func (i *Instance) codexEvidenceAtForCurrentStatusLocked() int64 {
+	if i.codexStatusEvidenceStatus != i.Status {
+		return 0
+	}
+	return i.codexStatusEvidenceSecond
+}
+
+// StatusEvidenceSnapshot returns a lock-consistent outward status plus the
+// Codex live-evidence pair/revision. Evidence is exported only while it backs
+// the same outward status; a hook-derived value must not inherit evidence from
+// an earlier, contradictory pane result.
+func (inst *Instance) StatusEvidenceSnapshot() (Status, int64, uint64) {
+	inst.mu.RLock()
+	defer inst.mu.RUnlock()
+	evidence := int64(0)
+	if inst.codexStatusEvidenceStatus == inst.Status {
+		evidence = inst.codexStatusEvidenceSecond
+	}
+	return inst.Status, evidence, inst.codexStatusEvidenceRevision
+}
+
+func (i *Instance) noteCodexStatusEvidenceLocked(status Status, at time.Time) {
+	if !IsCodexCompatible(i.Tool) || at.IsZero() {
+		return
+	}
+	second := at.Unix()
+	if second <= 0 {
+		return
+	}
+	if i.codexStatusEvidenceStatus == status && i.codexStatusEvidenceSecond == second {
+		return
+	}
+	i.codexStatusEvidenceStatus = status
+	i.codexStatusEvidenceSecond = second
+	i.codexStatusEvidenceRevision++
+}
+
+func (i *Instance) syncCodexStatusIdentityLocked() {
+	if i.tmuxSession != nil {
+		i.tmuxSession.SetCodexStatusCompatible(IsCodexCompatible(i.Tool))
+	}
+	if !IsCodexCompatible(i.Tool) {
+		i.clearCodexStatusEvidenceLocked()
+	}
+}
+
+// codexHookMayFastPath is a small pure policy gate: a strict current title is
+// stronger live evidence than a hook, and a hook cannot override pane/title
+// evidence from the same or a later whole-second bucket.
+func codexHookMayFastPath(title tmux.CodexTitleState, hookAt time.Time, evidenceAt int64) bool {
+	if title != tmux.CodexTitleUnknown {
+		return false
+	}
+	return evidenceAt <= 0 || hookAt.Unix() > evidenceAt
 }
 
 // MarkAccessed updates the LastAccessedAt timestamp to now
@@ -957,6 +1032,7 @@ func NewInstance(title, projectPath string) *Instance {
 	tmuxSess.SetMouse(GetTmuxSettings().GetMouse())
 	tmuxSess.SetClearOnRestart(GetTmuxSettings().ClearOnRestart)
 	tmuxSess.SetTerminalChromeEnabled(GetTerminalSettings().GetITermBadge())
+	tmuxSess.SetCodexStatusCompatible(false)
 
 	inst := &Instance{
 		ID:               id,
@@ -1041,6 +1117,7 @@ func NewInstanceWithTool(title, projectPath, tool string) *Instance {
 	tmuxSess.SetMouse(GetTmuxSettings().GetMouse())
 	tmuxSess.SetClearOnRestart(GetTmuxSettings().ClearOnRestart)
 	tmuxSess.SetTerminalChromeEnabled(GetTerminalSettings().GetITermBadge())
+	tmuxSess.SetCodexStatusCompatible(IsCodexCompatible(tool))
 
 	inst := &Instance{
 		ID:               id,
@@ -3501,6 +3578,7 @@ func (i *Instance) loadCustomPatternsFromConfig() {
 	if i.tmuxSession == nil {
 		return
 	}
+	i.tmuxSession.SetCodexStatusCompatible(IsCodexCompatible(i.Tool))
 
 	// Merge built-in defaults with any user config overrides/extras
 	raw := MergeToolPatterns(i.Tool)
@@ -4499,6 +4577,23 @@ func debounceFlipFromRunning(prev, derived Status, tmuxRaw, hookStatus string, p
 	return derived, false, false
 }
 
+func mapTmuxStatus(status string) Status {
+	switch status {
+	case "active":
+		return StatusRunning
+	case "waiting":
+		return StatusWaiting
+	case "idle":
+		return StatusIdle
+	case "starting":
+		return StatusStarting
+	case "error", "inactive":
+		return StatusError
+	default:
+		return StatusError
+	}
+}
+
 func shouldDebounceTmuxFlipForTool(tool string) bool {
 	return tool == "" || IsClaudeCompatible(tool) || IsCodexCompatible(tool) ||
 		tool == "gemini" || tool == "hermes" || tool == "cursor"
@@ -4588,6 +4683,7 @@ func classifyTerminatedPane(exitCode int, haveExitCode bool, tool string) Status
 func (i *Instance) UpdateStatus() error {
 	i.mu.Lock()
 	defer i.mu.Unlock()
+	i.syncCodexStatusIdentityLocked()
 
 	// Short grace period for tmux initialization (not Claude startup)
 	// Use lastStartTime for accuracy on restarts, fallback to CreatedAt
@@ -4665,7 +4761,8 @@ func (i *Instance) UpdateStatus() error {
 	if i.Status == StatusIdle {
 		currentTS := i.tmuxSession.GetCachedWindowActivity()
 		if currentTS == i.lastKnownActivity && !i.lastIdleCheck.IsZero() &&
-			time.Since(i.lastIdleCheck) < 10*time.Second {
+			time.Since(i.lastIdleCheck) < 10*time.Second &&
+			(!IsCodexCompatible(i.Tool) || !i.tmuxSession.CodexReconciliationDue()) {
 			return nil // No activity detected, skip full check
 		}
 		// Activity detected OR recheck interval passed: do full check
@@ -4675,7 +4772,7 @@ func (i *Instance) UpdateStatus() error {
 
 	// COLD LOAD: CLI doesn't run StatusFileWatcher, so hookStatus is always empty.
 	// Read the hook file from disk once to give CLI the same fast path as the TUI.
-	if i.hookStatus == "" && (IsClaudeCompatible(i.Tool) || i.Tool == "codex" || i.Tool == "gemini" || i.Tool == "hermes" || i.Tool == "cursor") {
+	if i.hookStatus == "" && (IsClaudeCompatible(i.Tool) || IsCodexCompatible(i.Tool) || i.Tool == "gemini" || i.Tool == "hermes" || i.Tool == "cursor") {
 		if hs := readHookStatusFile(i.ID); hs != nil {
 			i.hookStatus = hs.Status
 			i.hookEvent = hs.Event
@@ -4697,6 +4794,12 @@ func (i *Instance) UpdateStatus() error {
 	if (IsClaudeCompatible(i.Tool) || IsCodexCompatible(i.Tool) || i.Tool == "gemini" || i.Tool == "hermes" || i.Tool == "cursor") &&
 		i.hookStatus != "" &&
 		time.Since(i.hookLastUpdate) < hookFastPathFreshnessForTool(i.Tool, i.hookStatus) {
+		if IsCodexCompatible(i.Tool) && !codexHookMayFastPath(i.tmuxSession.CodexTitleState(), i.hookLastUpdate, i.codexEvidenceAtForCurrentStatusLocked()) {
+			// A current strict title (or same/newer pane evidence) routes through
+			// the live Codex path below. Hooks remain an advisory bounded hold only
+			// when title evidence is unavailable/ambiguous.
+			goto tmuxStatusPath
+		}
 		switch i.hookStatus {
 		case "running":
 			i.Status = StatusRunning
@@ -4749,6 +4852,9 @@ func (i *Instance) UpdateStatus() error {
 			}
 		case "dead":
 			i.Status = StatusError
+		}
+		if IsCodexCompatible(i.Tool) && i.codexStatusEvidenceStatus != i.Status {
+			i.codexStatusEvidenceStatus = ""
 		}
 		if i.hookSessionID != "" {
 			switch {
@@ -4842,9 +4948,10 @@ func (i *Instance) UpdateStatus() error {
 		}
 	}
 
+tmuxStatusPath:
 	// Release lock for potentially slow tmux calls (GetStatus calls CapturePane)
 	i.mu.Unlock()
-	status, err := i.tmuxSession.GetStatus()
+	status, codexSample, err := i.tmuxSession.GetStatusSample()
 	i.mu.Lock()
 
 	// Issue #953: a concurrent Kill() may have published StatusStopped
@@ -4859,6 +4966,13 @@ func (i *Instance) UpdateStatus() error {
 	// Prior status, captured before this tmux-derived sample overwrites it, so the
 	// debounce below can tell a flip AWAY from running from a steady state.
 	prevStatus := i.Status
+	if IsCodexCompatible(i.Tool) && codexSample.Preserved {
+		// A failed title/periodic pane read is deliberately fail-closed. Its tmux
+		// wrapper-local fallback may be older than this Instance's persisted
+		// status, especially for a one-shot CLI/web load, so keep the outward
+		// value rather than guessing from the title or local tracker.
+		return nil
+	}
 
 	if err != nil {
 		// Debounce a transient capture failure: subprocess churn can make a single
@@ -4919,6 +5033,44 @@ func (i *Instance) UpdateStatus() error {
 		i.Status = StatusError
 	}
 
+	// Codex must not rely on this process's pending debounce marker for a
+	// running→waiting/error candidate. A Ready+prompt sample already has two
+	// independent observations; otherwise take exactly one uncached pane
+	// confirmation in this public UpdateStatus call.
+	if IsCodexCompatible(i.Tool) && prevStatus == StatusRunning &&
+		(i.Status == StatusWaiting || i.Status == StatusError) && status != "inactive" {
+		if !codexSample.PaneRead || codexSample.EvidenceStatus != status {
+			// A reused tracker fallback, prompt/spinner hold, or indeterminate
+			// sample is not an independent demotion observation. In particular a
+			// fresh wrapper's local lastStableStatus must not overwrite its
+			// persisted running row merely because it lacked a decisive pane fact.
+			i.Status = StatusRunning
+			codexSample = tmux.CodexStatusSample{}
+		} else {
+			confirmed := codexSample.ReadyPromptAgreement
+			confirmedAt := codexSample.EvidenceAt
+			if !confirmed {
+				expected := "waiting"
+				if i.Status == StatusError {
+					expected = "error"
+				}
+				i.mu.Unlock()
+				confirmed, confirmedAt = i.tmuxSession.ConfirmCodexDemotion(expected)
+				i.mu.Lock()
+				if i.Status == StatusStopped {
+					return nil
+				}
+			}
+			if !confirmed {
+				i.Status = StatusRunning
+				codexSample = tmux.CodexStatusSample{}
+			} else if !confirmedAt.IsZero() {
+				codexSample.EvidenceAt = confirmedAt
+				codexSample.EvidenceStatus = status
+			}
+		}
+	}
+
 	// Reconcile the auth hold with this sample. Runs after the status mapping so
 	// it sees the settled verdict, and before the debounce so a held session's
 	// substate is already correct when the debounce returns early.
@@ -4935,7 +5087,7 @@ func (i *Instance) UpdateStatus() error {
 	// this skip, each fresh CLI invocation (e.g. `agent-deck list --json`) sees
 	// tmuxFlipFromRunningPending = false and holds the status at running on the
 	// first sample, then exits before the second confirming sample can fire.
-	if shouldDebounceTmuxFlipForTool(i.Tool) {
+	if shouldDebounceTmuxFlipForTool(i.Tool) && !IsCodexCompatible(i.Tool) {
 		if apply, nextPending, held := debounceFlipFromRunning(prevStatus, i.Status, status, i.hookStatus, i.tmuxFlipFromRunningPending); held {
 			i.tmuxFlipFromRunningPending = nextPending
 			i.Status = apply
@@ -4946,6 +5098,14 @@ func (i *Instance) UpdateStatus() error {
 		i.tmuxFlipFromRunningPending = false
 	} else {
 		i.tmuxFlipFromRunningPending = false
+	}
+
+	if IsCodexCompatible(i.Tool) && codexSample.EvidenceStatus != "" &&
+		codexSample.EvidenceAt.IsZero() == false {
+		mapped := mapTmuxStatus(codexSample.EvidenceStatus)
+		if mapped == i.Status {
+			i.noteCodexStatusEvidenceLocked(i.Status, codexSample.EvidenceAt)
+		}
 	}
 
 	// Hermes: augment status with gateway health when a gateway URL is resolvable.
@@ -5990,6 +6150,7 @@ func (i *Instance) recreateTmuxSession() {
 	i.tmuxSession.SetMouse(GetTmuxSettings().GetMouse())
 	i.tmuxSession.SetClearOnRestart(GetTmuxSettings().ClearOnRestart)
 	i.tmuxSession.SetTerminalChromeEnabled(GetTerminalSettings().GetITermBadge())
+	i.tmuxSession.SetCodexStatusCompatible(IsCodexCompatible(i.Tool))
 }
 
 func (i *Instance) prepareRestartMCPConfig() {

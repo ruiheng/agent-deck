@@ -6,6 +6,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode"
 )
 
 // TitleState represents the state inferred from the tmux pane title.
@@ -18,6 +19,18 @@ const (
 	TitleStateUnknown TitleState = iota // No recognizable pattern (non-Claude tools)
 	TitleStateWorking                   // Braille spinner detected = actively working
 	TitleStateDone                      // Done marker detected, fall through to prompt detection
+)
+
+// CodexTitleState is the narrow, Codex-only state encoded in the terminal
+// title. It deliberately does not share TitleState: the generic title parser
+// is Claude-oriented and considers any braille rune working, while a Codex
+// title is only meaningful when it has the canonical final suffix below.
+type CodexTitleState int
+
+const (
+	CodexTitleUnknown CodexTitleState = iota
+	CodexTitleWorking
+	CodexTitleReady
 )
 
 // PaneInfo holds pane title and current command for a tmux session.
@@ -260,6 +273,70 @@ func AnalyzePaneTitle(title, _ string) TitleState {
 	}
 
 	return TitleStateUnknown
+}
+
+// AnalyzeCodexPaneTitle recognizes only the terminal title grammar emitted by
+// Codex's dynamic title integration:
+//
+//	<prefix> | Working
+//	<prefix> | Working <one braille rune>
+//	<prefix> | Ready
+//
+// The prefix is deliberately opaque (users control it), but must be present.
+// Keeping this parser separate from AnalyzePaneTitle prevents a braille rune in
+// arbitrary Codex title text from accidentally taking the generic Claude fast
+// path.
+func AnalyzeCodexPaneTitle(title string) CodexTitleState {
+	title = StripANSI(title)
+	if title == "" {
+		return CodexTitleUnknown
+	}
+	for _, r := range title {
+		if r == '\n' || r == '\r' || unicode.IsControl(r) {
+			return CodexTitleUnknown
+		}
+	}
+
+	title = strings.Trim(title, " \t")
+	separator := strings.LastIndex(title, "|")
+	if separator < 0 {
+		return CodexTitleUnknown
+	}
+	if strings.Trim(title[:separator], " \t") == "" {
+		return CodexTitleUnknown
+	}
+
+	suffix := strings.Trim(title[separator+1:], " \t")
+	if suffix == "Ready" {
+		return CodexTitleReady
+	}
+	if suffix == "Working" {
+		return CodexTitleWorking
+	}
+
+	const working = "Working"
+	if !strings.HasPrefix(suffix, working) {
+		return CodexTitleUnknown
+	}
+	remainder := suffix[len(working):]
+	if remainder == "" {
+		return CodexTitleWorking
+	}
+
+	// The spinner is optional, but when present requires at least one
+	// horizontal separator followed by exactly one braille rune.
+	i := 0
+	for i < len(remainder) && (remainder[i] == ' ' || remainder[i] == '\t') {
+		i++
+	}
+	if i == 0 || i == len(remainder) {
+		return CodexTitleUnknown
+	}
+	runes := []rune(remainder[i:])
+	if len(runes) != 1 || runes[0] < 0x2800 || runes[0] > 0x28FF {
+		return CodexTitleUnknown
+	}
+	return CodexTitleWorking
 }
 
 // CleanPaneTitle strips spinner/done-marker characters from a tmux pane title

@@ -1,6 +1,12 @@
 package session
 
-import "testing"
+import (
+	"os"
+	"testing"
+	"time"
+
+	"github.com/asheshgoplani/agent-deck/internal/tmux"
+)
 
 func TestShouldDebounceTmuxFlipForTool(t *testing.T) {
 	tests := map[string]bool{
@@ -124,5 +130,59 @@ func TestDebounceFlipFromRunning_RecoversAfterHold(t *testing.T) {
 	apply, pending, held := debounceFlipFromRunning(StatusRunning, StatusRunning, "active", "", pending)
 	if held || apply != StatusRunning || pending {
 		t.Fatalf("tick 2 recovery must clear without flip; apply=%s held=%v pending=%v", apply, held, pending)
+	}
+}
+
+func TestCodexHookMayFastPath(t *testing.T) {
+	now := time.Now()
+	tests := []struct {
+		name     string
+		title    tmux.CodexTitleState
+		evidence int64
+		want     bool
+	}{
+		{"known working bypasses hook", tmux.CodexTitleWorking, 0, false},
+		{"known ready bypasses hook", tmux.CodexTitleReady, 0, false},
+		{"unknown with no evidence", tmux.CodexTitleUnknown, 0, true},
+		{"same-second evidence wins", tmux.CodexTitleUnknown, now.Unix(), false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := codexHookMayFastPath(tc.title, now, tc.evidence); got != tc.want {
+				t.Fatalf("codexHookMayFastPath = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestCodexCompatibleHookAndEvidenceIdentity(t *testing.T) {
+	tmpDir := t.TempDir()
+	oldHome := os.Getenv("HOME")
+	t.Setenv("HOME", tmpDir)
+	t.Cleanup(func() { _ = os.Setenv("HOME", oldHome) })
+	isolateConfigHomeXDG(t)
+	if err := SaveUserConfig(&UserConfig{Tools: map[string]ToolDef{
+		"my-codex": {Command: "codex-wrapper", CompatibleWith: "codex"},
+	}}); err != nil {
+		t.Fatalf("SaveUserConfig: %v", err)
+	}
+	ClearUserConfigCache()
+
+	inst := NewInstanceWithTool("custom", "/tmp", "my-codex")
+	if ts := inst.GetTmuxSession(); ts == nil || !ts.IsCodexStatusCompatible() {
+		t.Fatal("Codex-compatible custom tool must configure the tmux Codex identity")
+	}
+	inst.mu.Lock()
+	inst.Status = StatusRunning
+	inst.noteCodexStatusEvidenceLocked(StatusRunning, time.Unix(100, 0))
+	inst.mu.Unlock()
+	status, evidence, revision := inst.StatusEvidenceSnapshot()
+	if status != StatusRunning || evidence != 100 || revision == 0 {
+		t.Fatalf("custom Codex evidence = (%q,%d,%d), want running/100/nonzero", status, evidence, revision)
+	}
+	inst.SetToolThreadSafe("shell")
+	_, evidence, _ = inst.StatusEvidenceSnapshot()
+	if evidence != 0 {
+		t.Fatalf("leaving Codex compatibility must clear outward evidence, got %d", evidence)
 	}
 }

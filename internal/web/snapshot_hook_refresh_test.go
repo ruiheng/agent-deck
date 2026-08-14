@@ -119,6 +119,35 @@ func TestRefreshSnapshotHookStatuses_StaleRunningDoesNotOverride(t *testing.T) {
 	}
 }
 
+func TestRefreshSnapshotHookStatuses_CodexEvidenceWinsSameSecondHook(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 8, 13, 19, 0, 0, 0, time.UTC)
+	snap := snapshotWithSession("sess-codex", "codex", session.StatusRunning)
+	snap.Items[0].Session.CodexStatusEvidenceAt = now.Unix()
+	refreshSnapshotHookStatusesAt(snap, map[string]*session.HookStatus{
+		"sess-codex": {Status: "waiting", UpdatedAt: now},
+	}, now)
+	if got := snap.Items[0].Session.Status; got != session.StatusRunning {
+		t.Fatalf("same-second hook must lose to live evidence: got %q", got)
+	}
+}
+
+func TestRefreshSnapshotHookStatuses_CodexNewerHookClearsContradictoryEvidence(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 8, 13, 19, 0, 1, 0, time.UTC)
+	snap := snapshotWithSession("sess-codex", "codex", session.StatusRunning)
+	snap.Items[0].Session.CodexStatusEvidenceAt = now.Add(-time.Second).Unix()
+	refreshSnapshotHookStatusesAt(snap, map[string]*session.HookStatus{
+		"sess-codex": {Status: "waiting", UpdatedAt: now},
+	}, now)
+	if got := snap.Items[0].Session.Status; got != session.StatusWaiting {
+		t.Fatalf("newer hook should apply: got %q", got)
+	}
+	if got := snap.Items[0].Session.CodexStatusEvidenceAt; got != 0 {
+		t.Fatalf("contradictory hook must clear evidence, got %d", got)
+	}
+}
+
 // TestRefreshSnapshotHookStatuses_StoppedNeverOverridden encodes the
 // user-intentional rule from Instance.UpdateStatus: a stopped session is
 // stopped no matter what the hook says, because the user explicitly stopped it.

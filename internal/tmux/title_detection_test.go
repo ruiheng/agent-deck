@@ -110,6 +110,43 @@ func TestAnalyzePaneTitle(t *testing.T) {
 	}
 }
 
+func TestAnalyzeCodexPaneTitle(t *testing.T) {
+	tests := []struct {
+		name  string
+		title string
+		want  CodexTitleState
+	}{
+		{"working", "agent-deck | Working", CodexTitleWorking},
+		{"working with spinner", "agent-deck | Working ⠼", CodexTitleWorking},
+		{"ready", "agent-deck | Ready", CodexTitleReady},
+		{"final separator wins", "prefix | ignored | Ready", CodexTitleReady},
+		{"ansi presentation stripped", "\x1b[31magent-deck | Ready\x1b[0m", CodexTitleReady},
+		{"no separator", "Working", CodexTitleUnknown},
+		{"empty prefix", " | Working", CodexTitleUnknown},
+		{"lowercase", "agent-deck | working", CodexTitleUnknown},
+		{"prose ready", "agent-deck | Ready for review", CodexTitleUnknown},
+		{"prose working", "agent-deck | Working on tests", CodexTitleUnknown},
+		{"multiple braille", "agent-deck | Working ⠋⠙", CodexTitleUnknown},
+		{"braille only in prefix", "⠋ prefix | other", CodexTitleUnknown},
+		{"newline", "agent-deck | Ready\n", CodexTitleUnknown},
+		{"control", "agent-deck | Ready\x00", CodexTitleUnknown},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := AnalyzeCodexPaneTitle(tt.title); got != tt.want {
+				t.Fatalf("AnalyzeCodexPaneTitle(%q) = %v, want %v", tt.title, got, tt.want)
+			}
+		})
+	}
+
+	for r := rune(0x2800); r <= 0x28ff; r++ {
+		title := "agent-deck | Working " + string(r)
+		if got := AnalyzeCodexPaneTitle(title); got != CodexTitleWorking {
+			t.Fatalf("braille U+%04X = %v, want CodexTitleWorking", r, got)
+		}
+	}
+}
+
 func TestRefreshPaneInfoCache(t *testing.T) {
 	skipIfNoTmuxServer(t)
 

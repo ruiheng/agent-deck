@@ -53,12 +53,18 @@ func applyHookStatusToMenuSession(sess *MenuSession, hs *session.HookStatus, now
 	if sess == nil {
 		return
 	}
+	prior := sess.Status
 	out := sessionstatus.Derive(sessionstatus.Input{
-		Tool:              sess.Tool,
-		PriorStatus:       sess.Status,
-		Hook:              hs,
-		Now:               now,
-		AllowStaleWaiting: true,
+		Tool:                  sess.Tool,
+		PriorStatus:           sess.Status,
+		Hook:                  hs,
+		Now:                   now,
+		AllowStaleWaiting:     true,
+		CodexStatusEvidenceAt: sess.CodexStatusEvidenceAt,
 	})
 	sess.Status = out.Status
+	if out.Applied && sess.CodexStatusEvidenceAt > 0 &&
+		out.Status != prior {
+		sess.CodexStatusEvidenceAt = 0
+	}
 }

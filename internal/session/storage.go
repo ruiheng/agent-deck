@@ -1423,6 +1423,7 @@ func (s *Storage) convertToInstances(data *StorageData) ([]*Instance, []*GroupDa
 			tmuxSess.SetMouse(GetTmuxSettings().GetMouse())
 			tmuxSess.SetClearOnRestart(GetTmuxSettings().ClearOnRestart)
 			tmuxSess.SetTerminalChromeEnabled(GetTerminalSettings().GetITermBadge())
+			tmuxSess.SetCodexStatusCompatible(IsCodexCompatible(instData.Tool))
 			// Note: EnableMouseMode and ConfigureStatusBar are deferred to EnsureConfigured()
 			// Called automatically when user attaches to session
 		}

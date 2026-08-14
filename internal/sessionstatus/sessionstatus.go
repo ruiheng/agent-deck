@@ -76,6 +76,12 @@ type Input struct {
 	// "waiting" hook overrides any non-stopped PriorStatus regardless of
 	// freshness. When false, stale hooks fall through. See package doc.
 	AllowStaleWaiting bool
+
+	// CodexStatusEvidenceAt is the whole-second timestamp of the latest live
+	// Codex title/pane observation paired with PriorStatus. A hook can override
+	// it only when it is strictly newer; equality is deliberately conservative
+	// because hook files cannot order sub-second races.
+	CodexStatusEvidenceAt int64
 }
 
 // Decision is the result of Derive. Status is the post-hook visible status;
@@ -94,7 +100,7 @@ func IsHookEmittingTool(tool string) bool {
 	if session.IsClaudeCompatible(tool) {
 		return true
 	}
-	return tool == "codex" || tool == "gemini" || tool == "hermes" || tool == "cursor"
+	return session.IsCodexCompatible(tool) || tool == "gemini" || tool == "hermes" || tool == "cursor"
 }
 
 // freshnessFor returns the freshness window for a (tool, hookStatus) pair.
@@ -128,6 +134,10 @@ func Derive(in Input) Decision {
 	if in.Hook == nil || in.Hook.Status == "" || in.Hook.UpdatedAt.IsZero() {
 		return keep
 	}
+	if session.IsCodexCompatible(in.Tool) && in.CodexStatusEvidenceAt > 0 &&
+		in.Hook.UpdatedAt.Unix() <= in.CodexStatusEvidenceAt {
+		return keep
+	}
 
 	now := in.Now
 	if now.IsZero() {
@@ -145,7 +155,7 @@ func Derive(in Input) Decision {
 	case "waiting":
 		// Acknowledged + claude/gemini → idle. Codex always surfaces
 		// waiting because completion is attention-needed.
-		if !fresh && !in.AllowStaleWaiting {
+		if !fresh && (!in.AllowStaleWaiting || session.IsCodexCompatible(in.Tool)) {
 			return keep
 		}
 		if in.Acknowledged && !session.IsCodexCompatible(in.Tool) {

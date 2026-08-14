@@ -76,6 +76,7 @@ func DiscoverExistingTmuxSessions(existingInstances []*Instance) ([]*Instance, e
 			TmuxSocketName: sess.SocketName, // Inherit from the tmux session we discovered (#687)
 			tmuxSession:    sess,
 		}
+		sess.SetCodexStatusCompatible(IsCodexCompatible(tool))
 		_ = inst.UpdateStatus()
 		discovered = append(discovered, inst)
 	}

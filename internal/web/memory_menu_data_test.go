@@ -144,8 +144,9 @@ func TestMemoryMenuData_UpdateSessionStates(t *testing.T) {
 	ts := time.Date(2026, 2, 16, 12, 0, 0, 0, time.UTC)
 	store.UpdateSessionStates(map[string]MenuSessionState{
 		"sess-2": {
-			Status: session.StatusWaiting,
-			Tool:   "codex",
+			Status:                session.StatusWaiting,
+			Tool:                  "codex",
+			CodexStatusEvidenceAt: 123,
 		},
 	}, ts)
 
@@ -158,6 +159,9 @@ func TestMemoryMenuData_UpdateSessionStates(t *testing.T) {
 	}
 	if got := snapshot.Items[0].Session.Tool; got != "codex" {
 		t.Fatalf("session tool = %q, want %q", got, "codex")
+	}
+	if got := snapshot.Items[0].Session.CodexStatusEvidenceAt; got != 123 {
+		t.Fatalf("codex evidence = %d, want 123", got)
 	}
 	if !snapshot.GeneratedAt.Equal(ts) {
 		t.Fatalf("generatedAt = %s, want %s", snapshot.GeneratedAt, ts)

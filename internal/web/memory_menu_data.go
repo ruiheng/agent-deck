@@ -10,8 +10,9 @@ import (
 
 // MenuSessionState is a lightweight status/tool update for one session.
 type MenuSessionState struct {
-	Status session.Status
-	Tool   string
+	Status                session.Status
+	Tool                  string
+	CodexStatusEvidenceAt int64
 }
 
 // MemoryMenuData is an in-memory menu snapshot store used by web mode.
@@ -111,6 +112,7 @@ func (m *MemoryMenuData) UpdateSessionStates(states map[string]MenuSessionState,
 		}
 
 		item.Session.Status = state.Status
+		item.Session.CodexStatusEvidenceAt = state.CodexStatusEvidenceAt
 		if state.Tool != "" {
 			item.Session.Tool = state.Tool
 		}

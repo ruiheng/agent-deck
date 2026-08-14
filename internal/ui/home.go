@@ -2024,9 +2024,11 @@ func (h *Home) publishWebSessionStates(instances []*session.Instance) {
 		if inst == nil {
 			continue
 		}
+		status, evidenceAt, _ := inst.StatusEvidenceSnapshot()
 		states[inst.ID] = web.MenuSessionState{
-			Status: inst.GetStatusThreadSafe(),
-			Tool:   inst.GetToolThreadSafe(),
+			Status:                status,
+			Tool:                  inst.GetToolThreadSafe(),
+			CodexStatusEvidenceAt: evidenceAt,
 		}
 	}
 	menuData.UpdateSessionStates(states, time.Now())
@@ -4361,7 +4363,7 @@ func (h *Home) backgroundStatusUpdate() {
 	// Feed hook statuses from watcher to instances (enables hook fast path in UpdateStatus)
 	if h.hookWatcher != nil {
 		for _, inst := range instances {
-			if session.IsClaudeCompatible(inst.Tool) || inst.Tool == "codex" || inst.Tool == "gemini" || inst.Tool == "hermes" || inst.Tool == "cursor" {
+			if session.IsClaudeCompatible(inst.Tool) || session.IsCodexCompatible(inst.Tool) || inst.Tool == "gemini" || inst.Tool == "hermes" || inst.Tool == "cursor" {
 				if hs := h.hookWatcher.GetHookStatus(inst.ID); hs != nil {
 					inst.UpdateHookStatus(hs)
 				}
@@ -4465,7 +4467,8 @@ func (h *Home) backgroundStatusUpdate() {
 		if pm != nil {
 			if ts := inst.GetTmuxSession(); ts != nil && pm.IsConnected(ts.Name) {
 				lastOut := pm.LastOutputTime(ts.Name)
-				if !lastOut.IsZero() && time.Since(lastOut) > 5*time.Second {
+				if !lastOut.IsZero() && time.Since(lastOut) > 5*time.Second &&
+					(!session.IsCodexCompatible(inst.GetToolThreadSafe()) || !ts.CodexReconciliationDue()) {
 					skipped++
 					continue
 				}
@@ -4473,7 +4476,7 @@ func (h *Home) backgroundStatusUpdate() {
 		}
 
 		g.Go(func() error {
-			oldStatus := inst.GetStatusThreadSafe()
+			oldStatus, _, oldEvidenceRevision := inst.StatusEvidenceSnapshot()
 			instStart := time.Now()
 			_ = inst.UpdateStatus()
 			instDur := time.Since(instStart)
@@ -4483,19 +4486,21 @@ func (h *Home) backgroundStatusUpdate() {
 				slowSessions = append(slowSessions, fmt.Sprintf("%s=%v", inst.Title, instDur.Round(time.Millisecond)))
 				slowMu.Unlock()
 			}
-			newStatus := inst.GetStatusThreadSafe()
-			if newStatus != oldStatus {
+			newStatus, _, newEvidenceRevision := inst.StatusEvidenceSnapshot()
+			if newStatus != oldStatus || newEvidenceRevision != oldEvidenceRevision {
 				statusChanged.Store(true)
-				notifLog.Debug(
-					"status_changed",
-					slog.String("title", inst.Title),
-					slog.String("old", string(oldStatus)),
-					slog.String("new", string(newStatus)),
-				)
-				// T1+T3: synthesize a flicker_detected WARN if this session
-				// has oscillated >3 times within 60s. One alert per burst.
-				session.GlobalFlickerDetector().Observe(inst.ID, string(newStatus))
-				tracker.record(inst.ID, inst.Title, inst.Tool, string(oldStatus), string(newStatus))
+				if newStatus != oldStatus {
+					notifLog.Debug(
+						"status_changed",
+						slog.String("title", inst.Title),
+						slog.String("old", string(oldStatus)),
+						slog.String("new", string(newStatus)),
+					)
+					// T1+T3: synthesize a flicker_detected WARN if this session
+					// has oscillated >3 times within 60s. One alert per burst.
+					session.GlobalFlickerDetector().Observe(inst.ID, string(newStatus))
+					tracker.record(inst.ID, inst.Title, inst.Tool, string(oldStatus), string(newStatus))
+				}
 			}
 			return nil
 		})
@@ -4946,14 +4951,16 @@ func (h *Home) refreshAttachedSessionStatus(sessionID string) {
 		tmux.RefreshPaneInfoCache()
 	}
 
-	oldStatus := inst.GetStatusThreadSafe()
+	oldStatus, _, oldEvidenceRevision := inst.StatusEvidenceSnapshot()
 	_ = inst.UpdateStatus()
-	newStatus := inst.GetStatusThreadSafe()
-	if newStatus != oldStatus {
+	newStatus, _, newEvidenceRevision := inst.StatusEvidenceSnapshot()
+	if newStatus != oldStatus || newEvidenceRevision != oldEvidenceRevision {
 		h.cachedStatusCounts.valid.Store(false)
 		h.publishCurrentSessionStates()
-		if db := statedb.GetGlobal(); db != nil {
-			_ = db.WriteStatus(inst.ID, string(newStatus), inst.GetToolThreadSafe())
+		if newStatus != oldStatus {
+			if db := statedb.GetGlobal(); db != nil {
+				_ = db.WriteStatus(inst.ID, string(newStatus), inst.GetToolThreadSafe())
+			}
 		}
 	}
 	h.refreshSessionRenderSnapshot(nil)
@@ -5064,14 +5071,16 @@ func (h *Home) processStatusUpdate(req statusUpdateRequest) {
 		if inst.GetStatusThreadSafe() == session.StatusIdle {
 			if ts := inst.GetTmuxSession(); ts != nil {
 				fp := ts.GetCachedWindowActivity()
-				if fp != 0 && fp == h.visibleRefreshFingerprint[inst.ID] {
+				if fp != 0 && fp == h.visibleRefreshFingerprint[inst.ID] &&
+					(!session.IsCodexCompatible(inst.GetToolThreadSafe()) || !ts.CodexReconciliationDue()) {
 					continue
 				}
 			}
 		}
-		oldStatus := inst.GetStatusThreadSafe()
+		oldStatus, _, oldEvidenceRevision := inst.StatusEvidenceSnapshot()
 		_ = inst.UpdateStatus() // Ignore errors in background worker
-		if inst.GetStatusThreadSafe() != oldStatus {
+		newStatus, _, newEvidenceRevision := inst.StatusEvidenceSnapshot()
+		if newStatus != oldStatus || newEvidenceRevision != oldEvidenceRevision {
 			statusChanged = true
 		}
 		if ts := inst.GetTmuxSession(); ts != nil {
@@ -5112,12 +5121,18 @@ func (h *Home) processStatusUpdate(req statusUpdateRequest) {
 		// Skip idle sessions - they require user interaction to change state
 		// Background polling will catch any activity when user interacts
 		if inst.GetStatusThreadSafe() == session.StatusIdle {
-			continue
+			if ts := inst.GetTmuxSession(); ts != nil && session.IsCodexCompatible(inst.GetToolThreadSafe()) && ts.CodexReconciliationDue() {
+				// A due Codex reconciliation is live status work even with a quiet
+				// window_activity value; let it reach UpdateStatus below.
+			} else {
+				continue
+			}
 		}
 
-		oldStatus := inst.GetStatusThreadSafe()
+		oldStatus, _, oldEvidenceRevision := inst.StatusEvidenceSnapshot()
 		_ = inst.UpdateStatus() // Ignore errors in background worker
-		if inst.GetStatusThreadSafe() != oldStatus {
+		newStatus, _, newEvidenceRevision := inst.StatusEvidenceSnapshot()
+		if newStatus != oldStatus || newEvidenceRevision != oldEvidenceRevision {
 			statusChanged = true
 		}
 		remaining--
