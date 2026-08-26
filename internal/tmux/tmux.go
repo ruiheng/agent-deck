@@ -1172,6 +1172,10 @@ type Session struct {
 	customBusyPatterns   []string
 	customPromptPatterns []string
 	customDetectPatterns []string
+	// codexCompatible is an explicit capability supplied by the session layer.
+	// Custom tools keep their configured identity, so their name alone cannot
+	// tell the pane detector that Codex-specific live-row handling applies.
+	codexCompatible bool
 
 	// Configurable patterns (replaces hardcoded detection logic)
 	// When non-nil, hasBusyIndicator and normalizeContent use these instead of hardcoded values
@@ -1597,6 +1601,15 @@ func (s *Session) SetDetectPatterns(toolName string, detectPatterns []string) {
 	defer s.mu.Unlock()
 	s.customToolName = toolName
 	s.customDetectPatterns = detectPatterns
+}
+
+// SetCodexCompatible enables Codex-specific pane semantics without replacing a
+// custom tool's identity. The session package resolves compatible_with and
+// wrapper-command configuration and passes the resulting capability here.
+func (s *Session) SetCodexCompatible(compatible bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.codexCompatible = compatible
 }
 
 // SetInjectStatusLine controls whether ConfigureStatusBar modifies tmux settings.
@@ -4498,7 +4511,10 @@ func (s *Session) getStatusFallback() (string, error) {
 
 	// Keep precedence aligned with the main path:
 	// 1) busy (authoritative), 2) prompt, 3) waiting/idle.
-	if s.hasBusyIndicator(content) {
+	s.mu.Lock()
+	isBusy := s.hasBusyIndicator(content)
+	s.mu.Unlock()
+	if isBusy {
 		s.mu.Lock()
 		defer s.mu.Unlock()
 		s.ensureStateTrackerLocked()
@@ -4920,6 +4936,14 @@ func (s *Session) hasBusyIndicatorResolved(content string) bool {
 	s.ensureStateTrackerLocked()
 	tracker := s.stateTracker.spinnerTracker
 
+	// Codex 0.147+ renders its live Working row just above the persistent
+	// composer, outside the generic three-line interrupt guard.
+	if (s.codexCompatible || strings.EqualFold(tool, "codex")) && hasLiveCodexWorkingRow(content) {
+		tracker.MarkBusy()
+		statusLog.Debug("codex_working_row", slog.String("session", shortName))
+		return true
+	}
+
 	// BusyPatterns (regex + string) are authoritative because they capture
 	// real active-line semantics for each tool.
 	if patterns != nil {
@@ -4985,6 +5009,31 @@ func (s *Session) hasBusyIndicatorResolved(content string) bool {
 	}
 
 	statusLog.Debug("busy_no_spinner", slog.String("session", shortName))
+	return false
+}
+
+var codexWorkingRowPattern = regexp.MustCompile(`(?mi)^[ \t]*•[ \t]+working[ \t]*\([^\n)]*\besc[ \t]+to[ \t]+interrupt\b[^\n)]*\)[ \t]*$`)
+
+func hasLiveCodexWorkingRow(content string) bool {
+	lines := lastNLines(StripANSI(content), 8)
+	composerIndex := -1
+	for index := len(lines) - 1; index >= 0; index-- {
+		if strings.HasPrefix(strings.TrimSpace(lines[index]), "›") {
+			composerIndex = index
+			break
+		}
+	}
+	if composerIndex < 0 {
+		return false
+	}
+
+	// Only the last composer is live. A transcript may quote a complete Codex
+	// UI, including its own Working row and composer, above the real one.
+	for rowIndex := composerIndex - 1; rowIndex >= 0 && rowIndex >= composerIndex-2; rowIndex-- {
+		if codexWorkingRowPattern.MatchString(lines[rowIndex]) {
+			return true
+		}
+	}
 	return false
 }
 
@@ -5843,7 +5892,9 @@ func (s *Session) WaitForReady(timeout time.Duration) bool {
 		}
 		content = StripANSI(content)
 
+		s.mu.Lock()
 		busy := s.hasBusyIndicator(content)
+		s.mu.Unlock()
 		prompt := hasPrompt(content)
 
 		if attempts%10 == 0 { // Log every 10th attempt (every second)
