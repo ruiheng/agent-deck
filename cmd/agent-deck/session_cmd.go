@@ -2891,6 +2891,18 @@ func handleSessionSend(profile string, args []string) {
 	if *noWait {
 		tun = noWaitSendTuning()
 	}
+	// Codex's UserPromptSubmit hook is a stronger receipt than pane polling,
+	// which can miss a short turn between redraws. Keep the original tmux target
+	// so its optional transport capabilities remain available; override only the
+	// status observation used by arrival verification.
+	if session.IsCodexCompatible(inst.Tool) {
+		tun.retry.arrivalStatus = func() (string, error) {
+			nativeStatus, nativeErr := tmuxSess.GetStatus()
+			session.RefreshInstanceHookStatusFromDisk(inst)
+			hookStatus, hookFresh := inst.GetHookStatus()
+			return mergeCodexArrivalStatus(nativeStatus, nativeErr, hookStatus, hookFresh)
+		}
+	}
 	sendRes, sendErr := executeSend(tmuxSess, inst.Tool, message, *noWait, tun)
 	if sendErr != nil {
 		extra := sendRes.jsonFields()
@@ -3376,6 +3388,10 @@ type sendRetryOptions struct {
 	// path reported in issue #876.
 	verifyDelivery bool
 
+	// arrivalStatus optionally augments the target's native status with a
+	// stronger lifecycle signal. Nil preserves the target's native status.
+	arrivalStatus func() (string, error)
+
 	// composerPasteFreeBeforeSend is the pre-send provenance evidence for the
 	// #1777 attribution gate: the caller positively observed, immediately
 	// before this send, a composer holding no "[Pasted text …]" marker. Only
@@ -3425,7 +3441,7 @@ func sendWithRetryTarget(target sendRetryTarget, message string, skipVerify bool
 	// only on the path that needs them.
 	var arrivalBaseline sendArrivalBaseline
 	if skipVerify {
-		arrivalBaseline = captureArrivalBaseline(target, message)
+		arrivalBaseline = captureArrivalBaseline(target, message, opts)
 	}
 
 	if err := target.SendKeysAndEnter(message); err != nil {
@@ -3788,15 +3804,50 @@ type sendArrivalBaseline struct {
 // captureArrivalBaseline snapshots the pane and status before a send. Each
 // signal records whether it was actually observed; a signal without a valid
 // baseline is disabled, never guessed.
-func captureArrivalBaseline(target sendRetryTarget, message string) sendArrivalBaseline {
+func captureArrivalBaseline(target sendRetryTarget, message string, opts sendRetryOptions) sendArrivalBaseline {
 	base := sendArrivalBaseline{}
 	if n, markers, ok := paneArrivalObservation(target, message); ok {
 		base.occurrences, base.pasteMarkers, base.paneOK = n, markers, true
 	}
-	if status, err := target.GetStatus(); err == nil {
+	if status, err := readArrivalStatus(target, opts); err == nil {
 		base.wasActive, base.statusOK = status == "active", true
 	}
 	return base
+}
+
+func readArrivalStatus(target sendRetryTarget, opts sendRetryOptions) (string, error) {
+	if opts.arrivalStatus != nil {
+		return normalizeArrivalStatus(opts.arrivalStatus())
+	}
+	return normalizeArrivalStatus(target.GetStatus())
+}
+
+func normalizeArrivalStatus(status string, err error) (string, error) {
+	// Hook files use "running" for the state tmux calls "active".
+	if err == nil && status == "running" {
+		status = "active"
+	}
+	return status, err
+}
+
+// mergeCodexArrivalStatus treats hook and tmux activity as independent
+// positive evidence. A fresh waiting hook must not hide a native active edge;
+// conversely, a running hook can confirm submission when pane polling misses
+// the short-lived active row.
+func mergeCodexArrivalStatus(nativeStatus string, nativeErr error, hookStatus string, hookFresh bool) (string, error) {
+	if nativeErr == nil && nativeStatus == "active" {
+		return nativeStatus, nil
+	}
+	if hookFresh && hookStatus == "running" {
+		return hookStatus, nil
+	}
+	if nativeErr == nil {
+		return nativeStatus, nil
+	}
+	if hookFresh {
+		return hookStatus, nil
+	}
+	return nativeStatus, nativeErr
 }
 
 // verifyContentArrival confirms that message reached the target pane, for
@@ -3872,7 +3923,7 @@ func verifyContentArrival(target sendRetryTarget, message string, opts sendRetry
 		// Strongest signal first: an idle agent that starts working received
 		// what it started working on, which is submission, not just arrival.
 		if baseline.statusOK && !baseline.wasActive {
-			if status, err := target.GetStatus(); err == nil && status == "active" {
+			if status, err := readArrivalStatus(target, opts); err == nil && status == "active" {
 				return deliverySubmitted, nil
 			}
 		}

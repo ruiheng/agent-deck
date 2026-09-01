@@ -35,6 +35,86 @@ func (m *mockStatusChecker) GetStatus() (string, error) {
 	return m.statuses[i], err
 }
 
+func TestSendWithRetryTarget_CodexActivitySignalsConfirmSubmission(t *testing.T) {
+	tests := []struct {
+		name         string
+		nativeStatus []string
+		hookStatus   []string
+	}{
+		{
+			name:         "hook running augments waiting pane",
+			nativeStatus: []string{"waiting", "waiting"},
+			hookStatus:   []string{"waiting", "running"},
+		},
+		{
+			name:         "native active survives waiting hook",
+			nativeStatus: []string{"waiting", "active"},
+			hookStatus:   []string{"waiting", "waiting"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			raw := &mockSendRetryTarget{
+				statuses: tt.nativeStatus,
+				panes:    []string{"codex prompt", "codex prompt"},
+			}
+			hookRead := 0
+			delivery, err := sendWithRetryTarget(raw, "NOTICE: There might be new delivery in waypost.", true, sendRetryOptions{
+				maxRetries: 1,
+				checkDelay: 0,
+				arrivalStatus: func() (string, error) {
+					nativeStatus, nativeErr := raw.GetStatus()
+					hookStatus := tt.hookStatus[hookRead]
+					if hookRead < len(tt.hookStatus)-1 {
+						hookRead++
+					}
+					return mergeCodexArrivalStatus(nativeStatus, nativeErr, hookStatus, true)
+				},
+			})
+			if err != nil {
+				t.Fatalf("confirmed Codex submission returned error: %v", err)
+			}
+			if delivery != deliverySubmitted {
+				t.Fatalf("delivery = %q, want %q", delivery, deliverySubmitted)
+			}
+		})
+	}
+}
+
+type capacitySendRetryTarget struct {
+	*mockSendRetryTarget
+	capacity int
+}
+
+func (t *capacitySendRetryTarget) PaneLineCapacity() (int, bool) {
+	return t.capacity, true
+}
+
+func TestSendWithRetryTarget_StatusOverridePreservesPaneCapacity(t *testing.T) {
+	target := &capacitySendRetryTarget{
+		mockSendRetryTarget: &mockSendRetryTarget{
+			statuses: []string{"waiting"},
+			panes:    []string{"codex prompt", "codex prompt"},
+		},
+		capacity: 4095,
+	}
+
+	delivery, err := sendWithRetryTarget(target, strings.Repeat("x", 1500), true, sendRetryOptions{
+		maxRetries: 1,
+		checkDelay: 0,
+		arrivalStatus: func() (string, error) {
+			return "waiting", nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("deliverable long line returned error: %v", err)
+	}
+	if delivery != deliveryUnverified {
+		t.Fatalf("delivery = %q, want %q", delivery, deliveryUnverified)
+	}
+}
+
 func TestWaitForCompletion_ImmediateWaiting(t *testing.T) {
 	mock := &mockStatusChecker{
 		statuses: []string{"waiting"},

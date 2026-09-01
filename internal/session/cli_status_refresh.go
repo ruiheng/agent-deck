@@ -28,14 +28,21 @@ func RefreshInstancesForCLIStatus(instances []*Instance) {
 	// running; without this the "running" event written by Claude's
 	// UserPromptSubmit hook never reaches UpdateStatus's fast-path window.
 	for _, inst := range instances {
-		if inst == nil {
-			continue
-		}
-		if !IsClaudeCompatible(inst.Tool) && !IsCodexCompatible(inst.Tool) && inst.Tool != "gemini" && inst.Tool != "cursor" && inst.Tool != "hermes" {
-			continue
-		}
-		if hs := readHookStatusFile(inst.ID); hs != nil {
-			inst.UpdateHookStatus(hs)
-		}
+		RefreshInstanceHookStatusFromDisk(inst)
+	}
+}
+
+// RefreshInstanceHookStatusFromDisk cold-loads one instance's hook sidecar
+// without refreshing global tmux caches. It is intended for bounded polling
+// loops where the transport already owns a live tmux session.
+func RefreshInstanceHookStatusFromDisk(inst *Instance) {
+	if inst == nil {
+		return
+	}
+	if !IsClaudeCompatible(inst.Tool) && !IsCodexCompatible(inst.Tool) && inst.Tool != "gemini" && inst.Tool != "cursor" && inst.Tool != "hermes" {
+		return
+	}
+	if hs := readHookStatusFile(inst.ID); hs != nil {
+		inst.UpdateHookStatus(hs)
 	}
 }
