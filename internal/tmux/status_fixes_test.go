@@ -569,6 +569,97 @@ esc to interrupt`,
 	}
 }
 
+// TestCodex0147WorkingRowAboveComposerIsBusy covers Codex 0.147+, which puts
+// its active row above the persistent composer and footer rather than in the
+// final status-bar lines.
+func TestCodex0147WorkingRowAboveComposerIsBusy(t *testing.T) {
+	const workingLayout = `Prior response from Codex.
+• Working (47s • esc to interrupt)
+
+›
+
+  gpt-5.4 · ~/agent-deck · task/codex-pane-status-impl · 87% context left
+  ? for shortcuts`
+
+	lastThree := strings.Join(lastNLines(workingLayout, 3), "\n")
+	if strings.Contains(strings.ToLower(lastThree), "esc to interrupt") {
+		t.Fatalf("working row must sit outside the final three lines:\n%s", lastThree)
+	}
+
+	working := &Session{DisplayName: "codex-0147-working", detectedTool: "codex"}
+	if !working.hasBusyIndicator(workingLayout) {
+		t.Errorf("Codex 0.147 working row was not detected as busy on the first sample:\n%s", workingLayout)
+	}
+
+	const proseOnlyLayout = `Codex explained that “esc to interrupt” cancels a running task.
+
+›
+
+  gpt-5.4 · ~/agent-deck · task/codex-pane-status-impl · 87% context left
+  ? for shortcuts`
+	proseOnly := &Session{DisplayName: "codex-0147-prose", detectedTool: "codex"}
+	if proseOnly.hasBusyIndicator(proseOnlyLayout) {
+		t.Errorf("ordinary Codex prose mentioning esc to interrupt must not be busy:\n%s", proseOnlyLayout)
+	}
+
+	const historicalUIRow = `Codex quoted this captured UI sample:
+• Working (47s • esc to interrupt)
+
+That was the status shown in the capture.
+
+›
+
+  gpt-5.4 · ~/agent-deck · task/codex-pane-status-impl · 87% context left
+  ? for shortcuts`
+	historical := &Session{DisplayName: "codex-historical-working", detectedTool: "codex"}
+	if historical.hasBusyIndicator(historicalUIRow) {
+		t.Errorf("Working row outside the live composer layout must not be busy:\n%s", historicalUIRow)
+	}
+
+	const quotedComposerBeforeLiveComposer = `• Working (47s • esc to interrupt)
+
+›
+
+  quoted footer
+›
+
+  current footer`
+	quoted := &Session{DisplayName: "codex-quoted-composer", detectedTool: "codex"}
+	if quoted.hasBusyIndicator(quotedComposerBeforeLiveComposer) {
+		t.Errorf("Working row attached to a quoted composer must not override the later live composer:\n%s", quotedComposerBeforeLiveComposer)
+	}
+
+	// A pane can have a taller-than-usual footer. The live composer must still
+	// be considered even when it is more than eight lines above the bottom.
+	const tallFooterLayout = `Prior response from Codex.
+• Working (47s • esc to interrupt)
+
+›
+
+footer line 1
+footer line 2
+footer line 3
+footer line 4
+footer line 5
+footer line 6
+footer line 7
+footer line 8`
+	tallFooter := &Session{DisplayName: "codex-tall-footer", detectedTool: "codex"}
+	if !tallFooter.hasBusyIndicator(tallFooterLayout) {
+		t.Errorf("Working row before a tall footer must still be detected as busy:\n%s", tallFooterLayout)
+	}
+}
+
+func TestCodexWorkingRowAppliesToCompatibleCustomTool(t *testing.T) {
+	const content = "• Working (8s • esc to interrupt)\n\n›\n\n  custom-codex footer"
+
+	sess := &Session{DisplayName: "custom-codex", customToolName: "my-codex-wrapper"}
+	sess.SetCodexCompatible(true)
+	if !sess.hasBusyIndicator(content) {
+		t.Fatal("Codex-compatible custom tool did not run the Working-row detector")
+	}
+}
+
 // =============================================================================
 // VALIDATION 5.0: thinkingPattern Requires Spinner Prefix
 // =============================================================================

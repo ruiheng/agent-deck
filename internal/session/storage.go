@@ -1646,6 +1646,11 @@ func (s *Storage) convertToInstances(data *StorageData) ([]*Instance, []*GroupDa
 			MultiRepoTempDir:      instData.MultiRepoTempDir,
 			tmuxSession:           tmuxSess,
 		}
+		// Lazy reconnect skips the normal start path, so restore the same merged
+		// detection patterns and compatibility capabilities without configuring
+		// or probing tmux.
+		inst.loadCustomPatternsFromConfig()
+
 		// Convert multi-repo worktree data
 		for _, wt := range instData.MultiRepoWorktrees {
 			inst.MultiRepoWorktrees = append(inst.MultiRepoWorktrees, MultiRepoWorktree{
