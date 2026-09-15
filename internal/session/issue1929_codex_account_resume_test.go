@@ -10,7 +10,7 @@ import (
 	"al.essio.dev/pkg/shellescape"
 )
 
-// writeCodexRollout drops a minimal user-thread rollout JSONL for sessionID
+// writeCodexRollout drops a minimal legacy user-thread rollout JSONL for sessionID
 // under codexHome, matching the layout codexRolloutPathInHome globs for
 // (codexHome/sessions/YYYY/MM/DD/rollout-<ts>-<uuid>.jsonl).
 func writeCodexRollout(t *testing.T, codexHome, sessionID string) string {
@@ -20,7 +20,9 @@ func writeCodexRollout(t *testing.T, codexHome, sessionID string) string {
 		t.Fatalf("MkdirAll rollout dir: %v", err)
 	}
 	path := filepath.Join(dir, "rollout-2026-08-15T10-00-00-"+sessionID+".jsonl")
-	head := `{"type":"session_meta","payload":{"thread_source":"cli","source":"cli"}}` + "\n"
+	// Older Codex versions identified normal CLI sessions through source:"cli"
+	// before thread_source was persisted.
+	head := `{"type":"session_meta","payload":{"source":"cli"}}` + "\n"
 	if err := os.WriteFile(path, []byte(head), 0o644); err != nil {
 		t.Fatalf("write rollout: %v", err)
 	}
