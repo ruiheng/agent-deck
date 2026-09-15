@@ -10,7 +10,7 @@ import (
 	"time"
 )
 
-// Tests for the codex subagent-thread rebind gate and restart safety net
+// Tests for the Codex thread-source rebind gate and restart safety net
 // (incident 2026-07-15). See codex_subagent_gate.go for the failure story.
 
 // seedCodexRollout writes a minimal rollout JSONL under
@@ -237,29 +237,92 @@ func TestBuildCodexCommand_ResumesUserThreadBinding(t *testing.T) {
 	}
 }
 
-func TestShouldRejectCodexSubagentRebind(t *testing.T) {
+func TestBuildCodexCommand_ForksAllNonUserBindings(t *testing.T) {
+	inst, codexHome := newCodexGateInstance(t)
+
+	for _, tc := range []struct {
+		name         string
+		threadSource string
+	}{
+		{name: "subagent", threadSource: "subagent"},
+		{name: "guardian_review", threadSource: "guardian_review"},
+		{name: "memory_consolidation", threadSource: "memory_consolidation"},
+		{name: "feature", threadSource: "automation"},
+		{name: "unknown", threadSource: ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			sid := uniqueSID(t)
+			seedCodexRolloutWithMeta(t, codexHome, sid, tc.threadSource, "", false)
+			inst.CodexSessionID = sid
+
+			cmd := inst.buildCodexCommand("codex")
+			if !strings.Contains(cmd, "fork "+sid) {
+				t.Fatalf("non-user binding must be forked before resume: got %q", cmd)
+			}
+		})
+	}
+}
+
+func TestShouldRejectCodexThreadRebind(t *testing.T) {
 	inst, codexHome := newCodexGateInstance(t)
 
 	subSID := uniqueSID(t)
+	guardianSID := uniqueSID(t)
+	memorySID := uniqueSID(t)
+	featureSID := uniqueSID(t)
+	legacyThreadSourceSID := uniqueSID(t)
+	unknownSID := uniqueSID(t)
 	userSID := uniqueSID(t)
 	seedCodexRolloutWithMeta(t, codexHome, subSID, "subagent", uniqueSID(t), false)
+	seedCodexRolloutWithMeta(t, codexHome, guardianSID, "guardian_review", uniqueSID(t), false)
+	seedCodexRolloutWithMeta(t, codexHome, memorySID, "memory_consolidation", uniqueSID(t), false)
+	seedCodexRolloutWithMeta(t, codexHome, featureSID, "automation", uniqueSID(t), false)
+	seedCodexRolloutWithMeta(t, codexHome, legacyThreadSourceSID, "cli", "", false)
+	seedCodexRolloutWithMeta(t, codexHome, unknownSID, "", "", false)
 	seedCodexRolloutWithMeta(t, codexHome, userSID, "user", "", false)
 	unflushedSID := uniqueSID(t) // no rollout on disk
 
-	if !inst.shouldRejectCodexSubagentRebind(subSID) {
-		t.Fatalf("subagent-sourced candidate must be rejected")
+	for _, sid := range []string{subSID, guardianSID, memorySID, featureSID, legacyThreadSourceSID, unknownSID} {
+		if !inst.shouldRejectCodexThreadRebind(sid) {
+			t.Fatalf("non-user candidate %q must be rejected", sid)
+		}
 	}
-	if inst.shouldRejectCodexSubagentRebind(userSID) {
+	if inst.shouldRejectCodexThreadRebind(userSID) {
 		t.Fatalf("user-sourced candidate must be allowed")
 	}
-	if inst.shouldRejectCodexSubagentRebind(unflushedSID) {
+	if inst.shouldRejectCodexThreadRebind(unflushedSID) {
 		t.Fatalf("candidate without a flushed rollout must be allowed (fail-open)")
+	}
+
+	legacySID := uniqueSID(t)
+	writeCodexRollout(t, codexHome, legacySID)
+	if inst.shouldRejectCodexThreadRebind(legacySID) {
+		t.Fatalf("legacy source:\"cli\" user rollout must remain eligible")
+	}
+}
+
+func TestCodexThreadMetaReadFailureIsRetried(t *testing.T) {
+	inst, codexHome := newCodexGateInstance(t)
+	sid := uniqueSID(t)
+	path := seedCodexRolloutWithMeta(t, codexHome, sid, "user", "", false)
+	if err := os.WriteFile(path, []byte("{\n"), 0o600); err != nil {
+		t.Fatalf("write incomplete rollout head: %v", err)
+	}
+
+	if inst.shouldRejectCodexThreadRebind(sid) {
+		t.Fatalf("an unreadable rollout must fail open for this probe")
+	}
+
+	// Rewrite the same rollout path with a complete user metadata line.
+	seedCodexRolloutWithMeta(t, codexHome, sid, "user", "", false)
+	if inst.shouldRejectCodexThreadRebind(sid) {
+		t.Fatalf("a repaired user rollout must not inherit a cached read failure")
 	}
 }
 
 // seedCodexRolloutCwd writes a realistic rollout-<ts>-<sid>.jsonl whose
 // session_meta head carries both cwd (for the disk scan's project match) and
-// thread_source (for the subagent gate). Distinct from seedCodexRolloutWithMeta,
+// thread_source (for the thread-source gate). Distinct from seedCodexRolloutWithMeta,
 // which hard-codes cwd — the disk-scan gate needs the cwd to match ProjectPath.
 func seedCodexRolloutCwd(t *testing.T, codexHome, sid, threadSource, cwd string) {
 	t.Helper()
