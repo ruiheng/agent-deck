@@ -85,12 +85,13 @@ func codexRolloutPathInHome(sessionID, codexHome string) string {
 }
 
 // readCodexRolloutThreadMeta parses the session_meta head line of a rollout.
-// Returns the zero value on any read/parse failure (fail-open: an unreadable
-// head is treated as a user thread).
-func readCodexRolloutThreadMeta(path string) codexThreadMeta {
+// The boolean reports whether the head was read and parsed successfully. A
+// failed read must not be confused with a valid metadata record whose
+// thread_source is absent.
+func readCodexRolloutThreadMeta(path string) (codexThreadMeta, bool) {
 	f, err := os.Open(path)
 	if err != nil {
-		return codexThreadMeta{}
+		return codexThreadMeta{}, false
 	}
 	defer f.Close()
 
@@ -99,7 +100,7 @@ func readCodexRolloutThreadMeta(path string) codexThreadMeta {
 	scanner := bufio.NewScanner(f)
 	scanner.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
 	if !scanner.Scan() {
-		return codexThreadMeta{}
+		return codexThreadMeta{}, false
 	}
 
 	var head struct {
@@ -111,12 +112,21 @@ func readCodexRolloutThreadMeta(path string) codexThreadMeta {
 		} `json:"payload"`
 	}
 	if err := json.Unmarshal(scanner.Bytes(), &head); err != nil || head.Type != "session_meta" {
-		return codexThreadMeta{}
+		return codexThreadMeta{}, false
 	}
 
 	meta := codexThreadMeta{
 		ThreadSource:   head.Payload.ThreadSource,
 		ParentThreadID: head.Payload.ParentThreadID,
+	}
+	// Before thread_source was persisted, normal CLI rollouts identified their
+	// root source as source:"cli". Preserve those user threads without treating
+	// an explicit non-user thread_source as user-originated.
+	if meta.ThreadSource == "" && len(head.Payload.Source) > 0 {
+		var sourceName string
+		if err := json.Unmarshal(head.Payload.Source, &sourceName); err == nil && sourceName == "cli" {
+			meta.ThreadSource = "user"
+		}
 	}
 	// Older payloads carry parenthood only inside source.subagent.thread_spawn.
 	if meta.ParentThreadID == "" && len(head.Payload.Source) > 0 {
@@ -132,11 +142,12 @@ func readCodexRolloutThreadMeta(path string) codexThreadMeta {
 			meta.ParentThreadID = src.Subagent.ThreadSpawn.ParentThreadID
 		}
 	}
-	return meta
+	return meta, true
 }
 
 // codexThreadMetaForSession resolves (with caching) the thread metadata for a
-// session id. ok is false when no rollout is flushed for the id yet.
+// session id. ok is false when no rollout is flushed yet or its head cannot be
+// parsed at this time.
 func codexThreadMetaForSession(sessionID, codexHome string) (codexThreadMeta, bool) {
 	if v, ok := codexThreadMetaCache.Load(sessionID); ok {
 		return v.(codexThreadMeta), true
@@ -145,7 +156,13 @@ func codexThreadMetaForSession(sessionID, codexHome string) (codexThreadMeta, bo
 	if path == "" {
 		return codexThreadMeta{}, false
 	}
-	meta := readCodexRolloutThreadMeta(path)
+	meta, parsed := readCodexRolloutThreadMeta(path)
+	if !parsed {
+		// The rollout may still be flushing its first line, or a transient read
+		// error may have occurred. Do not cache an unknown result as a permanent
+		// non-user verdict; retry on the next probe.
+		return codexThreadMeta{}, false
+	}
 	codexThreadMetaCache.Store(sessionID, meta)
 	return meta, true
 }
@@ -188,5 +205,6 @@ func codexSessionNeedsFork(sessionID, codexHome string) bool {
 	if path == "" {
 		return false
 	}
-	return readCodexRolloutThreadMeta(path).ThreadSource == "subagent"
+	meta, parsed := readCodexRolloutThreadMeta(path)
+	return parsed && meta.ThreadSource == "subagent"
 }
