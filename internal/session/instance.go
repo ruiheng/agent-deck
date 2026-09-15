@@ -2383,18 +2383,13 @@ func (i *Instance) buildCodexCommand(baseCommand string) string {
 		ClearHookSessionAnchor(i.ID)
 	}
 
-	// Safety net (incident 2026-07-15): codex loads subagent-sourced threads
-	// via `resume` but refuses user-initiated turns on them — the TUI exits
-	// status 1 with "turn/start failed in TUI" on the first typed message,
-	// killing the tmux session in an error loop. This bites bindings
-	// poisoned by a subagent turn-complete hook before the gate existed (or
-	// raced past it) AND sessions legitimately living on an adopted subagent
-	// thread from an earlier mid-flight restart. `codex fork` carries the
-	// thread's full context into a fresh thread_source=user thread that
-	// accepts input; the live-process probe then rebinds the instance to the
-	// fork's new id. See codex_subagent_gate.go.
+	// Safety net (incident 2026-07-15): a non-user Codex binding is not a valid
+	// Agent Deck main session. Resume it only after `codex fork` carries its
+	// context into a fresh thread_source=user thread; the live-process probe
+	// then rebinds the instance to the fork's new id. See
+	// codex_subagent_gate.go.
 	if i.CodexSessionID != "" && codexSessionNeedsFork(i.CodexSessionID, codexHome) {
-		sessionLog.Warn("codex_subagent_binding_forked",
+		sessionLog.Warn("codex_non_user_binding_forked",
 			slog.String("instance_id", i.ID),
 			slog.String("title", i.Title),
 			slog.String("sid", i.CodexSessionID))
@@ -3217,14 +3212,14 @@ func (i *Instance) queryCodexSession(excludeIDs map[string]bool, allowUnscoped b
 				return nil
 			}
 
-			// Subagent-thread gate (incident 2026-07-15): never let the
-			// bootstrap disk scan adopt a subagent rollout as the session's
-			// main thread — codex refuses user turns on it. Skipping it here
+			// Thread-source gate (incident 2026-07-15): never let the
+			// bootstrap disk scan adopt a non-user rollout as the session's
+			// main thread. Skipping it here
 			// (rather than after selection) lets the walk fall through to the
 			// best user-sourced match instead of returning nothing when the
-			// most-recent match happens to be a subagent. See
+			// most-recent match happens to be auxiliary. See
 			// codex_subagent_gate.go.
-			if i.shouldRejectCodexSubagentRebind(sessionID) {
+			if i.shouldRejectCodexThreadRebind(sessionID) {
 				return nil
 			}
 
@@ -4023,7 +4018,7 @@ func (i *Instance) updateCodexSession(excludeIDs map[string]bool, forceProbe boo
 	}
 
 	if sessionID := i.queryCodexSession(excludeIDs, allowUnscoped); sessionID != "" {
-		// queryCodexSession already filters subagent rollouts out of candidacy
+		// queryCodexSession already filters non-user rollouts out of candidacy
 		// (incident 2026-07-15), so sessionID here is always a user thread.
 		changed := sessionID != i.CodexSessionID
 		if sessionID != i.CodexSessionID {
@@ -6603,19 +6598,17 @@ func (i *Instance) UpdateHookStatus(status *HookStatus) {
 		if sessionID == i.CodexSessionID {
 			return
 		}
-		// Quality gate (incident 2026-07-15): codex subagent threads fire
-		// the same agent-turn-complete notify as the main thread, and a
-		// completing subagent's payload id would otherwise usurp the
-		// binding. Restarting then resumes a finalized child thread, which
-		// refuses turn/start and error-loops the session. See
+		// Quality gate (incident 2026-07-15): auxiliary Codex threads fire
+		// the same agent-turn-complete notify as the main thread, and an
+		// auxiliary payload id would otherwise usurp the binding. See
 		// codex_subagent_gate.go.
-		if i.shouldRejectCodexSubagentRebind(sessionID) {
+		if i.shouldRejectCodexThreadRebind(sessionID) {
 			_ = WriteSessionIDLifecycleEvent(SessionIDLifecycleEvent{
 				InstanceID: i.ID, Tool: i.Tool, Action: "reject",
 				Source: hookSource, OldID: i.CodexSessionID, Candidate: sessionID,
-				HookEvent: status.Event, Reason: "candidate_is_subagent_thread",
+				HookEvent: status.Event, Reason: "candidate_is_non_user_thread",
 			})
-			sessionLog.Debug("codex_session_rebind_rejected_subagent",
+			sessionLog.Debug("codex_session_rebind_rejected_non_user_thread",
 				slog.String("old_id", i.CodexSessionID),
 				slog.String("candidate", sessionID),
 				slog.String("event", status.Event),

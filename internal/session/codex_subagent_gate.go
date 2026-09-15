@@ -34,16 +34,16 @@ import (
 // the full context, which accepts turns indefinitely.
 //
 // Two defenses, both keyed off the rollout's session_meta head line:
-//  1. Rebind gate — never rebind to a thread whose rollout says
-//     thread_source=subagent (shouldRejectCodexSubagentRebind). This guards
-//     every id-rotation path that can pick a subagent rollout: the notify
-//     hook (a completing subagent fires agent-turn-complete), the
-//     live-process FD probe (a codex TUI holds its spawned subagents'
-//     rollouts open alongside the main thread), and the cold-start disk scan.
-//  2. Restart safety net — when the bound thread is subagent-sourced,
+//  1. Rebind gate — only rebind to a thread whose rollout says
+//     thread_source=user. This guards every id-rotation path that can pick an
+//     auxiliary rollout: the notify hook (a completing subagent fires
+//     agent-turn-complete), the live-process FD probe (a codex TUI holds its
+//     spawned subagents' rollouts open alongside the main thread), and the
+//     cold-start disk scan.
+//  2. Restart safety net — when the bound thread is not user-sourced,
 //     buildCodexCommand emits `codex fork <sid>` instead of `codex resume
 //     <sid>`. The forked thread keeps the bound thread's entire context (a
-//     session legitimately living on an adopted subagent thread loses
+//     session legitimately living on an adopted auxiliary thread loses
 //     nothing), and the session-id probe rebinds to the fork's fresh
 //     thread_source=user id as soon as the process is up.
 //
@@ -167,44 +167,44 @@ func codexThreadMetaForSession(sessionID, codexHome string) (codexThreadMeta, bo
 	return meta, true
 }
 
-// shouldRejectCodexSubagentRebind reports whether a candidate session id from
+// shouldRejectCodexThreadRebind reports whether a candidate session id from
 // any rotation source (notify hook, live-process FD probe, disk scan) must be
-// rejected because it names a subagent-spawned thread. Candidates without a
-// flushed rollout are allowed through (fail-open, matching the pre-gate
-// behavior for freshly created sessions).
-func (i *Instance) shouldRejectCodexSubagentRebind(candidateID string) bool {
+// rejected because it names a non-user thread. Candidates without a flushed
+// or readable rollout are allowed through (fail-open for freshly created or
+// transiently unavailable sessions).
+func (i *Instance) shouldRejectCodexThreadRebind(candidateID string) bool {
 	meta, ok := codexThreadMetaForSession(candidateID, i.getCodexHomeDir())
-	return ok && meta.ThreadSource == "subagent"
+	return ok && meta.ThreadSource != "user"
 }
 
 func (i *Instance) filterCodexProcessProbeCandidate(candidateID string) string {
-	if candidateID == "" || !i.shouldRejectCodexSubagentRebind(candidateID) {
+	if candidateID == "" || !i.shouldRejectCodexThreadRebind(candidateID) {
 		return candidateID
 	}
 	_ = WriteSessionIDLifecycleEvent(SessionIDLifecycleEvent{
 		InstanceID: i.ID, Tool: i.Tool, Action: "reject",
 		Source: "process_probe", OldID: i.CodexSessionID, Candidate: candidateID,
-		Reason: "candidate_is_subagent_thread",
+		Reason: "candidate_is_non_user_thread",
 	})
-	sessionLog.Debug("codex_session_probe_rejected_subagent",
+	sessionLog.Debug("codex_session_probe_rejected_non_user_thread",
 		slog.String("old_id", i.CodexSessionID),
 		slog.String("candidate", candidateID))
 	return ""
 }
 
 // codexSessionNeedsFork reports whether the bound session id names a
-// subagent-sourced thread, which `codex resume` would load but never accept
+// non-user-sourced thread, which `codex resume` would load but never accept
 // operator input on. buildCodexCommand launches such bindings with `codex
 // fork <sid>` instead: the fork carries the thread's full context into a
 // fresh thread_source=user thread, and the live-process probe rebinds the
 // instance to the fork's new id once the process is up. Bindings without a
-// flushed rollout return false (the #756 existence gate already handled
-// them).
+// flushed or readable rollout return false (the #756 existence gate handles
+// missing rollouts).
 func codexSessionNeedsFork(sessionID, codexHome string) bool {
 	path := codexRolloutPathInHome(sessionID, codexHome)
 	if path == "" {
 		return false
 	}
 	meta, parsed := readCodexRolloutThreadMeta(path)
-	return parsed && meta.ThreadSource == "subagent"
+	return parsed && meta.ThreadSource != "user"
 }
