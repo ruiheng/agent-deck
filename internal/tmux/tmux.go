@@ -1177,6 +1177,15 @@ type Session struct {
 	// tell the pane detector that Codex-specific live-row handling applies.
 	codexCompatible bool
 
+	// preEnterDelay widens the pause between delivering the message body and
+	// sending the submitting Enter in sendKeysAndEnterToTarget. The default
+	// (preEnterDelayDefault) is sized for Ink/curses composers processing a
+	// bracketed-paste end marker; some composers coalesce input arriving
+	// within a wider window into a single burst and insert a trailing Enter
+	// as a newline instead of submitting. Zero keeps the default. Set per
+	// tool by the session layer via SetPreEnterDelay.
+	preEnterDelay time.Duration
+
 	// Configurable patterns (replaces hardcoded detection logic)
 	// When non-nil, hasBusyIndicator and normalizeContent use these instead of hardcoded values
 	resolvedPatterns *ResolvedPatterns
@@ -1610,6 +1619,28 @@ func (s *Session) SetCodexCompatible(compatible bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.codexCompatible = compatible
+}
+
+// SetPreEnterDelay overrides the pause between delivering the message body
+// and sending the submitting Enter in SendKeysAndEnter. A zero or negative
+// value restores the built-in default (preEnterDelayDefault). Only composers
+// whose input-coalescing window exceeds the default need this — see the
+// preEnterDelay field comment.
+func (s *Session) SetPreEnterDelay(d time.Duration) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.preEnterDelay = d
+}
+
+// effectivePreEnterDelay returns the configured body→Enter pause, or the
+// transport default when unset.
+func (s *Session) effectivePreEnterDelay() time.Duration {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.preEnterDelay > 0 {
+		return s.preEnterDelay
+	}
+	return preEnterDelayDefault
 }
 
 // SetInjectStatusLine controls whether ConfigureStatusBar modifies tmux settings.
@@ -5401,6 +5432,13 @@ func (s *Session) hashContent(content string) string {
 // the vim-mode regression test in tmux_vim_mode_test.go (issue #1264).
 var keySenderExec = tmuxExec
 
+// preEnterDelayDefault is the historical pause between the delivered message
+// body and the submitting Enter — sized for Ink/curses composers to finish
+// processing a bracketed-paste end marker before the keystroke lands.
+// Composers with a wider input-coalescing window override it per session via
+// SetPreEnterDelay.
+const preEnterDelayDefault = 100 * time.Millisecond
+
 // SendKeys sends keys to the tmux session
 // Uses -l flag to treat keys as literal text, preventing tmux special key interpretation
 func (s *Session) SendKeys(keys string) error {
@@ -5542,7 +5580,9 @@ func (s *Session) sendKeysAndEnterToTarget(target, keys string) error {
 	// Delay for TUI apps (Ink, curses) to finish processing bracketed paste
 	// before Enter arrives. Without this, tmux 3.2+ paste sequences cause
 	// the immediately-following Enter to be swallowed by the paste handler.
-	time.Sleep(100 * time.Millisecond)
+	// Sessions whose composer coalesces a wider input window (e.g. Devin CLI)
+	// carry a larger preEnterDelay.
+	time.Sleep(s.effectivePreEnterDelay())
 	// sendEnterRaw (not SendEnter): we already guaranteed insert mode above and
 	// the paste keeps us in insert; re-escaping here would drop back to normal
 	// mode and swallow the submit.
