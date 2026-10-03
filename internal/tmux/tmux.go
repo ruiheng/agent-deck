@@ -3136,6 +3136,46 @@ func socketHasProtocolMismatch(socketName string) bool {
 	return mismatched
 }
 
+// hasSessionProbeAssumesAlive is the single owner of what a `has-session`
+// probe outcome means for callers that must not report a live session as
+// gone — Session.Exists and the pipe manager's socket variant run the same
+// bounded subprocess and resolve it here:
+//
+//   - the probe's context deadline fired, or the client never completed
+//     (killed by a signal, failed to exec, cut before the server answered):
+//     indeterminate — treat as alive. Reporting a live session as missing
+//     flips it to tmux_missing and lets restart machinery act on a pane that
+//     is still running, while a wrong "alive" verdict is corrected by the
+//     next probe.
+//   - the client/server protocol versions mismatch: treat as alive — the
+//     refusal came FROM the server, which proves it is up; only the client
+//     binary is wrong. The verdict is a property of the binary pair, settled
+//     out of band and cached per socket, so the probes themselves stay on
+//     Run() with nil stdio: no pipe, no copy goroutine, nothing for WaitDelay
+//     to bound on the status hot path.
+//   - the client ran to a non-zero exit: the server was asked and refused —
+//     the session is really gone.
+//   - err == nil: the session exists.
+//
+// Callers that need "gone" vs "indeterminate" split into an error use
+// ProbeExists instead: this verdict deliberately collapses every
+// non-authoritative failure into "alive".
+func hasSessionProbeAssumesAlive(ctx context.Context, socketName string, err error) bool {
+	if ctx.Err() == context.DeadlineExceeded {
+		return true
+	}
+	if err != nil && socketHasProtocolMismatch(socketName) {
+		return true
+	}
+	if err != nil {
+		var exitErr *exec.ExitError
+		if !errors.As(err, &exitErr) || !exitErr.Exited() {
+			return true
+		}
+	}
+	return err == nil
+}
+
 // cachedSocketMismatch returns a socket's verdict and whether it is still fresh.
 func cachedSocketMismatch(socket string) (verdict, fresh bool) {
 	socketMismatchMu.Lock()
@@ -3309,33 +3349,14 @@ func (s *Session) Exists() bool {
 	}
 
 	// Cache is stale (or skipped for an isolated socket): fall back to a
-	// direct tmux check on the session's own socket. Bound it: a server that
-	// is briefly busy can make the probe hang, and a probe that never answers
-	// is indeterminate — assume the session still exists rather than reporting
-	// it dead (which would flip a live session to StatusError). Only a probe
-	// that actually completes with a non-success status means "gone".
+	// direct tmux check on the session's own socket, bounded so a briefly
+	// busy server cannot hang the status path. What each probe outcome means
+	// for a "must not call a live session dead" caller — timeout, protocol
+	// mismatch, killed client — is owned by hasSessionProbeAssumesAlive.
 	ctx, cancel := context.WithTimeout(context.Background(), hasSessionProbeTimeout)
 	defer cancel()
 	err := commandRun(s.tmuxCmdContext(ctx, "has-session", "-t", s.Name))
-	if ctx.Err() == context.DeadlineExceeded {
-		return true // probe timed out: indeterminate, assume still alive
-	}
-	// A completed non-zero exit is only AUTHORITATIVE if the client reached the
-	// server. A client/server protocol version mismatch fails every command on
-	// this socket fast with a non-zero exit, and the refusal itself proves the
-	// server — and therefore this session — is alive: only the client binary is
-	// wrong. Treating it as "gone" flipped live sessions to StatusError (via
-	// terminatedPaneStatus) even though nothing crashed. Assume alive, like the
-	// timeout branch, and let a later poll with a matching client resolve it.
-	//
-	// The verdict is a property of the client/server binary pair, not of this
-	// session, so it is settled out of band and cached per socket. That keeps
-	// this probe on Run() with nil stdio: no pipe, no copy goroutine, nothing
-	// for WaitDelay to bound on the status hot path.
-	if err != nil && socketHasProtocolMismatch(s.SocketName) {
-		return true
-	}
-	return err == nil
+	return hasSessionProbeAssumesAlive(ctx, s.SocketName, err)
 }
 
 // ExistsCached is a cheap, non-blocking liveness check for hot periodic loops
