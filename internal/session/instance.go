@@ -388,9 +388,16 @@ type Instance struct {
 	// GitHub Copilot CLI integration
 	CopilotSessionID  string    `json:"copilot_session_id,omitempty"`
 	CopilotDetectedAt time.Time `json:"copilot_detected_at,omitempty"`
-	CopilotStartedAt  int64     `json:"-"`                           // Unix millis when we started Copilot (for session matching, not persisted)
-	CopilotModel      string    `json:"copilot_model,omitempty"`     // Active model for this session
-	CopilotAllowAll   bool      `json:"copilot_allow_all,omitempty"` // Per-session --allow-all override
+
+	// Antigravity CLI (agy) integration. Persisted in the tool_data extras zone
+	// (agy_session_persist.go) so restarts resume via --conversation <id> even
+	// after a reboot, without falling back to mtime or --continue.
+	AgySessionID        string    `json:"agy_session_id,omitempty"`
+	AgyDetectedAt       time.Time `json:"agy_detected_at,omitempty"`
+	agySessionIDCleared bool
+	CopilotStartedAt    int64  `json:"-"`                           // Unix millis when we started Copilot (for session matching, not persisted)
+	CopilotModel        string `json:"copilot_model,omitempty"`     // Active model for this session
+	CopilotAllowAll     bool   `json:"copilot_allow_all,omitempty"` // Per-session --allow-all override
 
 	// Latest user input for context (extracted from session files)
 	LatestPrompt      string    `json:"latest_prompt,omitempty"`
@@ -1698,6 +1705,8 @@ func (i *Instance) Start() (startErr error) {
 		command = i.buildMuseCommand(i.Command)
 	case i.Tool == "cursor":
 		command = i.buildCursorCommand(i.Command, false)
+	case i.Tool == "agy":
+		command = i.buildAgyCommand(i.Command)
 	case i.Tool == "hermes":
 		// Hermes emits no lifecycle event at process launch (on_session_start
 		// fires only at the first turn), so seed the "waiting" baseline the
@@ -1843,6 +1852,9 @@ func (i *Instance) Start() (startErr error) {
 	}
 	if i.GeminiSessionID != "" {
 		_ = i.tmuxSession.SetEnvironment("GEMINI_SESSION_ID", i.GeminiSessionID)
+	}
+	if agySID := i.EffectiveAgySessionID(); i.Tool == "agy" && agySID != "" {
+		_ = i.tmuxSession.SetEnvironment("AGY_SESSION_ID", agySID)
 	}
 	if i.Tool == "gemini" {
 		yoloVal := "false"
@@ -2098,6 +2110,9 @@ func (i *Instance) StartWithMessage(message string) (startErr error) {
 		command = i.buildMuseCommand(i.Command)
 	case i.Tool == "cursor":
 		command = i.buildCursorCommand(i.Command, false)
+	case i.Tool == "agy":
+		command = i.buildAgyCommandWithMessage(i.Command, message)
+		promptEmbeddedInCommand = strings.TrimSpace(message) != ""
 	case i.Tool == "hermes":
 		// Hermes emits no lifecycle event at process launch (on_session_start
 		// fires only at the first turn), so seed the "waiting" baseline the
@@ -2221,6 +2236,9 @@ func (i *Instance) StartWithMessage(message string) (startErr error) {
 	}
 	if i.GeminiSessionID != "" {
 		_ = i.tmuxSession.SetEnvironment("GEMINI_SESSION_ID", i.GeminiSessionID)
+	}
+	if agySID := i.EffectiveAgySessionID(); i.Tool == "agy" && agySID != "" {
+		_ = i.tmuxSession.SetEnvironment("AGY_SESSION_ID", agySID)
 	}
 	if i.Tool == "gemini" {
 		yoloVal := "false"

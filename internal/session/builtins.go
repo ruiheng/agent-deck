@@ -98,6 +98,7 @@ func builtinTools() []builtinTool {
 		// false-match "dshell", "fdsh", and any path containing those three
 		// letters — the same reason "pi" is token-matched.
 		{Name: "deepseek", Icon: "🐋", Color: "cyan", detectSubstrings: []string{"deepseek"}, detectTokens: []string{"dsh"}},
+		{Name: "agy", Icon: "🪐", Color: "purple", detectTokens: []string{"agy"}, executableOnly: true},
 		{Name: "aider", Icon: "🐚", Color: "red"},
 		{Name: "shell", Icon: "🐚"},
 	}

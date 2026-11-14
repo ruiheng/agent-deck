@@ -192,7 +192,7 @@ func (i *Instance) LiveStatusPrior() (status Status, flipPending bool, sampled b
 // The call site in updateStatus explains why.
 func shouldDebounceTmuxFlipForTool(tool string) bool {
 	return tool == "" || IsClaudeCompatible(tool) || IsCodexCompatible(tool) ||
-		tool == "gemini" || tool == "hermes" || tool == "cursor"
+		tool == "gemini" || tool == "hermes" || tool == "cursor" || tool == "agy"
 }
 
 // setCodexGenerationEvidence copies the durable notify edge pair into the

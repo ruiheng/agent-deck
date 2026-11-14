@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -313,5 +314,78 @@ func TestParentIsDSP_NoOverrideNoFlag(t *testing.T) {
 	t.Setenv("AGENTDECK_DSP_MODE", "")
 	if parentIsDSP() {
 		t.Skipf("parentIsDSP() returned true unexpectedly; the test runner's parent appears to have --dangerously-skip-permissions in its cmdline. Skipping the negative assertion.")
+	}
+}
+
+func TestAgyHookHandler_CamelCaseEventsAndOutputs(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("AGENTDECK_PROFILE", "agy-hook-test")
+	t.Setenv("AGENTDECK_INSTANCE_ID", "inst-agy-1")
+	t.Setenv("AGENTDECK_STOP_SYNC", "1")
+	session.ClearUserConfigCache()
+	t.Cleanup(session.ClearUserConfigCache)
+
+	for _, tc := range []struct {
+		name       string
+		payload    string
+		wantStatus string
+	}{
+		{
+			name:       "preInvocation sets running and emits JSON",
+			payload:    `{"hookEventName":"preInvocation","conversationId":"agy-cid-1","invocationNum":1}`,
+			wantStatus: "running",
+		},
+		{
+			name:       "postInvocation keeps running and emits JSON",
+			payload:    `{"hookEventName":"postInvocation","conversationId":"agy-cid-1"}`,
+			wantStatus: "running",
+		},
+		{
+			name:       "stop with continuationActive=true emits {} and sets waiting",
+			payload:    `{"hookEventName":"stop","conversationId":"agy-cid-1","continuationActive":true}`,
+			wantStatus: "waiting",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			out := captureStdout(t, func() {
+				runHookHandlerWithStdin(t, tc.payload)
+			})
+			trimmed := strings.TrimSpace(out)
+			if trimmed == "" || !json.Valid([]byte(trimmed)) {
+				t.Fatalf("agy hook stdout must be valid JSON, got %q", out)
+			}
+			raw, err := os.ReadFile(filepath.Join(session.GetHooksDir(), "inst-agy-1.json"))
+			if err != nil {
+				t.Fatalf("read hook status file: %v", err)
+			}
+			var sf hookStatusFile
+			if err := json.Unmarshal(raw, &sf); err != nil {
+				t.Fatalf("unmarshal hook status: %v", err)
+			}
+			if sf.Status != tc.wantStatus {
+				t.Fatalf("status = %q, want %q", sf.Status, tc.wantStatus)
+			}
+			if sf.SessionID != "agy-cid-1" {
+				t.Fatalf("session_id = %q, want agy-cid-1", sf.SessionID)
+			}
+		})
+	}
+}
+
+func TestAgyContextJSON_Shape(t *testing.T) {
+	raw := agyContextJSON("hello from conductor")
+	var parsed struct {
+		InjectSteps []struct {
+			SystemMessage struct {
+				SystemMessage string `json:"systemMessage"`
+			} `json:"systemMessage"`
+		} `json:"injectSteps"`
+	}
+	if err := json.Unmarshal([]byte(raw), &parsed); err != nil {
+		t.Fatalf("agyContextJSON invalid JSON (%v): %s", err, raw)
+	}
+	if len(parsed.InjectSteps) != 1 || parsed.InjectSteps[0].SystemMessage.SystemMessage != "hello from conductor" {
+		t.Fatalf("unexpected injectSteps payload: %s", raw)
 	}
 }

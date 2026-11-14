@@ -437,6 +437,13 @@ func (h *Home) renderLaunchingState(inst *session.Instance, width int, startTime
 		} else {
 			toolDesc = "Starting Cursor Agent..."
 		}
+	case "agy":
+		toolName = "Antigravity"
+		if isResuming {
+			toolDesc = "Resuming Antigravity session..."
+		} else {
+			toolDesc = "Starting Antigravity..."
+		}
 	default:
 		toolName = "Shell"
 		if isResuming {
@@ -1335,6 +1342,41 @@ func (h *Home) renderPreviewPane(width, height int) string {
 
 		mcpInfo := selected.GetMCPInfo()
 		renderSimpleMCPLine(&b, mcpInfo, width)
+	}
+
+	// Antigravity (agy) CLI — bound conversation ID & launch model
+	if selected.Tool == "agy" {
+		agyHeader := renderSectionDivider("Antigravity", width-4)
+		b.WriteString(agyHeader)
+		b.WriteString("\n")
+
+		labelStyle := lipgloss.NewStyle().Foreground(ColorText)
+		valueStyle := lipgloss.NewStyle().Foreground(ColorText)
+		if agyCID := selected.EffectiveAgySessionID(); agyCID != "" {
+			statusText, statusStyle := connectionStatusLine(selected.IsArchived(), selectedStatus)
+			b.WriteString(labelStyle.Render("Status:  "))
+			b.WriteString(statusStyle.Render(statusText))
+			b.WriteString("\n")
+
+			b.WriteString(labelStyle.Render("Session: "))
+			b.WriteString(valueStyle.Render(agyCID))
+			b.WriteString("\n")
+			renderLaunchModelInfoLines(&b, selected)
+
+			if !selected.AgyDetectedAt.IsZero() {
+				detectedAgo := formatRelativeTime(selected.AgyDetectedAt)
+				dimStyle := lipgloss.NewStyle().Foreground(ColorText).Italic(true)
+				b.WriteString(labelStyle.Render("Detected:"))
+				b.WriteString(dimStyle.Render(" " + detectedAgo))
+				b.WriteString("\n")
+			}
+		} else {
+			statusStyle := lipgloss.NewStyle().Foreground(ColorText)
+			b.WriteString(labelStyle.Render("Status:  "))
+			b.WriteString(statusStyle.Render("○ Not connected"))
+			b.WriteString("\n")
+			renderLaunchModelInfoLines(&b, selected)
+		}
 	}
 
 	// OpenCode-specific info (session ID)

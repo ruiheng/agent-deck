@@ -82,6 +82,13 @@ func shouldAutoInstallCursorHooks(userConfig *session.UserConfig, cursorCmd stri
 	return homeBackgroundWorkersEnabled && cursorHooksEnabled && cursorCmd != ""
 }
 
+// shouldAutoInstallAgyHooks reports whether TUI startup should auto-inject
+// Antigravity (agy) hooks and start the shared hook status watcher.
+func shouldAutoInstallAgyHooks(userConfig *session.UserConfig, agyCmd string) bool {
+	agyHooksEnabled := userConfig == nil || userConfig.Agy.GetHooksEnabled()
+	return homeBackgroundWorkersEnabled && agyHooksEnabled && agyCmd != ""
+}
+
 func shouldPromptHermesHooks(installed bool, decision string) bool {
 	return !installed && decision == ""
 }
@@ -542,6 +549,29 @@ func NewHomeWithProfileAndMode(profile string) *Home {
 					uiLog.Warn("cursor_hooks_inject_failed", slog.String("error", err.Error()))
 				} else if installed {
 					uiLog.Info("cursor_hooks_installed", slog.String("config_dir", cursorConfigDir))
+				}
+				if h.hookWatcher == nil {
+					if hookWatcher, err := session.NewStatusFileWatcher(nil); err == nil {
+						h.hookWatcher = hookWatcher
+						go hookWatcher.Start()
+					}
+				}
+			}
+		}
+	}
+
+	// Antigravity (agy) CLI hooks: auto-inject silently when `agy` is on PATH,
+	// unless the user opted out via [agy] hooks_enabled = false.
+	agyCmd := strings.TrimSpace(session.GetToolCommand("agy"))
+	if shouldAutoInstallAgyHooks(userConfig, agyCmd) {
+		if agyFields := strings.Fields(agyCmd); len(agyFields) > 0 {
+			agyBin := agyFields[0]
+			if _, err := exec.LookPath(agyBin); err == nil {
+				agyConfigDir := session.GetAgyConfigDir()
+				if installed, err := session.AutoInstallAgyHooks(userConfig, agyConfigDir); err != nil {
+					uiLog.Warn("agy_hooks_inject_failed", slog.String("error", err.Error()))
+				} else if installed {
+					uiLog.Info("agy_hooks_installed", slog.String("config_dir", agyConfigDir))
 				}
 				if h.hookWatcher == nil {
 					if hookWatcher, err := session.NewStatusFileWatcher(nil); err == nil {

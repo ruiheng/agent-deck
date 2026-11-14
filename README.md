@@ -832,6 +832,7 @@ Agent Deck works with any terminal-based AI tool:
 | **pi** (`pi-coding-agent`) | Status detection (hook-driven), organization, launch, resume, fork |
 | **DeepSeek Harness** (`dsh`) | Status detection, organization, launch, restart, per-account `DSH_HOME` |
 | **Oh My Pi** (`omp`) | Status detection, organization, launch, restart, resume, fork, project skills |
+| **Antigravity** (`agy`) | Status detection (hook-driven, `agent-deck agy-hooks install`), organization, model/effort selection, launch, restart, resume, project skills |
 | **Custom tools** | Configurable via `[tools.*]` in config.toml |
 
 Select `opencode2` in the new/edit session picker, web picker, or default-tool settings,
@@ -872,6 +873,8 @@ from the pane) and `headless` (answer one task, print it, exit) ship in the box,
 `[profiles.<account>.deepseek].config_dir`, and run `agent-deck deepseek status --json`
 to see exactly what agent-deck resolved. dsh has no fork command, and neither shipped
 profile takes a resume flag — see [docs/tools/deepseek.md](docs/tools/deepseek.md).
+
+Antigravity (`agy`) lifecycle hooks are installed automatically into `~/.gemini/config/hooks.json` (or `$AGY_CONFIG_DIR/hooks.json`) on TUI startup when `agy` is on `PATH`, unless `[agy] hooks_enabled = false` is set. Manage or inspect them from the CLI with `agent-deck agy-hooks install|uninstall|status` (`--json` supported). Conversations resume strictly by bound ID via `agy --conversation <id>`, and transcripts are read from `$AGY_DATA_DIR` (default `~/.gemini/antigravity-cli`).
 
 Hide tools you don't use from the new-session picker with `[ui].hidden_tools` (applies to TUI and web; `shell` is always available).
 

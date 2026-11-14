@@ -141,6 +141,9 @@ func loginFacts(name string, cfg *session.UserConfig) (*bool, []harnessAccountJS
 	case "hermes":
 		dir := session.GetHermesConfigDir()
 		return boolPtr(nonEmptyFile(filepath.Join(dir, ".env")) || nonEmptyFile(filepath.Join(dir, "auth.json"))), accounts
+	case "agy":
+		dir := session.GetAgyConfigDir()
+		return boolPtr(nonEmptyFile(filepath.Join(dir, "oauth_creds.json")) || nonEmptyFile(filepath.Join(dir, "auth.json")) || os.Getenv("GEMINI_API_KEY") != "" || os.Getenv("GOOGLE_API_KEY") != ""), accounts
 	}
 	return nil, accounts
 }
@@ -179,6 +182,8 @@ func hooksFacts(name string) *bool {
 		return boolPtr(session.CheckHermesHooksInstalled(session.GetHermesConfigDir()))
 	case "pi":
 		return boolPtr(session.CheckPiHooksInstalled(session.PiExtensionsDir()))
+	case "agy":
+		return boolPtr(session.CheckAgyHooksInstalled(session.GetAgyConfigDir()))
 	}
 	return nil
 }
@@ -250,7 +255,7 @@ func handleHarness(profile string, args []string) {
 		fmt.Println("Usage: agent-deck harness list [--json]")
 		fmt.Println("       agent-deck harness status <name> [--json]")
 		fmt.Println()
-		fmt.Println("Every harness agent-deck runs (claude, codex, gemini, opencode, pi, hermes) with:")
+		fmt.Println("Every harness agent-deck runs (claude, codex, gemini, opencode, pi, hermes, agy) with:")
 		fmt.Println("installed, path, version, logged_in, accounts, hooks_installed, last_used, sessions,")
 		fmt.Println("state (ready | not_logged_in | not_installed | limit_reached) and the official")
 		fmt.Println("install_command, login_command and docs_url from the core table (internal/harness),")

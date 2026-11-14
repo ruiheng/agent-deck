@@ -183,6 +183,7 @@ func TestEveryRegisteredCommandFamilyBareHelpIsReadOnly(t *testing.T) {
 		{"conductor", "conductor <command>"},
 		{"costs", "Usage: agent-deck costs"},
 		{"cursor-hooks", "Usage: agent-deck cursor-hooks"},
+		{"agy-hooks", "Usage: agent-deck agy-hooks"},
 		{"deepseek", "Usage: agent-deck deepseek"},
 		{"fleet", "Usage: agent-deck fleet"},
 		{"gemini-hooks", "Usage: agent-deck gemini-hooks"},

@@ -315,6 +315,8 @@ func toolForExecutable(base string) string {
 		return "cursor"
 	case "hermes":
 		return "hermes"
+	case "agy":
+		return "agy"
 	case "dsh":
 		// DeepSeek Harness. The binary is `dsh`; the agent-deck tool is
 		// named for the vendor.

@@ -1705,6 +1705,13 @@ func (s *StateDB) WriteHermesSessionBinding(id, sessionID string, detectedAt tim
 	return s.writeHarnessSessionBinding(id, sessionID, "hermes", detectedAt)
 }
 
+// WriteAgySessionBinding records the Antigravity CLI (agy) conversation id an
+// entry's own hooks or operator binding reported, so restart resumes that exact
+// conversation via --conversation. Empty sessionID clears it.
+func (s *StateDB) WriteAgySessionBinding(id, sessionID string, detectedAt time.Time) error {
+	return s.writeHarnessSessionBinding(id, sessionID, "agy", detectedAt)
+}
+
 // WriteGenericSessionBinding persists a custom-tool conversation id
 // (tools configured via [tools.*] with resume_flag) into tool_data.
 // Mirrors WriteClaudeSessionBinding's json_set / withBusyRetry shape so a

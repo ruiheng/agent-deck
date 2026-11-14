@@ -115,6 +115,8 @@ var excludedCommands = []excludedCommand{
 	{"hermes-hooks uninstall", "mutates Hermes hook config"},
 	{"cursor-hooks install", "mutates Cursor hook config"},
 	{"cursor-hooks uninstall", "mutates Cursor hook config"},
+	{"agy-hooks install", "mutates Antigravity hook config"},
+	{"agy-hooks uninstall", "mutates Antigravity hook config"},
 	{"tmux-hooks install", "mutates the live tmux server's hook slot"},
 	{"tmux-hooks uninstall", "mutates the live tmux server's hook slot"},
 	{"pi-hooks install", "mutates the pi extension install"},
@@ -185,6 +187,7 @@ func safeSpecs() []goldenSpec {
 		{"gemini_hooks_status", []string{"gemini-hooks", "status"}, 0},
 		{"hermes_hooks_status", []string{"hermes-hooks", "status"}, 0},
 		{"cursor_hooks_status", []string{"cursor-hooks", "status"}, 0},
+		{"agy_hooks_status", []string{"agy-hooks", "status"}, 0},
 		// exit 1: no tmux server is running yet in a fresh sandbox (today's real behaviour).
 		{"tmux_hooks_status", []string{"tmux-hooks", "status"}, 1},
 		{"pi_hooks_status", []string{"pi-hooks", "status"}, 0},
@@ -260,7 +263,7 @@ func helpSpecs() []goldenSpec {
 	topLevel := []string{
 		"add", "launch", "accounts", "doctor", "health", "try", "list", "remove", "rename",
 		"status", "session", "fleet", "mcp", "skill", "codex-hooks", "gemini-hooks",
-		"hermes-hooks", "cursor-hooks", "tmux-hooks", "pi-hooks", "deepseek", "group",
+		"hermes-hooks", "cursor-hooks", "agy-hooks", "tmux-hooks", "pi-hooks", "deepseek", "group",
 		"worktree", "usage", "recall", "web", "remote", "conductor", "agents", "agent",
 		"telegram-doctor", "profile", "update", "telemetry", "debug-dump", "migrate-paths",
 		"uninstall", "completion", "costs", "config", "inbox", "feedback", "whats-new",
@@ -278,6 +281,7 @@ func helpSpecs() []goldenSpec {
 		"gemini-hooks install", "gemini-hooks uninstall", "gemini-hooks status",
 		"hermes-hooks install", "hermes-hooks uninstall", "hermes-hooks status",
 		"cursor-hooks install", "cursor-hooks uninstall", "cursor-hooks status",
+		"agy-hooks install", "agy-hooks uninstall", "agy-hooks status",
 		"tmux-hooks install", "tmux-hooks uninstall", "tmux-hooks status",
 		"pi-hooks install", "pi-hooks uninstall", "pi-hooks status",
 		"deepseek status", "deepseek profiles", "deepseek sessions",

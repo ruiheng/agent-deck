@@ -31,6 +31,7 @@ func TestIssue2436_AttachReturnHookWipeGatedToClaudeCodex(t *testing.T) {
 		{tool: "gemini", wantClear: false},
 		{tool: "cursor", wantClear: false},
 		{tool: "hermes", wantClear: false},
+		{tool: "agy", wantClear: false},
 	} {
 		t.Run(tc.tool, func(t *testing.T) {
 			t.Setenv("HOME", t.TempDir())

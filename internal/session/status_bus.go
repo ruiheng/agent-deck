@@ -124,6 +124,8 @@ func LiveTranscriptPath(inst *Instance, peers []*Instance) string {
 		return p
 	case IsCodexCompatible(inst.Tool):
 		return CodexLiveRolloutPath(inst, peers)
+	case inst.Tool == "agy":
+		return AgyTranscriptPath(inst)
 	}
 	return ""
 }

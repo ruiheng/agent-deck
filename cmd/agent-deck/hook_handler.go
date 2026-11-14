@@ -72,6 +72,43 @@ type hookPayload struct {
 	// child's event (issue #2582). Raw so an unexpected shape never makes the
 	// payload undecodable.
 	Extra json.RawMessage `json:"extra,omitempty"`
+
+	// Antigravity CLI (agy) camelCase protojson fields.
+	CamelHookEventName    string          `json:"hookEventName"`
+	CamelConversationID   string          `json:"conversationId"`
+	CamelTranscriptPath   json.RawMessage `json:"transcriptPath"`
+	ContinuationActive    *bool           `json:"continuationActive"`
+	InvocationNum         *int            `json:"invocationNum"`
+	LastUserInput         json.RawMessage `json:"lastUserInput"`
+	ArtifactDirectoryPath string          `json:"artifactDirectoryPath"`
+}
+
+func isAgyHookPayload(p hookPayload) bool {
+	if p.CamelHookEventName != "" || p.CamelConversationID != "" ||
+		p.ContinuationActive != nil || p.InvocationNum != nil ||
+		len(p.CamelTranscriptPath) > 0 || p.ArtifactDirectoryPath != "" {
+		return true
+	}
+	return false
+}
+
+func normalizeAgyHookPayload(p *hookPayload) bool {
+	if p == nil || !isAgyHookPayload(*p) {
+		return false
+	}
+	if p.HookEventName == "" && p.CamelHookEventName != "" {
+		p.HookEventName = p.CamelHookEventName
+	}
+	if p.ConversationID == "" && p.CamelConversationID != "" {
+		p.ConversationID = p.CamelConversationID
+	}
+	if len(p.TranscriptPath) == 0 && len(p.CamelTranscriptPath) > 0 {
+		p.TranscriptPath = p.CamelTranscriptPath
+	}
+	if len(p.Prompt) == 0 && len(p.LastUserInput) > 0 {
+		p.Prompt = p.LastUserInput
+	}
+	return true
 }
 
 // maxHookPlatformLen caps the platform string persisted to the status file.
@@ -180,6 +217,15 @@ func spoolCommsFromHook(instanceID string, p hookPayload) {
 // This keeps the loop bounded even if Claude Code ever omits the field.
 func resolveStopHookActive(p hookPayload) bool {
 	return p.StopHookActive == nil || *p.StopHookActive
+}
+
+func resolveStopHookActiveForHarness(p hookPayload, isAgy bool) bool {
+	if isAgy {
+		// Protojson may omit scalar false continuationActive; only explicit true
+		// counts as a Stop-hook-induced continuation turn.
+		return p.ContinuationActive != nil && *p.ContinuationActive
+	}
+	return resolveStopHookActive(p)
 }
 
 // hookStatusFile is the JSON written to ~/.agent-deck/hooks/{instance_id}.json
@@ -326,10 +372,9 @@ func mapEventToStatus(event string) string {
 		// replacement flow immediately emits session_start again, which
 		// restores waiting.
 		return "dead"
-	case "preapirequest", "postapirequest":
-		// Per-API-call heartbeat within a turn: refreshes "running" so a
-		// long multi-step turn doesn't outlive the hook freshness window
-		// and fade to idle mid-work.
+	case "preapirequest", "postapirequest", "preinvocation", "postinvocation":
+		// Per-API-call / model-invocation heartbeat within a turn: refreshes
+		// "running" so a long multi-step turn doesn't outlive the freshness window.
 		return "running"
 	case "userpromptsubmit", "beforesubmitprompt":
 		return "running" // user sent prompt, agent is processing
@@ -382,6 +427,13 @@ func handleHookHandlerReceivedAt(receivedAt time.Time) {
 	if err := json.Unmarshal(data, &payload); err != nil {
 		return
 	}
+	isAgy := normalizeAgyHookPayload(&payload)
+	agyResponded := false
+	defer func() {
+		if isAgy && !agyResponded {
+			fmt.Println("{}")
+		}
+	}()
 	// Issue #2683: a Claude background/supervisor worker carries the env of
 	// whichever pane first started it; never credit its hooks to that pane.
 	if hookFromClaudeBackgroundWorker() {
@@ -466,6 +518,14 @@ func handleHookHandlerReceivedAt(receivedAt time.Time) {
 	if payload.Source == "pi" {
 		pi = piRunInfo{Settles: rawBool(payload.Settles), RunID: strings.TrimSpace(rawString(payload.RunID)), Source: true}
 	}
+	if isAgy && sessionID != "" {
+		switch normalizeHookEventKey(payload.HookEventName) {
+		case "sessionstart", "preinvocation", "postinvocation":
+			if sessionID != session.ReadHookSessionAnchor(instanceID) {
+				persistAgyBindingFromHook(instanceID, sessionID, receivedAt)
+			}
+		}
+	}
 	writeHookStatusFull(instanceID, status, sessionID, payload.HookEventName, payload.Cwd, hookPayloadPlatform(payload), scan, receivedAt, pi)
 	if payload.HookEventName == "PreToolUse" {
 		// This high-frequency edge only publishes activity. Lifecycle hooks
@@ -515,7 +575,41 @@ func handleHookHandlerReceivedAt(receivedAt time.Time) {
 	// a wake nudge, a heartbeat or a human started already carries every
 	// pending child record and the model acts with zero tool calls. The
 	// fleet snapshot follows, as a one-line delta emitted only when changed.
-	if ctxEvent := claudeContextEventName(payload.HookEventName); ctxEvent != "" {
+	if isAgy {
+		eventKey := normalizeHookEventKey(payload.HookEventName)
+		isSessionStart := eventKey == "sessionstart"
+		isFirstInvocation := eventKey == "preinvocation" && (payload.InvocationNum == nil || *payload.InvocationNum == 0)
+		if isSessionStart || isFirstInvocation {
+			var parts []string
+			if os.Getenv("AGENTDECK_NO_CHILDREN_CONTEXT") != "1" {
+				if summary := buildChildrenContextSummary(instanceID, isSessionStart); summary != "" {
+					parts = append(parts, summary)
+				}
+			}
+			var ledger *session.LedgerDelivery
+			if isFirstInvocation {
+				if dl, ok := session.LedgerPromptContext(instanceID, rawString(payload.Prompt)); ok {
+					ledger = dl
+					if dl.Text != "" {
+						parts = append([]string{dl.Text}, parts...)
+					}
+				} else if drained, _, derr := session.DrainForPrompt(instanceID); derr == nil && drained != "" {
+					parts = append([]string{drained}, parts...)
+				}
+			}
+			printed := false
+			if len(parts) > 0 {
+				if out := agyContextJSON(strings.Join(parts, "\n")); out != "" {
+					_, err := fmt.Println(out)
+					printed = err == nil
+					if printed {
+						agyResponded = true
+					}
+				}
+			}
+			ledger.Done(printed)
+		}
+	} else if ctxEvent := claudeContextEventName(payload.HookEventName); ctxEvent != "" {
 		isSessionStart := normalizeHookEventKey(payload.HookEventName) == "sessionstart"
 		var parts []string
 		// Fleet snapshot first: it is the slow part (a storage load) and the
@@ -565,30 +659,69 @@ func handleHookHandlerReceivedAt(receivedAt time.Time) {
 	// SYNCHRONOUSLY. The install flips the conductor's Stop hook to sync — see
 	// the maintainer note in the PR. Emitting here is harmless under the legacy
 	// async install (Claude ignores stdout) and activates once sync lands.
-	if isStopHookEvent(payload.HookEventName) && stopHookDrainEnabled(getClaudeConfigDirForHooks()) {
+	stopDrainAllowed := (!isAgy && stopHookDrainEnabled(getClaudeConfigDirForHooks())) || (isAgy && agyStopHookDrainEnabled())
+	if isStopHookEvent(payload.HookEventName) && stopDrainAllowed {
+		stopActive := resolveStopHookActiveForHarness(payload, isAgy)
 		// Comms Ledger canary: the turn that ended confirms what it carried;
 		// urgent ledger records pending block once more. When the ledger does
 		// not block, the inbox's Stop drain runs for what the inbox holds.
 		// The ledger's Stop decision already ran the inbox's Stop drain
 		// (leaving out turns the ledger showed) when it did not block itself.
-		if dl, ledgerOK := session.LedgerStopDecision(instanceID, resolveStopHookActive(payload)); ledgerOK {
+		if dl, ledgerOK := session.LedgerStopDecision(instanceID, stopActive); ledgerOK {
 			printed := false
 			if dl.Blocked {
+				if isAgy {
+					dl.Decision.Decision = "continue"
+				}
 				if out, mErr := json.Marshal(dl.Decision); mErr == nil {
 					_, err := fmt.Println(string(out))
 					printed = err == nil
+					if isAgy && printed {
+						agyResponded = true
+					}
 				}
 			}
 			dl.Done(printed)
 			return
 		}
-		if dec, blocked, derr := session.DrainForStopHook(instanceID, resolveStopHookActive(payload)); derr == nil && blocked {
+		if dec, blocked, derr := session.DrainForStopHook(instanceID, stopActive); derr == nil && blocked {
+			if isAgy {
+				dec.Decision = "continue"
+			}
 			if out, mErr := json.Marshal(dec); mErr == nil {
 				fmt.Println(string(out))
+				if isAgy {
+					agyResponded = true
+				}
 				// A Stop-hook block buys the parent another turn: a machine
 				// wake for `msg stats`, like a typed nudge.
 				session.SpoolCommsWake(instanceID, "inbox", "stop", dec.Reason, "")
 			}
+		}
+	}
+}
+
+func agyStopHookDrainEnabled() bool {
+	if v := os.Getenv(session.StopHookSyncMarkerEnv); v != "" {
+		return v == "1"
+	}
+	return session.CheckAgyHooksInstalled(session.GetAgyConfigDir())
+}
+
+func persistAgyBindingFromHook(instanceID, sessionID string, detectedAt time.Time) {
+	if instanceID == "" || sessionID == "" {
+		return
+	}
+	storage, err := session.NewStorageWithProfile("")
+	if err != nil {
+		return
+	}
+	defer func() { _ = storage.Close() }()
+	if db := storage.GetDB(); db != nil {
+		if err := db.WriteAgySessionBinding(instanceID, sessionID, detectedAt); err != nil {
+			hookHandlerLog.Warn("agy_hook_session_bind_failed",
+				slog.String("instance", instanceID),
+				slog.String("error", err.Error()))
 		}
 	}
 }
@@ -1401,8 +1534,9 @@ type costEventFile struct {
 
 // stopHookPayload extracts transcript_path from the Stop hook payload.
 type stopHookPayload struct {
-	HookEventName  string `json:"hook_event_name"`
-	TranscriptPath string `json:"transcript_path"`
+	HookEventName       string `json:"hook_event_name"`
+	TranscriptPath      string `json:"transcript_path"`
+	CamelTranscriptPath string `json:"transcriptPath"`
 }
 
 // transcriptMessage is one transcript record as the cost path reads it.
@@ -1551,7 +1685,11 @@ func detectDoneSentinel(rawPayload []byte) doneScanResult {
 	if err := json.Unmarshal(rawPayload, &stop); err != nil {
 		return doneScanResult{}
 	}
-	cleanPath, ok := session.ValidateTranscriptPath(stop.TranscriptPath)
+	transcriptPath := stop.TranscriptPath
+	if transcriptPath == "" {
+		transcriptPath = stop.CamelTranscriptPath
+	}
+	cleanPath, ok := session.ValidateTranscriptPath(transcriptPath)
 	if !ok {
 		return doneScanResult{}
 	}

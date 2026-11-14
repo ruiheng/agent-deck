@@ -137,6 +137,13 @@ func staticModelIDsForTool(tool string) []string {
 			"o3-pro",
 			"o3",
 		}
+	case tool == "agy":
+		return []string{
+			"gemini-2.5-pro",
+			"gemini-2.5-flash",
+			"claude-sonnet-4-5",
+			"claude-opus-4-1",
+		}
 	default:
 		return nil
 	}

@@ -52,6 +52,9 @@ func (i *Instance) GetLastResponse() (*ResponseOutput, error) {
 	if i.Tool == "pi" {
 		return i.getPiLastResponse()
 	}
+	if i.Tool == "agy" {
+		return i.getAgyLastResponse()
+	}
 	return i.getTerminalLastResponse()
 }
 
@@ -1571,6 +1574,78 @@ func (i *Instance) getPiLastResponse() (*ResponseOutput, error) {
 		return nil, err
 	}
 	return parsePiLastAssistantMessage(data)
+}
+
+// AgyTranscriptPath returns the exact Antigravity CLI transcript file for an
+// instance's bound conversation ID, preferring transcript_full.jsonl and falling
+// back to transcript.jsonl. Never guesses by directory mtime.
+func AgyTranscriptPath(inst *Instance) string {
+	if inst == nil || inst.SSHHost != "" || inst.IsSandboxed() {
+		return ""
+	}
+	cid := inst.EffectiveAgySessionID()
+	if validateExactSessionID(cid) != nil {
+		return ""
+	}
+	logsDir := filepath.Join(GetAgyDataDir(), "brain", cid, ".system_generated", "logs")
+	for _, name := range []string{"transcript_full.jsonl", "transcript.jsonl"} {
+		candidate := filepath.Join(logsDir, name)
+		info, err := os.Stat(candidate)
+		if err == nil && info.Mode().IsRegular() {
+			return candidate
+		}
+	}
+	return ""
+}
+
+func (i *Instance) getAgyLastResponse() (*ResponseOutput, error) {
+	if i.IsSSH() || i.IsSandboxed() {
+		return nil, fmt.Errorf("instance %s runs outside this host; its Antigravity transcript is not on this machine", i.ID)
+	}
+	cid := i.EffectiveAgySessionID()
+	if err := validateExactSessionID(cid); err != nil {
+		return nil, fmt.Errorf("no Antigravity conversation ID bound for session %s", i.ID)
+	}
+	path := AgyTranscriptPath(i)
+	if path == "" {
+		return nil, fmt.Errorf("no Antigravity transcript found for conversation %s", cid)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	return parseAgyLastAssistantMessage(data, cid)
+}
+
+func parseAgyLastAssistantMessage(data []byte, sessionID string) (*ResponseOutput, error) {
+	var last *ResponseOutput
+	for _, line := range bytes.Split(data, []byte{'\n'}) {
+		if len(bytes.TrimSpace(line)) == 0 {
+			continue
+		}
+		var entry struct {
+			Type      string `json:"type"`
+			Content   string `json:"content"`
+			CreatedAt string `json:"created_at"`
+		}
+		if json.Unmarshal(line, &entry) != nil || entry.Type != "PLANNER_RESPONSE" {
+			continue
+		}
+		if strings.TrimSpace(entry.Content) == "" {
+			continue
+		}
+		last = &ResponseOutput{
+			Tool:      "agy",
+			Role:      "assistant",
+			Content:   entry.Content,
+			Timestamp: entry.CreatedAt,
+			SessionID: sessionID,
+		}
+	}
+	if last == nil {
+		return nil, fmt.Errorf("no assistant response found in agy session")
+	}
+	return last, nil
 }
 
 func parsePiLastAssistantMessageLinear(data []byte) (*ResponseOutput, error) {

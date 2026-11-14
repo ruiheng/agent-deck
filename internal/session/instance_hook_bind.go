@@ -383,6 +383,23 @@ func (i *Instance) UpdateHookStatus(status *HookStatus) {
 		if i.GeminiSessionID == "" || geminiSessionHasConversationData(sessionID, i.ProjectPath) {
 			i.bindGeminiSessionFromHook(sessionID, status.Event)
 		}
+	case i.Tool == "agy":
+		if i.hookCwdIsForeign(status.Cwd) {
+			restoreHook()
+			_ = WriteSessionIDLifecycleEvent(SessionIDLifecycleEvent{
+				InstanceID: i.ID, Tool: i.Tool, Action: "reject",
+				Source: hookSource, OldID: i.AgySessionID, Candidate: sessionID,
+				HookEvent: status.Event, Reason: "candidate_cwd_outside_instance_paths",
+			})
+			return
+		}
+		if sessionID == i.AgySessionID {
+			if i.tmuxSession != nil && i.tmuxSession.Exists() {
+				_ = i.tmuxSession.SetEnvironment("AGY_SESSION_ID", sessionID)
+			}
+			return
+		}
+		i.bindAgySessionFromHook(sessionID, hookSource, status.Event)
 	}
 }
 
@@ -469,6 +486,28 @@ func (i *Instance) bindGeminiSessionFromHook(sessionID, hookEvent string) {
 			slog.String("new_id", sessionID),
 			slog.String("error", err.Error()))
 	}
+}
+
+func (i *Instance) bindAgySessionFromHook(sessionID, hookSource, hookEvent string) {
+	action := "bind"
+	if i.AgySessionID != "" {
+		action = "rebind"
+	}
+	_ = WriteSessionIDLifecycleEvent(SessionIDLifecycleEvent{
+		InstanceID: i.ID, Tool: i.Tool, Action: action,
+		Source: hookSource, OldID: i.AgySessionID, NewID: sessionID,
+		HookEvent: hookEvent,
+	})
+	i.AgySessionID = sessionID
+	i.AgyDetectedAt = time.Now()
+	i.agySessionIDCleared = false
+	i.hookSessionID = sessionID
+	WriteHookSessionAnchor(i.ID, sessionID)
+
+	if i.tmuxSession != nil && i.tmuxSession.Exists() {
+		_ = i.tmuxSession.SetEnvironment("AGY_SESSION_ID", sessionID)
+	}
+	i.persistAgySessionBinding(sessionID, i.AgyDetectedAt)
 }
 
 // GetHookStatus returns the current hook-based status and its freshness.
@@ -824,6 +863,11 @@ func (i *Instance) SyncSessionIDsToTmux() {
 		_ = i.tmuxSession.SetEnvironment("COPILOT_SESSION_ID", i.CopilotSessionID)
 	}
 
+	// Sync AgySessionID (effective id covers legacy generic_session_id fallback)
+	if sid := i.EffectiveAgySessionID(); sid != "" && (i.Tool == "agy" || i.AgySessionID != "") {
+		_ = i.tmuxSession.SetEnvironment("AGY_SESSION_ID", sid)
+	}
+
 	// Custom [tools.*] resume id: re-publish so a restart that still has the
 	// old pane (or a respawn) sees the same id. The agent-deck-owned variable
 	// is written too, so a tool that exposes no env var of its own is still
@@ -877,6 +921,14 @@ func (i *Instance) SyncSessionIDsFromTmux() {
 		i.CopilotSessionID = id
 		if i.CopilotDetectedAt.IsZero() {
 			i.CopilotDetectedAt = time.Now()
+		}
+	}
+
+	if id, err := i.tmuxSession.GetEnvironment("AGY_SESSION_ID"); err == nil && strings.TrimSpace(id) != "" {
+		i.AgySessionID = strings.TrimSpace(id)
+		i.agySessionIDCleared = false
+		if i.AgyDetectedAt.IsZero() {
+			i.AgyDetectedAt = time.Now()
 		}
 	}
 

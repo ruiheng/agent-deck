@@ -1060,11 +1060,11 @@ agent-deck skill attach <session> <skill> [--source <name>] [--restart] [--json]
 ```
 
 - `--source`: Force source when name is ambiguous
-- `--restart`: Restart session immediately after attach for Claude, Gemini, and Codex sessions
+- `--restart`: Restart session immediately after attach for Claude, Gemini, Codex, and Antigravity sessions
 
 Attach target root is runtime-specific:
 - Claude-compatible sessions -> `<project>/.claude/skills`
-- Gemini, Codex, and Pi sessions -> `<project>/.agents/skills`
+- Gemini, Codex, Pi, and Antigravity sessions -> `<project>/.agents/skills`
 
 ### skill detach
 
@@ -1073,7 +1073,7 @@ agent-deck skill detach <session> <skill> [--source <name>] [--restart] [--json]
 ```
 
 - `--source`: Filter by source when detaching
-- `--restart`: Restart session immediately after detach for Claude, Gemini, and Codex sessions
+- `--restart`: Restart session immediately after detach for Claude, Gemini, Codex, and Antigravity sessions
 
 ### skill source list
 

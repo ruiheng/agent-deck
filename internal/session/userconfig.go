@@ -221,6 +221,9 @@ type UserConfig struct {
 	// OMP defines Oh My Pi (`omp`, github.com/can1357/oh-my-pi) integration settings
 	OMP OMPSettings `toml:"omp,omitempty"`
 
+	// Agy defines Antigravity CLI (`agy`) integration settings
+	Agy AgySettings `toml:"agy,omitempty"`
+
 	// Worktree defines git worktree preferences
 	Worktree WorktreeSettings `toml:"worktree,omitempty"`
 
@@ -2952,6 +2955,7 @@ type ModelsSettings struct {
 	Codex    ModelListSettings `toml:"codex,omitempty"`
 	Gemini   ModelListSettings `toml:"gemini,omitempty"`
 	OpenCode ModelListSettings `toml:"opencode,omitempty"`
+	Agy      ModelListSettings `toml:"agy,omitempty"`
 }
 
 // ModelListSettings pins or extends one tool's model suggestions.
@@ -2964,7 +2968,7 @@ type ModelListSettings struct {
 }
 
 // ForTool returns the override table for a tool kind ("claude", "codex",
-// "gemini", "opencode"); other kinds have none.
+// "gemini", "opencode", "agy"); other kinds have none.
 func (m ModelsSettings) ForTool(kind string) ModelListSettings {
 	switch kind {
 	case "claude":
@@ -2975,6 +2979,8 @@ func (m ModelsSettings) ForTool(kind string) ModelListSettings {
 		return m.Gemini
 	case "opencode":
 		return m.OpenCode
+	case "agy":
+		return m.Agy
 	}
 	return ModelListSettings{}
 }
@@ -3347,6 +3353,42 @@ type MuseSettings struct {
 	// YoloMode enables --yolo flag for Muse sessions (disable approval +
 	// sandboxing and trust the workspace for the run). Default: false
 	YoloMode bool `toml:"yolo_mode,omitempty"`
+}
+
+// AgySettings defines Google Antigravity CLI (`agy`) integration configuration.
+type AgySettings struct {
+	// Command overrides the default binary/invocation for agy sessions.
+	// Default: "agy"
+	Command string `toml:"command,omitempty"`
+
+	// EnvFile is a .env file specific to agy sessions (sourced before `agy` runs).
+	EnvFile string `toml:"env_file,omitempty"`
+
+	// DefaultModel is the default --model passed for new agy sessions when no
+	// per-session override is set.
+	DefaultModel string `toml:"default_model,omitempty"`
+
+	// Effort sets the default --effort level (low, medium, high, xhigh, max).
+	Effort string `toml:"effort,omitempty"`
+
+	// Mode sets the default --mode (accept-edits, auto, plan).
+	Mode string `toml:"mode,omitempty"`
+
+	// DangerousMode enables --dangerously-skip-permissions by default for agy
+	// sessions. Default: false.
+	DangerousMode bool `toml:"dangerous_mode,omitempty"`
+
+	// HooksEnabled enables global Antigravity CLI hooks (~/.gemini/config/hooks.json)
+	// for real-time status detection and session ID binding. Default: true.
+	HooksEnabled *bool `toml:"hooks_enabled,omitempty"`
+}
+
+// GetHooksEnabled reports whether Antigravity CLI hooks are enabled, defaulting to true.
+func (a *AgySettings) GetHooksEnabled() bool {
+	if a == nil || a.HooksEnabled == nil {
+		return true
+	}
+	return *a.HooksEnabled
 }
 
 // WorktreeSettings contains git worktree preferences.
@@ -5177,6 +5219,10 @@ func GetToolCommand(toolName string) string {
 		if config.OMP.Command != "" {
 			return config.OMP.Command
 		}
+	case "agy":
+		if config.Agy.Command != "" {
+			return config.Agy.Command
+		}
 	case "deepseek":
 		// The tool is named for the vendor; the binary it launches is `dsh`.
 		// Returning the tool name here (the default tail of this function)
@@ -5228,6 +5274,8 @@ func GetToolIcon(toolName string) string {
 		return "π"
 	case "omp":
 		return "⌥"
+	case "agy":
+		return "🪐"
 	case "shell":
 		return "🐚"
 	default:
