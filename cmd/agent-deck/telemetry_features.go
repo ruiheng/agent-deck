@@ -74,6 +74,7 @@ var cliFeatures = map[string]cliFeature{
 	"gemini-hooks":    {sub: map[string]telemetry.Feature{"install": "hooks_install"}},
 	"hermes-hooks":    {sub: map[string]telemetry.Feature{"install": "hooks_install"}},
 	"cursor-hooks":    {sub: map[string]telemetry.Feature{"install": "hooks_install"}},
+	"agy-hooks":       {sub: map[string]telemetry.Feature{"install": "hooks_install"}},
 	"tmux-hooks":      {sub: map[string]telemetry.Feature{"install": "hooks_install"}},
 	"pi-hooks":        {sub: map[string]telemetry.Feature{"install": "hooks_install"}},
 	"deepseek":        {feature: "deepseek"},

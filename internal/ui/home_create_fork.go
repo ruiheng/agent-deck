@@ -553,6 +553,9 @@ func createSessionTool(command string) (string, string) {
 		command = session.GetToolCommand("cursor")
 	case "hermes":
 		tool = "hermes"
+	case "agy":
+		tool = "agy"
+		command = session.GetToolCommand("agy")
 	default:
 		if toolDef := session.GetToolDef(command); toolDef != nil {
 			tool = command
@@ -774,6 +777,8 @@ func (h *Home) quickCreateSession() tea.Cmd {
 			command = toolDef.Command
 		} else if tool == "cursor" {
 			command = session.GetToolCommand("cursor")
+		} else if tool == "agy" {
+			command = session.GetToolCommand("agy")
 		} else {
 			command = tool
 		}

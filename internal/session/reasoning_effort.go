@@ -75,7 +75,7 @@ func LaunchModelEffortsForTool(tool string) map[string][]string {
 func staticReasoningEffortsForTool(tool string) []string {
 	var efforts []string
 	switch {
-	case IsClaudeCompatible(tool):
+	case IsClaudeCompatible(tool), tool == "agy":
 		efforts = claudeReasoningEfforts
 	case IsCodexCompatible(tool):
 		efforts = codexReasoningEfforts
@@ -129,6 +129,10 @@ func (i *Instance) LaunchReasoningEffort() string {
 		if opts := i.GetClaudeOptions(); opts != nil {
 			return strings.TrimSpace(opts.Effort)
 		}
+	case i.Tool == "agy":
+		if opts := i.GetAgyOptions(); opts != nil {
+			return strings.TrimSpace(opts.Effort)
+		}
 	case IsCodexCompatible(i.Tool):
 		if opts := i.GetCodexOptions(); opts != nil {
 			return strings.TrimSpace(opts.ReasoningEffort)
@@ -161,6 +165,14 @@ func (i *Instance) ApplyLaunchReasoningEffort(effort string) error {
 		}
 		opts.Effort = effort
 		return i.SetClaudeOptions(opts)
+	case i.Tool == "agy":
+		opts := i.GetAgyOptions()
+		if opts == nil {
+			userConfig, _ := LoadUserConfig()
+			opts = NewAgyOptions(userConfig)
+		}
+		opts.Effort = effort
+		return i.SetAgyOptions(opts)
 	case IsCodexCompatible(i.Tool):
 		opts := i.GetCodexOptions()
 		if opts == nil {

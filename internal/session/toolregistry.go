@@ -552,7 +552,7 @@ func ConfiguredHiddenToolNames() []string {
 }
 
 // pickerPresetOrder matches buildPresetCommands in internal/ui/newdialog.go.
-var pickerPresetOrder = []string{"", "claude", "gemini", "opencode", "opencode2", "codex", "pi", "copilot", "crush", "cursor", "hermes", "deepseek", "omp"}
+var pickerPresetOrder = []string{"", "claude", "gemini", "opencode", "opencode2", "codex", "pi", "copilot", "crush", "cursor", "hermes", "deepseek", "omp", "agy"}
 
 // PickerToolNames returns tool names for the new-session picker after applying
 // hidden_tools and show_only_installed_tools. The empty command "" is mapped

@@ -36,6 +36,10 @@ func listedTranscriptPaths(instances []*Instance, walk func(string, fs.WalkDirFu
 				homes[home] = make(map[string][]*Instance)
 			}
 			homes[home][inst.CodexSessionID] = append(homes[home][inst.CodexSessionID], inst)
+		case inst.Tool == "agy":
+			if path := AgyTranscriptPath(inst); path != "" {
+				paths[inst] = path
+			}
 		}
 	}
 	for home, requested := range homes {

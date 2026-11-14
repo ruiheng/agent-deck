@@ -286,3 +286,38 @@ func TestTranscriptTailLines_BoundsAndOrder(t *testing.T) {
 		t.Errorf("last returned line is not the file's last line")
 	}
 }
+
+func TestScanTranscriptTailForDone_AgyPlannerResponse(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	agyData := filepath.Join(home, ".gemini", "antigravity-cli")
+	t.Setenv("AGY_DATA_DIR", agyData)
+
+	logsDir := filepath.Join(agyData, "brain", "conv-agy-1", ".system_generated", "logs")
+	if err := os.MkdirAll(logsDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	tPath := filepath.Join(logsDir, "transcript.jsonl")
+	if cleaned, ok := ValidateTranscriptPath(tPath); !ok || cleaned != tPath {
+		t.Fatalf("ValidateTranscriptPath(%q) = %q, %v; want accepted", tPath, cleaned, ok)
+	}
+
+	okContent := `{"type":"USER_INPUT","content":"ship feature"}` + "\n" +
+		`{"type":"PLANNER_RESPONSE","content":"Done.\n===AGENTDECK_DONE=== status=ok summary=agy shipped"}` + "\n"
+	if err := os.WriteFile(tPath, []byte(okContent), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	sig, found, pending := ScanTranscriptTailForDone(tPath)
+	if !found || pending || sig.Status != "ok" || sig.Summary != "agy shipped" {
+		t.Fatalf("unexpected agy scan result: sig=%+v found=%v pending=%v", sig, found, pending)
+	}
+
+	// Trailing USER_INPUT after PLANNER_RESPONSE marks turn still in progress (pending=false, found=false).
+	trailingUser := okContent + `{"type":"USER_INPUT","content":"another request"}` + "\n"
+	if err := os.WriteFile(tPath, []byte(trailingUser), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, found, _ := ScanTranscriptTailForDone(tPath); found {
+		t.Fatal("trailing USER_INPUT must supersede earlier AGENTDECK_DONE")
+	}
+}

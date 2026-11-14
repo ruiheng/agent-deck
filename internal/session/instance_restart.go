@@ -133,6 +133,14 @@ func (i *Instance) clearSessionBindingForFreshStart() {
 		i.clearHermesOwnedSessionID()
 	}
 
+	if i.Tool == "agy" {
+		i.AgySessionID = ""
+		i.AgyDetectedAt = time.Time{}
+		i.agySessionIDCleared = true
+		i.persistAgySessionBinding("", time.Time{})
+		ClearHookSessionAnchor(i.ID)
+	}
+
 	if i.Tool == "deepseek" {
 		// Same contract as hermes: drop the discovered resume ID so the next
 		// launch boots a new dsh session instead of reopening the old one.
@@ -925,6 +933,45 @@ func (i *Instance) restart(env map[string]string) (err error) {
 		return nil
 	}
 
+	// If Antigravity CLI (agy) session AND tmux session exists, use respawn-pane.
+	// Checked BEFORE the custom-tool block so a legacy [tools.agy] definition
+	// in config.toml never intercepts native agy restarts.
+	if i.Tool == "agy" && i.tmuxSession != nil && i.tmuxSession.Exists() {
+		prepInput := i.buildAgyCommand(i.Command)
+		resumeCmd, containerName, err := i.prepareCommand(prepInput)
+		if err != nil {
+			i.recordPrepareFailure(prepInput, err)
+			return err
+		}
+		if containerName != "" {
+			i.SandboxContainer = containerName
+		}
+		ownershipCommand = resumeCmd
+		sid := i.EffectiveAgySessionID()
+		sessionLog.Info("restart_agy_respawn",
+			slog.String("command", logging.RedactCommandEnv(resumeCmd)),
+			slog.String("session_id_fingerprint", fingerprintSessionID(sid)))
+
+		i.ensureProfileEnv()
+		i.ensureClaudeConfigDirEnv()
+		if sid != "" {
+			_ = i.tmuxSession.SetEnvironment("AGY_SESSION_ID", sid)
+		}
+
+		if err := i.tmuxSession.RespawnPane(resumeCmd); err != nil {
+			sessionLog.Info("restart_agy_respawn_failed", slog.String("error", err.Error()))
+			return fmt.Errorf("failed to restart agy session: %w", err)
+		}
+
+		sessionLog.Info("restart_agy_respawn_succeeded")
+		if sid != "" {
+			WriteHookSessionAnchor(i.ID, sid)
+		}
+		i.sweepDuplicateToolSessions()
+		i.Status = StatusWaiting
+		return nil
+	}
+
 	// If custom tool with session resume support AND tmux session exists, use respawn-pane.
 	// Resolve id and ToolDef once (avoid double GetGenericSessionID / env races
 	// that could produce an empty --resume '' argv). Concurrent config reload
@@ -1081,6 +1128,8 @@ func (i *Instance) restart(env map[string]string) (err error) {
 			command = i.buildCrushCommand(i.Command)
 		case i.Tool == "cursor":
 			command = i.buildCursorCommand(i.Command, true)
+		case i.Tool == "agy":
+			command = i.buildAgyCommand(i.Command)
 		default:
 			// Check if this is a custom tool with session resume config
 			if toolDef := GetToolDef(i.Tool); toolDef != nil {
@@ -1292,7 +1341,7 @@ func (i *Instance) SetGeminiModel(model string) error {
 // explicit model override through Agent Deck's generic session creation path.
 func SupportsLaunchModel(tool string) bool {
 	tool = CanonicalToolName(tool)
-	return IsClaudeCompatible(tool) || tool == "gemini" || tool == "opencode" || tool == "omp" || IsCodexCompatible(tool)
+	return IsClaudeCompatible(tool) || tool == "gemini" || tool == "opencode" || tool == "omp" || tool == "agy" || IsCodexCompatible(tool)
 }
 
 // ApplyLaunchModel stores a per-session model override in the tool-specific
@@ -1331,6 +1380,14 @@ func (i *Instance) ApplyLaunchModel(model string) error {
 		}
 		opts.Model = model
 		return i.SetOMPOptions(opts)
+	case i.Tool == "agy":
+		opts := i.GetAgyOptions()
+		if opts == nil {
+			userConfig, _ := LoadUserConfig()
+			opts = NewAgyOptions(userConfig)
+		}
+		opts.Model = model
+		return i.SetAgyOptions(opts)
 	case IsCodexCompatible(i.Tool):
 		opts := i.GetCodexOptions()
 		if opts == nil {
@@ -1377,6 +1434,13 @@ func (i *Instance) ClearLaunchModel() error {
 		}
 		opts.Model = ""
 		return i.SetOMPOptions(opts)
+	case i.Tool == "agy":
+		opts := i.GetAgyOptions()
+		if opts == nil {
+			return nil
+		}
+		opts.Model = ""
+		return i.SetAgyOptions(opts)
 	case IsCodexCompatible(i.Tool):
 		opts := i.GetCodexOptions()
 		if opts == nil {
@@ -1459,6 +1523,12 @@ func (i *Instance) CanRestart() bool {
 		return true
 	}
 
+	// Antigravity CLI sessions can always restart: bound conversation IDs resume
+	// via --conversation <id>, unbound sessions start fresh without guessing.
+	if i.Tool == "agy" {
+		return true
+	}
+
 	// Hermes resumes via `--resume <id>`, the id its own hooks recorded
 	// (#2582). Always restartable (resumes when an id is recorded, else starts
 	// fresh) rather than only when dead/errored,
@@ -1508,6 +1578,9 @@ func (i *Instance) CanRestartFresh() bool {
 	}
 	if i.Tool == "codex" {
 		return i.CodexSessionID != ""
+	}
+	if i.Tool == "agy" {
+		return i.EffectiveAgySessionID() != ""
 	}
 	// Hermes fresh-restart discards the resume binding and starts a new session.
 	if i.Tool == "hermes" {

@@ -12,7 +12,7 @@ import (
 // Registry.Match() (and the legacy detectTool() switch) walk.
 var canonicalBuiltins = []string{
 	"claude", "opencode", "gemini", "codex", "pi", "omp",
-	"copilot", "crush", "muse", "cursor", "hermes", "deepseek", "aider", "shell",
+	"copilot", "crush", "muse", "cursor", "hermes", "deepseek", "agy", "aider", "shell",
 }
 
 func TestRegistry_AllReturnsCanonicalBuiltins(t *testing.T) {
@@ -84,6 +84,12 @@ func TestRegistry_MatchAllBranches(t *testing.T) {
 		{"cursor no false match in agent-deck subcommand", "agent-deck session send x", "shell"},
 		// hermes
 		{"hermes bare", "hermes", "hermes"},
+		// agy — executable-position token match
+		{"agy bare", "agy", "agy"},
+		{"agy with conversation", "agy --conversation abc", "agy"},
+		{"agy path", "/usr/local/bin/agy", "agy"},
+		{"agy no match echo", "echo agy", "shell"},
+		{"agy no match strategy", "strategy", "shell"},
 		// aider has NO detect arm — commands containing "aider" map to shell
 		{"aider falls through to shell", "aider", "shell"},
 		// shell fallback

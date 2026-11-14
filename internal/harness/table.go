@@ -58,6 +58,10 @@ var table = []Entry{
 		InstallCommand: "curl -fsSL https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.sh | bash",
 		LoginCommand:   "hermes setup",
 		DocsURL:        "https://github.com/NousResearch/hermes-agent"},
+	{Name: "agy", DisplayName: "Antigravity", Binary: "agy", VersionArgs: []string{"--version"},
+		InstallCommand: "npm install -g @google/antigravity-cli",
+		LoginCommand:   "agy auth login",
+		DocsURL:        "https://antigravity.google"},
 }
 
 // All returns the table with overrides applied, in table order.

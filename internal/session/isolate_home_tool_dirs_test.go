@@ -35,6 +35,8 @@ func TestIsolateHome_ToolConfigResolversStayInSandbox(t *testing.T) {
 		"geminiUserDir":            geminiUserDir(),
 		"geminiTrustedFoldersPath": geminiTrustedFoldersPath(),
 		"PiExtensionsDir":          PiExtensionsDir(),
+		"GetAgyConfigDir":          GetAgyConfigDir(),
+		"GetAgyDataDir":            GetAgyDataDir(),
 	}
 	for name, got := range resolved {
 		if !strings.HasPrefix(got, home+string(filepath.Separator)) {

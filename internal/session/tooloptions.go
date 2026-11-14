@@ -663,6 +663,72 @@ func UnmarshalMuseOptions(data json.RawMessage) (*MuseOptions, error) {
 	return &opts, nil
 }
 
+// AgyOptions holds launch options for Google Antigravity CLI (`agy`) sessions.
+type AgyOptions struct {
+	Model         string `json:"model,omitempty"`
+	Effort        string `json:"effort,omitempty"`
+	Mode          string `json:"mode,omitempty"`
+	DangerousMode bool   `json:"dangerous_mode,omitempty"`
+}
+
+// ToolName returns "agy".
+func (o *AgyOptions) ToolName() string {
+	return "agy"
+}
+
+// ToArgs returns command-line arguments for launching `agy`.
+func (o *AgyOptions) ToArgs() []string {
+	var args []string
+	if o.Model != "" {
+		args = append(args, "--model", o.Model)
+	}
+	if o.Effort != "" {
+		args = append(args, "--effort", o.Effort)
+	}
+	if o.Mode != "" {
+		args = append(args, "--mode", o.Mode)
+	}
+	if o.DangerousMode {
+		args = append(args, "--dangerously-skip-permissions")
+	}
+	return args
+}
+
+// NewAgyOptions creates AgyOptions with defaults from global config.
+func NewAgyOptions(config *UserConfig) *AgyOptions {
+	opts := &AgyOptions{}
+	if config != nil {
+		opts.Model = config.Agy.DefaultModel
+		opts.Effort = config.Agy.Effort
+		opts.Mode = config.Agy.Mode
+		opts.DangerousMode = config.Agy.DangerousMode
+	}
+	return opts
+}
+
+// UnmarshalAgyOptions deserializes AgyOptions from the tool options JSON wrapper.
+func UnmarshalAgyOptions(data json.RawMessage) (*AgyOptions, error) {
+	if len(data) == 0 {
+		return nil, nil
+	}
+
+	var wrapper ToolOptionsWrapper
+	if err := json.Unmarshal(data, &wrapper); err != nil {
+		return nil, err
+	}
+
+	if wrapper.Tool != "agy" {
+		return nil, nil
+	}
+
+	var opts AgyOptions
+	if err := json.Unmarshal(wrapper.Options, &opts); err != nil {
+		return nil, err
+	}
+
+	return &opts, nil
+}
+
 // StripResumeFields removes session-specific fields (resume_session_id,
 // session_mode) from serialized ToolOptionsJSON so that a new session
 // inheriting another session's settings starts fresh instead of resuming

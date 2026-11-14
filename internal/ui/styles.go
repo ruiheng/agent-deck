@@ -555,6 +555,7 @@ func initStyles() {
 		"opencode": lipgloss.NewStyle().Foreground(ColorText),
 		"crush":    lipgloss.NewStyle().Foreground(ColorPurple),
 		"muse":     lipgloss.NewStyle().Foreground(ColorGreen),
+		"agy":      lipgloss.NewStyle().Foreground(ColorPurple),
 	}
 
 	// DefaultToolStyle
@@ -639,6 +640,8 @@ func ToolIcon(tool string) string {
 		return "📝"
 	case "hermes":
 		return "☤"
+	case "agy":
+		return "🪐"
 	case "deepseek":
 		return "🐋"
 	case "pi":
@@ -681,6 +684,8 @@ func ToolColor(tool string) lipgloss.Color {
 		return ColorAccent // Blue for Cursor
 	case "hermes":
 		return ColorYellow // Gold for Hermes Agent
+	case "agy":
+		return ColorPurple // Google Antigravity CLI purple
 	case "deepseek":
 		return ColorCyan // DeepSeek Harness
 	case "pi":

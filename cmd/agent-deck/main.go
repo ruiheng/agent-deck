@@ -757,6 +757,9 @@ func main() {
 		case "cursor-hooks":
 			handleCursorHooks(args[1:])
 			return
+		case "agy-hooks":
+			handleAgyHooks(args[1:])
+			return
 		case "tmux-hooks":
 			handleTmuxHooks(args[1:])
 			return
@@ -1670,7 +1673,7 @@ var commandRegistry = map[string]bool{
 	"remote": true, "remote-agent": true, "provider": true, "system": true, "worktree": true, "wt": true, "costs": true, "open": true, "switch": true, "ask": true, "browser": true, "file": true, "events": true, "triggers": true, "orders": true, "trace": true, "daemon": true, "usage": true, "web": true, "config": true, "recall": true, "connect": true,
 	"uninstall": true, "migrate-paths": true, "hook-handler": true,
 	"codex-notify": true, "hooks": true, "codex-hooks": true, "gemini-hooks": true,
-	"hermes-hooks": true, "cursor-hooks": true, "tmux-hooks": true, "pi-hooks": true, "deepseek": true, "notify-daemon": true,
+	"hermes-hooks": true, "cursor-hooks": true, "agy-hooks": true, "tmux-hooks": true, "pi-hooks": true, "deepseek": true, "notify-daemon": true,
 	"run-task": true, "inbox": true, "msg": true, "feedback": true, "whats-new": true, "telemetry": true,
 	"debug-dump": true, "version": true, "--version": true, "-v": true,
 	"help": true, "--help": true, "-h": true, "completion": true,
@@ -4801,6 +4804,7 @@ func printHelp() {
 	fmt.Println("  gemini-hooks     Manage Gemini hook integration")
 	fmt.Println("  hermes-hooks     Manage Hermes Agent hook integration")
 	fmt.Println("  cursor-hooks     Manage Cursor Agent CLI hook integration")
+	fmt.Println("  agy-hooks        Manage Antigravity (agy) CLI hook integration")
 	fmt.Println("  tmux-hooks       Manage the window policy hook on the tmux server")
 	fmt.Println("  pi-hooks         Manage pi (pi-coding-agent) hook integration")
 	fmt.Println("  deepseek         Inspect the DeepSeek Harness (dsh) integration")
@@ -4869,6 +4873,9 @@ func printHelp() {
 	fmt.Println("  cursor-hooks install      Install Cursor hooks")
 	fmt.Println("  cursor-hooks uninstall    Remove Cursor hooks")
 	fmt.Println("  cursor-hooks status       Show Cursor hooks install status")
+	fmt.Println("  agy-hooks install         Install Antigravity hooks")
+	fmt.Println("  agy-hooks uninstall       Remove Antigravity hooks")
+	fmt.Println("  agy-hooks status          Show Antigravity hooks install status")
 	fmt.Println("  tmux-hooks install        Install or refresh the tmux window policy hook")
 	fmt.Println("  tmux-hooks uninstall      Remove the tmux window policy hook (only if agent-deck's)")
 	fmt.Println("  tmux-hooks status         Show whether the tmux hook slot is agent-deck's")

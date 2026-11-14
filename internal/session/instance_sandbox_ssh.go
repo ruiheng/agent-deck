@@ -161,6 +161,7 @@ var builtinAgentTools = map[string]bool{
 	// silently skipped them (issue #2556).
 	"pi":  true,
 	"omp": true,
+	"agy": true,
 }
 
 // isBuiltinAgentTool reports whether tool is a first-party agent (or a custom

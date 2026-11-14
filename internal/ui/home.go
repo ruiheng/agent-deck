@@ -6719,6 +6719,22 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 					opts.YoloMode = &newYolo
 					_ = inst.SetHermesOptions(opts)
 					toggled = true
+
+				case "agy":
+					userConfig, _ := session.LoadUserConfig()
+					currentDangerous := false
+					opts := inst.GetAgyOptions()
+					if opts != nil {
+						currentDangerous = opts.DangerousMode
+					} else if userConfig != nil {
+						currentDangerous = userConfig.Agy.DangerousMode
+					}
+					if opts == nil {
+						opts = session.NewAgyOptions(userConfig)
+					}
+					opts.DangerousMode = !currentDangerous
+					_ = inst.SetAgyOptions(opts)
+					toggled = true
 				}
 
 				if toggled {
@@ -8397,6 +8413,12 @@ func (h *Home) renderSessionItem(
 		if opts := inst.GetHermesOptions(); opts != nil && opts.YoloMode != nil {
 			showYolo = *opts.YoloMode
 		} else if cfg, _ := session.LoadUserConfig(); cfg != nil && cfg.Hermes.YoloMode {
+			showYolo = true
+		}
+	} else if instTool == "agy" {
+		if opts := inst.GetAgyOptions(); opts != nil {
+			showYolo = opts.DangerousMode
+		} else if cfg, _ := session.LoadUserConfig(); cfg != nil && cfg.Agy.DangerousMode {
 			showYolo = true
 		}
 	}

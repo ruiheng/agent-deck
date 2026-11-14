@@ -804,3 +804,58 @@ func TestGetProjectSkillsDir_OMP(t *testing.T) {
 		t.Errorf("GetProjectSkillsDir(\"omp\") = %q, want \".omp/skills\"", dir)
 	}
 }
+
+func TestGetProjectSkillsDir_Agy(t *testing.T) {
+	dir, ok := GetProjectSkillsDir("agy")
+	if !ok {
+		t.Fatal("GetProjectSkillsDir(\"agy\") should be supported")
+	}
+	if dir != ".agents/skills" {
+		t.Errorf("GetProjectSkillsDir(\"agy\") = %q, want \".agents/skills\"", dir)
+	}
+	if !SupportsProjectSkills("agy") {
+		t.Error("SupportsProjectSkills(\"agy\") = false, want true")
+	}
+	if !ShouldRestartProjectSkills("agy") {
+		t.Error("ShouldRestartProjectSkills(\"agy\") = false, want true")
+	}
+}
+
+func TestAttachAndDetachSkillToProject_Agy(t *testing.T) {
+	_, cleanup := setupSkillTestEnv(t)
+	defer cleanup()
+
+	sourcePath := t.TempDir()
+	writeSkillDir(t, sourcePath, "lint", "lint", "Linting best practices")
+
+	if err := SaveSkillSources(map[string]SkillSourceDef{
+		"local": {Path: sourcePath, Enabled: boolPtr(true)},
+	}); err != nil {
+		t.Fatalf("SaveSkillSources: %v", err)
+	}
+
+	projectPath := t.TempDir()
+
+	att, err := AttachSkillToProject(projectPath, "agy", "lint", "local")
+	if err != nil {
+		t.Fatalf("AttachSkillToProject: %v", err)
+	}
+	if att.TargetPath != ".agents/skills/lint" {
+		t.Fatalf("TargetPath = %q, want %q", att.TargetPath, ".agents/skills/lint")
+	}
+	skillMD := filepath.Join(projectPath, ".agents", "skills", "lint", "SKILL.md")
+	if _, err := os.Stat(skillMD); err != nil {
+		t.Fatalf("expected materialized SKILL.md at %s: %v", skillMD, err)
+	}
+
+	removed, err := DetachSkillFromProject(projectPath, "lint", "local")
+	if err != nil {
+		t.Fatalf("DetachSkillFromProject: %v", err)
+	}
+	if removed.Name != "lint" {
+		t.Fatalf("removed.Name = %q, want %q", removed.Name, "lint")
+	}
+	if _, err := os.Lstat(filepath.Join(projectPath, ".agents", "skills", "lint")); !os.IsNotExist(err) {
+		t.Fatalf("expected skill dir removed after detach, got err=%v", err)
+	}
+}

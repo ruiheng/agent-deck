@@ -36,6 +36,7 @@ func TestToolIconColor_RegistryMatchesLegacySwitch(t *testing.T) {
 		"deepseek": {"🐋", ColorCyan},
 		"aider":    {"🐚", ColorRed},
 		"shell":    {"🐚", ColorTextDim},
+		"agy":      {"🪐", ColorPurple},
 	}
 
 	builtins := session.Init(nil).All()

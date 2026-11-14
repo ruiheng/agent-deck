@@ -54,6 +54,25 @@ func childrenContextJSON(hookEventName, context string) string {
 	return string(b)
 }
 
+// agyContextJSON renders Antigravity CLI's injectSteps JSON envelope for
+// SessionStart and PreInvocation hooks.
+func agyContextJSON(context string) string {
+	payload := map[string]any{
+		"injectSteps": []map[string]any{
+			{
+				"systemMessage": map[string]string{
+					"systemMessage": context,
+				},
+			},
+		},
+	}
+	b, err := json.Marshal(payload)
+	if err != nil {
+		return ""
+	}
+	return string(b)
+}
+
 // formatChildrenContext renders the fleet snapshot. Header always carries the
 // counts; bullets list only the ACTIONABLE children — waiting (stalled on a
 // question) and completed (result ready to collect) — each with the exact

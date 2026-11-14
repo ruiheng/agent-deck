@@ -13,6 +13,7 @@ import "strings"
 // events that nothing consumed. New hook-emitting tools belong here and
 // nowhere else.
 var hookStatusToolNames = map[string]bool{
+	"agy":    true,
 	"gemini": true,
 	"hermes": true,
 	"cursor": true,

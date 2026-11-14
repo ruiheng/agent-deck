@@ -261,6 +261,33 @@ func TestSessionSkillsAttach_Happy(t *testing.T) {
 	}
 }
 
+func TestSessionSkillsAttach_AgyHappy(t *testing.T) {
+	srv := NewServer(Config{ListenAddr: "127.0.0.1:0", WebMutations: true})
+	srv.menuData = &fakeMenuDataLoader{snapshot: menuWithSession("sess-agy", "/tmp/proj", "agy")}
+
+	var gotProj, gotTool, gotRef string
+	srv.skills = &fakeSkillsService{
+		attachFn: func(projectPath, tool, skillRef, source string) (*session.ProjectSkillAttachment, error) {
+			gotProj, gotTool, gotRef = projectPath, tool, skillRef
+			return &session.ProjectSkillAttachment{
+				ID: "pool/alpha", Name: "alpha", Source: "pool", EntryName: "alpha",
+				TargetPath: ".agents/skills/alpha",
+			}, nil
+		},
+	}
+
+	req := newLocalRequest(http.MethodPost, "/api/sessions/sess-agy/skills/alpha", nil)
+	rr := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200, body=%s", rr.Code, rr.Body.String())
+	}
+	if gotProj != "/tmp/proj" || gotTool != "agy" || gotRef != "alpha" {
+		t.Fatalf("attach called with (%q,%q,%q), want (/tmp/proj, agy, alpha)", gotProj, gotTool, gotRef)
+	}
+}
+
 // Failure: mutations disabled -> 403.
 func TestSessionSkillsAttach_MutationsDisabled(t *testing.T) {
 	srv := NewServer(Config{ListenAddr: "127.0.0.1:0", WebMutations: false})
