@@ -2943,9 +2943,9 @@ type OpenCodeSettings struct {
 // `launch -capabilities` and reasoning-effort validation.
 type ModelsSettings struct {
 	// Probe asks installed CLIs that can list their own models (today:
-	// `codex debug models` and `opencode models`) for their model and effort
-	// lists, cached per CLI binary, merged in front of the built-in catalog.
-	// Set false to use only the built-in catalog.
+	// `codex debug models`, `opencode models`, and `agy models`) for their
+	// model and effort lists, cached per CLI binary, merged in front of the
+	// built-in catalog. Set false to use only the built-in catalog.
 	// Default: true
 	Probe *bool `toml:"probe,omitempty"`
 
@@ -3377,6 +3377,18 @@ type AgySettings struct {
 	// DangerousMode enables --dangerously-skip-permissions by default for agy
 	// sessions. Default: false.
 	DangerousMode bool `toml:"dangerous_mode,omitempty"`
+
+	// Sandbox enables Antigravity CLI's native --sandbox terminal restriction
+	// flag by default for agy sessions. Valid values: true/false. Default: false.
+	Sandbox bool `toml:"sandbox,omitempty"`
+
+	// Agent sets the default --agent name passed for new agy sessions.
+	// Valid values: any agent name accepted by `agy --agent`. Default: "" (CLI default).
+	Agent string `toml:"agent,omitempty"`
+
+	// ExtraArgs appends default extra CLI tokens passed when launching `agy`.
+	// Valid values: array of CLI argument strings. Default: none (empty).
+	ExtraArgs []string `toml:"extra_args,omitempty"`
 
 	// HooksEnabled enables global Antigravity CLI hooks (~/.gemini/config/hooks.json)
 	// for real-time status detection and session ID binding. Default: true.

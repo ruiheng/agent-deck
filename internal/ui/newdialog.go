@@ -176,6 +176,7 @@ type NewDialog struct {
 	codexOptions          *YoloOptionsPanel   // Codex YOLO panel (concrete for value extraction).
 	hermesOptions         *YoloOptionsPanel   // Hermes YOLO panel (concrete for value extraction).
 	ompOptions            *OMPOptionsPanel    // Full OMP harness controls.
+	agyOptions            *AgyOptionsPanel    // Antigravity CLI launch options panel.
 	toolOptions           OptionsPanel        // Currently active tool options panel (nil if none).
 	focusTargets          []focusTarget       // Ordered list of active focusable elements.
 	focusIndex            int                 // Index into focusTargets.
@@ -411,6 +412,8 @@ type dialogSnapshot struct {
 	geminiYolo       bool
 	codexYolo        bool
 	hermesYolo       bool
+	agyOptions       *session.AgyOptions
+	agyStartPrompt   string
 	multiRepoEnabled bool
 	multiRepoPaths   []string
 	conductorCursor  int
@@ -548,6 +551,7 @@ func NewNewDialog() *NewDialog {
 		codexOptions:    NewYoloOptionsPanel("Codex", "YOLO mode - bypass approvals and sandbox"),
 		hermesOptions:   NewYoloOptionsPanel("Hermes", "YOLO mode - auto-approve all tool calls"),
 		ompOptions:      NewOMPOptionsPanel(),
+		agyOptions:      NewAgyOptionsPanel(),
 		focusIndex:      0,
 		visible:         false,
 		presetCommands:  buildPresetCommands(),
@@ -613,6 +617,10 @@ func (d *NewDialog) ShowInGroup(groupPath, groupName, defaultPath string, conduc
 	d.claudeOptions.SetAccount("")    // #924: the account pick is per-session too; #2895 reapplies the default below
 	d.geminiOptions.Blur()
 	d.codexOptions.Blur()
+	d.hermesOptions.Blur()
+	d.ompOptions.Blur()
+	d.agyOptions.Blur()
+	d.agyOptions.ResetStartPrompt()
 	if d.branchPicker != nil {
 		d.branchPicker.Hide()
 	}
@@ -659,11 +667,13 @@ func (d *NewDialog) ShowInGroup(groupPath, groupName, defaultPath string, conduc
 	d.codexOptions.SetDefaults(false)
 	d.hermesOptions.SetDefaults(false)
 	d.ompOptions.SetDefaults(nil)
+	d.agyOptions.SetDefaults(nil)
 	if userConfig, err := session.LoadUserConfig(); err == nil && userConfig != nil {
 		d.geminiOptions.SetDefaults(userConfig.Gemini.YoloMode)
 		d.codexOptions.SetDefaults(userConfig.Codex.YoloMode)
 		d.hermesOptions.SetDefaults(userConfig.Hermes.YoloMode)
 		d.ompOptions.SetDefaults(session.NewOMPOptions(userConfig))
+		d.agyOptions.SetDefaults(session.NewAgyOptions(userConfig))
 		d.claudeOptions.SetDefaults(userConfig)
 		// #2895: start on [claude].default_account instead of inherit. Each
 		// opening recomputes it from config, so a one-off pick still never
@@ -1020,6 +1030,8 @@ func (d *NewDialog) saveSnapshot() *dialogSnapshot {
 		geminiYolo:       d.geminiOptions.GetYoloMode(),
 		codexYolo:        d.codexOptions.GetYoloMode(),
 		hermesYolo:       d.hermesOptions.GetYoloMode(),
+		agyOptions:       d.agyOptions.GetOptions(d.modelInput.Value(), d.reasoningEffort),
+		agyStartPrompt:   d.agyOptions.GetStartPrompt(),
 		multiRepoEnabled: d.multiRepoEnabled,
 		multiRepoPaths:   append([]string{}, d.multiRepoPaths...),
 		conductorCursor:  d.conductorCursor,
@@ -1045,6 +1057,12 @@ func (d *NewDialog) restoreSnapshot(s *dialogSnapshot) {
 	d.geminiOptions.SetDefaults(s.geminiYolo)
 	d.codexOptions.SetDefaults(s.codexYolo)
 	d.hermesOptions.SetDefaults(s.hermesYolo)
+	if s.agyOptions != nil {
+		d.agyOptions.SetFromOptions(s.agyOptions)
+	} else {
+		d.agyOptions.SetDefaults(nil)
+	}
+	d.agyOptions.SetStartPrompt(s.agyStartPrompt)
 	d.multiRepoEnabled = s.multiRepoEnabled
 	d.multiRepoPaths = append([]string{}, s.multiRepoPaths...)
 	d.multiRepoPathCursor = 0
@@ -1123,6 +1141,18 @@ func (d *NewDialog) previewRecentSession(rs *statedb.RecentSessionRow) {
 				var opts session.OpenCodeOptions
 				if err := json.Unmarshal(wrapper.Options, &opts); err == nil && opts.Model != "" {
 					d.modelInput.SetValue(opts.Model)
+				}
+			}
+		case rs.Tool == "agy":
+			var wrapper session.ToolOptionsWrapper
+			if err := json.Unmarshal(rs.ToolOptions, &wrapper); err == nil && wrapper.Tool == "agy" {
+				var opts session.AgyOptions
+				if err := json.Unmarshal(wrapper.Options, &opts); err == nil {
+					d.agyOptions.SetFromOptions(&opts)
+					if opts.Model != "" {
+						d.modelInput.SetValue(opts.Model)
+					}
+					d.reasoningEffort = opts.Effort
 				}
 			}
 		}
@@ -1556,6 +1586,8 @@ func (d *NewDialog) modelInputHint() string {
 		return "Primary model; use OMP Options below for multi-model and role routing"
 	case session.IsCodexCompatible(cmd):
 		return "Examples: gpt-6-sol, gpt-6-luna, gpt-5.6-sol, gpt-5.5"
+	case cmd == "agy":
+		return "Examples: gemini-4-carbon-high, gemini-3.8-flash-high, claude-sonnet-5-5-high"
 	default:
 		return ""
 	}
@@ -1594,6 +1626,30 @@ func (d *NewDialog) GetOMPOptions() *session.OMPOptions {
 		return nil
 	}
 	return d.ompOptions.GetOptions(d.GetLaunchModelID())
+}
+
+// GetAgyOptions returns Antigravity CLI launch options from the dialog.
+func (d *NewDialog) GetAgyOptions() *session.AgyOptions {
+	if !d.isAgySelected() || d.agyOptions == nil {
+		return nil
+	}
+	return d.agyOptions.GetOptions(d.GetLaunchModelID(), d.GetLaunchReasoningEffort())
+}
+
+// GetAgyYoloMode returns whether Antigravity YOLO mode is enabled.
+func (d *NewDialog) GetAgyYoloMode() bool {
+	if d.agyOptions == nil {
+		return false
+	}
+	return d.agyOptions.GetYoloMode()
+}
+
+// GetAgyStartPrompt returns the per-session startup prompt for agy (-i).
+func (d *NewDialog) GetAgyStartPrompt() string {
+	if !d.isAgySelected() || d.agyOptions == nil {
+		return ""
+	}
+	return d.agyOptions.GetStartPrompt()
 }
 
 // GetClaudeExtraArgs returns the user-supplied claude CLI tokens from the
@@ -1672,6 +1728,8 @@ func (d *NewDialog) ResetRemoteDefaults() {
 	d.geminiOptions.SetDefaults(false)
 	d.codexOptions.SetDefaults(false)
 	d.hermesOptions.SetDefaults(false)
+	d.agyOptions.SetDefaults(nil)
+	d.agyOptions.ResetStartPrompt()
 	d.rebuildFocusTargets()
 }
 
@@ -1813,8 +1871,21 @@ func (d *NewDialog) GetRemoteCreateOptions() (session.RemoteAddOptions, string) 
 		opts.Yolo = d.IsGeminiYoloMode()
 	case command == "hermes":
 		opts.Yolo = d.GetHermesYoloMode()
+	case command == "agy":
+		opts.Yolo = d.GetAgyYoloMode()
+		if agyOpts := d.GetAgyOptions(); agyOpts != nil {
+			if (agyOpts.SessionMode != "" && agyOpts.SessionMode != "new") ||
+				strings.TrimSpace(agyOpts.ResumeConversationID) != "" ||
+				strings.TrimSpace(agyOpts.Mode) != "" ||
+				agyOpts.Sandbox ||
+				strings.TrimSpace(agyOpts.Agent) != "" ||
+				len(agyOpts.ExtraArgs) > 0 ||
+				d.GetAgyStartPrompt() != "" {
+				return opts, "Antigravity remote creation only supports model, effort, and YOLO mode"
+			}
+		}
 	}
-	if d.toolKind(command) == "codex" || command == "gemini" || command == "hermes" {
+	if d.toolKind(command) == "codex" || command == "gemini" || command == "hermes" || command == "agy" {
 		value := opts.Yolo
 		opts.YoloOverride = &value
 	}
@@ -1833,6 +1904,14 @@ func (d *NewDialog) isClaudeSelected() bool {
 		return false
 	}
 	return d.toolKind(d.presetCommands[d.commandCursor]) == "claude"
+}
+
+// isAgySelected reports whether the selected command targets Antigravity CLI (`agy`).
+func (d *NewDialog) isAgySelected() bool {
+	if d.commandCursor < 0 || d.commandCursor >= len(d.presetCommands) {
+		return false
+	}
+	return d.toolKind(d.presetCommands[d.commandCursor]) == "agy"
 }
 
 // Validate checks if the dialog values are valid and returns an error message if not
@@ -1919,6 +1998,19 @@ func (d *NewDialog) validate() (string, focusTarget) {
 		}
 		if err := git.ValidateBranchName(branch); err != nil {
 			return err.Error(), focusBranch
+		}
+	}
+
+	// Validate Antigravity resume conversation ID when Resume session mode is chosen.
+	if d.isAgySelected() && d.agyOptions != nil {
+		if opts := d.agyOptions.GetOptions("", ""); opts != nil && opts.SessionMode == "resume" {
+			id := strings.TrimSpace(opts.ResumeConversationID)
+			if id == "" {
+				return "Conversation ID required for resume", focusOptions
+			}
+			if !session.IsValidAgyConversationID(id) {
+				return "Invalid conversation ID (allowed: letters, digits, ., _, -)", focusOptions
+			}
 		}
 	}
 
@@ -2111,6 +2203,8 @@ func (d *NewDialog) updateToolOptions() {
 		d.toolOptions = d.hermesOptions
 	case cmd == "omp":
 		d.toolOptions = d.ompOptions
+	case cmd == "agy":
+		d.toolOptions = d.agyOptions
 	default:
 		d.toolOptions = nil
 	}
@@ -2129,6 +2223,7 @@ func (d *NewDialog) updateFocus() {
 	d.codexOptions.Blur()
 	d.hermesOptions.Blur()
 	d.ompOptions.Blur()
+	d.agyOptions.Blur()
 
 	// Reset dropdown and soft-select state when focus changes.
 	d.pathSoftSelected = false
@@ -2908,7 +3003,7 @@ func (d *NewDialog) Update(msg tea.Msg) (*NewDialog, tea.Cmd) {
 		case "y":
 			if !d.isTextInputFocused() {
 				selectedCmd := d.GetSelectedCommand()
-				if cur == focusCommand && (selectedCmd == "gemini" || selectedCmd == "codex" || selectedCmd == "hermes") && d.toolOptions != nil {
+				if cur == focusCommand && (selectedCmd == "gemini" || selectedCmd == "codex" || selectedCmd == "hermes" || selectedCmd == "agy") && d.toolOptions != nil {
 					d.toolOptions.Update(msg)
 					return d, nil
 				}
@@ -3712,7 +3807,7 @@ func (d *NewDialog) View() string {
 		// options) and whenever the line would not fit on one row.
 		selectedCmd := d.GetSelectedCommand()
 		extras := []string{"w worktree", "s sandbox"}
-		if selectedCmd == "gemini" || selectedCmd == "codex" || selectedCmd == "hermes" {
+		if selectedCmd == "gemini" || selectedCmd == "codex" || selectedCmd == "hermes" || selectedCmd == "agy" {
 			extras = append(extras, "y yolo")
 		}
 		if d.firstSession {
@@ -4291,6 +4386,7 @@ func (d *NewDialog) SetRemoteCreationCatalog(catalog *session.RemoteCreationCata
 	d.codexOptions.SetDefaults(catalog.Defaults["codex_yolo"])
 	d.geminiOptions.SetDefaults(catalog.Defaults["gemini_yolo"])
 	d.hermesOptions.SetDefaults(catalog.Defaults["hermes_yolo"])
+	d.agyOptions.SetDefaults(&session.AgyOptions{SessionMode: "new", DangerousMode: catalog.Defaults["agy_yolo"]})
 	d.presetCommands = nil
 	if catalog.Legacy {
 		d.presetCommands = buildPresetCommands()

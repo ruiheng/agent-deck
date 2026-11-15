@@ -33,6 +33,17 @@ func TestApplyCLIYoloOverride(t *testing.T) {
 		}
 	})
 
+	t.Run("enabled for agy sets DangerousMode", func(t *testing.T) {
+		inst := session.NewInstanceWithTool("agy-test", "/tmp/test", "agy")
+		if err := applyCLIYoloOverride(inst, true); err != nil {
+			t.Fatalf("applyCLIYoloOverride() error = %v", err)
+		}
+		opts := inst.GetAgyOptions()
+		if opts == nil || !opts.DangerousMode {
+			t.Fatalf("AgyOptions.DangerousMode = %v, want true", opts)
+		}
+	})
+
 	t.Run("disabled is a no-op", func(t *testing.T) {
 		inst := session.NewInstanceWithTool("gemini-test", "/tmp/test", "gemini")
 		if err := applyCLIYoloOverride(inst, false); err != nil {

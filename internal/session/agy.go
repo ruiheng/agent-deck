@@ -103,13 +103,30 @@ func (i *Instance) EffectiveAgySessionID() string {
 	return strings.TrimSpace(i.GenericSessionID)
 }
 
+// IsValidAgyConversationID reports whether id is a well-formed Antigravity
+// conversation identifier safe to pass directly to `--conversation <id>`.
+// Accepts 1..128 characters from `[a-zA-Z0-9._-]`.
+func IsValidAgyConversationID(id string) bool {
+	trimmed := strings.TrimSpace(id)
+	if trimmed == "" || len(trimmed) > 128 {
+		return false
+	}
+	for _, r := range trimmed {
+		isAlphaNum := (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9')
+		if !isAlphaNum && r != '.' && r != '_' && r != '-' {
+			return false
+		}
+	}
+	return true
+}
+
 func agyCommandHasConversationFlag(command string) bool {
 	words, ok := shellwords.Split(command)
 	if !ok {
 		words = strings.Fields(command)
 	}
 	for _, w := range words {
-		if w == "--conversation" || strings.HasPrefix(w, "--conversation=") {
+		if w == "--conversation" || strings.HasPrefix(w, "--conversation=") || w == "-c" || w == "--continue" {
 			return true
 		}
 	}
@@ -117,24 +134,68 @@ func agyCommandHasConversationFlag(command string) bool {
 }
 
 func (i *Instance) agyOptionFlags(opts *AgyOptions) string {
-	if opts == nil {
-		return ""
-	}
 	var b strings.Builder
-	if m := strings.TrimSpace(opts.Model); m != "" {
+	var model, effort, mode, agent string
+	var dangerous, sandbox bool
+	var extraArgs []string
+	if opts != nil {
+		model = strings.TrimSpace(opts.Model)
+		effort = strings.TrimSpace(opts.Effort)
+		mode = strings.TrimSpace(opts.Mode)
+		agent = strings.TrimSpace(opts.Agent)
+		dangerous = opts.DangerousMode
+		sandbox = opts.Sandbox
+		extraArgs = opts.ExtraArgs
+	}
+	if model == "" || effort == "" {
+		if userConfig, err := LoadUserConfig(); err == nil && userConfig != nil {
+			if model == "" {
+				model = strings.TrimSpace(userConfig.Agy.DefaultModel)
+			}
+			if effort == "" {
+				effort = strings.TrimSpace(userConfig.Agy.Effort)
+			}
+		}
+	}
+	if model != "" {
 		b.WriteString(" --model ")
-		b.WriteString(shellescape.Quote(m))
+		b.WriteString(shellescape.Quote(model))
 	}
-	if e := strings.TrimSpace(opts.Effort); e != "" {
+	if effort != "" {
 		b.WriteString(" --effort ")
-		b.WriteString(shellescape.Quote(e))
+		b.WriteString(shellescape.Quote(effort))
 	}
-	if mode := strings.TrimSpace(opts.Mode); mode != "" {
+	if mode != "" {
 		b.WriteString(" --mode ")
 		b.WriteString(shellescape.Quote(mode))
 	}
-	if opts.DangerousMode {
+	if agent != "" {
+		b.WriteString(" --agent ")
+		b.WriteString(shellescape.Quote(agent))
+	}
+	if dangerous {
 		b.WriteString(" --dangerously-skip-permissions")
+	}
+	if sandbox {
+		b.WriteString(" --sandbox")
+	}
+	if i != nil {
+		if parentDir := strings.TrimSpace(i.ParentProjectPath); parentDir != "" && parentDir != i.ProjectPath {
+			b.WriteString(" --add-dir ")
+			b.WriteString(shellescape.Quote(parentDir))
+		}
+		for _, addPath := range i.AdditionalPaths {
+			if trimmedPath := strings.TrimSpace(addPath); trimmedPath != "" {
+				b.WriteString(" --add-dir ")
+				b.WriteString(shellescape.Quote(trimmedPath))
+			}
+		}
+	}
+	for _, arg := range extraArgs {
+		if trimmedArg := strings.TrimSpace(arg); trimmedArg != "" {
+			b.WriteString(" ")
+			b.WriteString(shellescape.Quote(trimmedArg))
+		}
 	}
 	return b.String()
 }
@@ -146,8 +207,9 @@ func (i *Instance) buildAgyCommand(baseCommand string) string {
 
 // buildAgyCommandWithMessage builds the launch command for Antigravity CLI
 // (`agy`), optionally appending `-i <message>` for initial interactive prompt.
-// Resume strictly requires an exact bound conversation ID (`--conversation <id>`);
-// `agy` never falls back to workspace/mtime lookup or `-c`/`--continue`.
+// Automatic resume uses an exact bound conversation ID (`--conversation <id>`);
+// `--continue` is emitted only when opts.SessionMode == "continue" and no ID is
+// bound yet, switching to `--conversation <id>` once bound.
 func (i *Instance) buildAgyCommandWithMessage(baseCommand, message string) string {
 	if i.Tool != "agy" {
 		return baseCommand
@@ -165,16 +227,17 @@ func (i *Instance) buildAgyCommandWithMessage(baseCommand, message string) strin
 	trimmed := strings.TrimSpace(baseCommand)
 	passthrough := trimmed != "" && trimmed != "agy"
 
+	opts := i.GetAgyOptions()
+	if opts == nil {
+		userConfig, _ := LoadUserConfig()
+		opts = NewAgyOptions(userConfig)
+	}
+
 	var cmd strings.Builder
 	if passthrough {
 		cmd.WriteString(trimmed)
 	} else {
 		cmd.WriteString(GetAgyCommand())
-		opts := i.GetAgyOptions()
-		if opts == nil {
-			userConfig, _ := LoadUserConfig()
-			opts = NewAgyOptions(userConfig)
-		}
 		cmd.WriteString(i.agyOptionFlags(opts))
 	}
 
@@ -182,6 +245,8 @@ func (i *Instance) buildAgyCommandWithMessage(baseCommand, message string) strin
 		if sessionID := i.EffectiveAgySessionID(); sessionID != "" {
 			cmd.WriteString(" --conversation ")
 			cmd.WriteString(shellescape.Quote(sessionID))
+		} else if opts != nil && strings.TrimSpace(opts.SessionMode) == "continue" {
+			cmd.WriteString(" --continue")
 		} else {
 			i.launchesFresh.Store(true)
 		}

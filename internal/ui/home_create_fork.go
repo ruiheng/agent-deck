@@ -167,6 +167,13 @@ func (h *Home) createSessionInGroupWithWorktreeAndOptions(
 					inst.ClaudeDetectedAt = time.Now()
 				}
 			}
+		} else if tool == "agy" && len(toolOptionsJSON) > 0 {
+			if opts, err := session.UnmarshalAgyOptions(toolOptionsJSON); err == nil && opts != nil &&
+				opts.SessionMode == "resume" {
+				if candidate := strings.TrimSpace(opts.ResumeConversationID); candidate != "" && session.IsValidAgyConversationID(candidate) {
+					inst.AgySessionID = candidate
+				}
+			}
 		}
 
 		if launchModelID != "" {
@@ -180,10 +187,9 @@ func (h *Home) createSessionInGroupWithWorktreeAndOptions(
 			inst.ExtraArgs = claudeExtraArgs
 		}
 
-		// Apply claude startup query (claude-only, per-session, not
-		// persisted — v1.7.67, #725). buildClaudeCommand emits this as a
-		// single shell-quoted positional arg on the new-session command.
-		if tool == "claude" && claudeStartQuery != "" {
+		// Apply initial startup query / prompt (claude positional arg or agy -i prompt;
+		// per-session, not persisted).
+		if (tool == "claude" || tool == "agy") && claudeStartQuery != "" {
 			inst.StartupQuery = claudeStartQuery
 		}
 

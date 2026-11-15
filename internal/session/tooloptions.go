@@ -665,10 +665,15 @@ func UnmarshalMuseOptions(data json.RawMessage) (*MuseOptions, error) {
 
 // AgyOptions holds launch options for Google Antigravity CLI (`agy`) sessions.
 type AgyOptions struct {
-	Model         string `json:"model,omitempty"`
-	Effort        string `json:"effort,omitempty"`
-	Mode          string `json:"mode,omitempty"`
-	DangerousMode bool   `json:"dangerous_mode,omitempty"`
+	SessionMode          string   `json:"session_mode,omitempty"`
+	ResumeConversationID string   `json:"resume_conversation_id,omitempty"`
+	Model                string   `json:"model,omitempty"`
+	Effort               string   `json:"effort,omitempty"`
+	Mode                 string   `json:"mode,omitempty"`
+	Agent                string   `json:"agent,omitempty"`
+	DangerousMode        bool     `json:"dangerous_mode,omitempty"`
+	Sandbox              bool     `json:"sandbox,omitempty"`
+	ExtraArgs            []string `json:"extra_args,omitempty"`
 }
 
 // ToolName returns "agy".
@@ -688,20 +693,40 @@ func (o *AgyOptions) ToArgs() []string {
 	if o.Mode != "" {
 		args = append(args, "--mode", o.Mode)
 	}
+	if o.Agent != "" {
+		args = append(args, "--agent", o.Agent)
+	}
 	if o.DangerousMode {
 		args = append(args, "--dangerously-skip-permissions")
+	}
+	if o.Sandbox {
+		args = append(args, "--sandbox")
+	}
+	for _, arg := range o.ExtraArgs {
+		if trimmed := strings.TrimSpace(arg); trimmed != "" {
+			args = append(args, trimmed)
+		}
 	}
 	return args
 }
 
 // NewAgyOptions creates AgyOptions with defaults from global config.
 func NewAgyOptions(config *UserConfig) *AgyOptions {
-	opts := &AgyOptions{}
+	opts := &AgyOptions{
+		SessionMode: "new",
+	}
 	if config != nil {
 		opts.Model = config.Agy.DefaultModel
 		opts.Effort = config.Agy.Effort
 		opts.Mode = config.Agy.Mode
+		opts.Agent = strings.TrimSpace(config.Agy.Agent)
 		opts.DangerousMode = config.Agy.DangerousMode
+		opts.Sandbox = config.Agy.Sandbox
+		for _, arg := range config.Agy.ExtraArgs {
+			if trimmed := strings.TrimSpace(arg); trimmed != "" {
+				opts.ExtraArgs = append(opts.ExtraArgs, trimmed)
+			}
+		}
 	}
 	return opts
 }
@@ -749,6 +774,7 @@ func StripResumeFields(raw json.RawMessage) json.RawMessage {
 	}
 
 	delete(wrapper.Options, "resume_session_id")
+	delete(wrapper.Options, "resume_conversation_id")
 	delete(wrapper.Options, "session_mode")
 
 	cleaned, err := json.Marshal(wrapper)

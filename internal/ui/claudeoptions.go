@@ -610,9 +610,9 @@ func (p *ClaudeOptionsPanel) viewNewMode(labelStyle, activeStyle, dimStyle, head
 		radioLabel = activeStyle.Render("▶ Session: ")
 	}
 	content += radioLabel
-	content += p.renderRadio("New", p.sessionMode == 0, p.focusIndex == focusIdx) + "  "
-	content += p.renderRadio("Continue", p.sessionMode == 1, p.focusIndex == focusIdx) + "  "
-	content += p.renderRadio("Resume", p.sessionMode == 2, p.focusIndex == focusIdx) + "\n"
+	content += renderRadioOption("New", p.sessionMode == 0, p.focusIndex == focusIdx) + "  "
+	content += renderRadioOption("Continue", p.sessionMode == 1, p.focusIndex == focusIdx) + "  "
+	content += renderRadioOption("Resume", p.sessionMode == 2, p.focusIndex == focusIdx) + "\n"
 	focusIdx++
 
 	// Resume ID input (only if resume mode)
@@ -721,8 +721,8 @@ func renderCheckboxLine(label string, checked, focused bool) string {
 	return "  " + cb + " " + labelStyle.Render(label) + "\n"
 }
 
-// renderRadio renders a radio button (•) or ( )
-func (p *ClaudeOptionsPanel) renderRadio(label string, selected, focused bool) string {
+// renderRadioOption renders a radio button (•) or ( ) with shared option-panel styling.
+func renderRadioOption(label string, selected, focused bool) string {
 	style := lipgloss.NewStyle()
 	if focused && selected {
 		style = style.Foreground(ColorAccent).Bold(true)
