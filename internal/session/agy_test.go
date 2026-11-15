@@ -182,3 +182,111 @@ func TestExitToShell_AgyFallsBackToShellOnExit(t *testing.T) {
 		t.Fatalf("pane did not fall back to an interactive shell after agy exited, output:\n%s", out)
 	}
 }
+
+func TestBuildAgyCommand_SessionModesAndExtendedOptions(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("AGENTDECK_PROFILE", "agy-opts-test")
+	ClearUserConfigCache()
+	t.Cleanup(ClearUserConfigCache)
+
+	// Write [agy] config defaults for fallback + new config fields.
+	cfgDir := filepath.Join(home, ".agent-deck")
+	if err := os.MkdirAll(cfgDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	cfgTOML := `
+[agy]
+default_model = "gemini-2.5-pro"
+effort = "high"
+mode = "plan"
+dangerous_mode = true
+sandbox = true
+agent = "architect"
+extra_args = ["--remote-control", "--project", "my proj"]
+`
+	if err := os.WriteFile(filepath.Join(cfgDir, "config.toml"), []byte(cfgTOML), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	ClearUserConfigCache()
+
+	userCfg, err := LoadUserConfig()
+	if err != nil {
+		t.Fatalf("LoadUserConfig: %v", err)
+	}
+	defaults := NewAgyOptions(userCfg)
+	if !defaults.Sandbox || defaults.Agent != "architect" || defaults.Mode != "plan" || !defaults.DangerousMode {
+		t.Fatalf("NewAgyOptions defaults mismatch: %+v", defaults)
+	}
+	if len(defaults.ExtraArgs) != 3 || defaults.ExtraArgs[2] != "my proj" {
+		t.Fatalf("NewAgyOptions ExtraArgs = %v, want 3 entries", defaults.ExtraArgs)
+	}
+
+	// Verify extended flags + quoted ExtraArgs + AdditionalPaths + ParentProjectPath.
+	inst := NewInstanceWithTool("agy-ext", t.TempDir(), "agy")
+	inst.ParentProjectPath = "/parent/dir one"
+	inst.AdditionalPaths = []string{"/extra/repo two"}
+	if err := inst.SetAgyOptions(&AgyOptions{
+		SessionMode:   "new",
+		Mode:          "accept-edits",
+		DangerousMode: true,
+		Sandbox:       true,
+		Agent:         "reviewer",
+		ExtraArgs:     []string{"--remote-control", "--project", "my proj"},
+	}); err != nil {
+		t.Fatalf("SetAgyOptions: %v", err)
+	}
+
+	cmd := inst.buildAgyCommand("agy")
+	for _, want := range []string{
+		"--model gemini-2.5-pro",
+		"--effort high",
+		"--mode accept-edits",
+		"--agent reviewer",
+		"--dangerously-skip-permissions",
+		"--sandbox",
+		"--add-dir '/parent/dir one'",
+		"--add-dir '/extra/repo two'",
+		"--remote-control",
+		"--project 'my proj'",
+	} {
+		if !strings.Contains(cmd, want) {
+			t.Errorf("command missing %q, got:\n%s", want, cmd)
+		}
+	}
+
+	// Continue mode emits --continue while unbound and flips launchesFresh=false.
+	instContinue := NewInstanceWithTool("agy-cont", t.TempDir(), "agy")
+	if err := instContinue.SetAgyOptions(&AgyOptions{SessionMode: "continue"}); err != nil {
+		t.Fatalf("SetAgyOptions continue: %v", err)
+	}
+	contCmd := instContinue.buildAgyCommand("agy")
+	if !strings.Contains(contCmd, " --continue") {
+		t.Fatalf("continue mode expected --continue when unbound, got: %q", contCmd)
+	}
+	if instContinue.launchesFresh.Load() {
+		t.Fatal("continue mode should set launchesFresh=false")
+	}
+
+	// Once bound, verified --conversation ID takes precedence and --continue is omitted.
+	instContinue.AgySessionID = "conv-bound-123"
+	reboundCmd := instContinue.buildAgyCommand("agy")
+	if !strings.Contains(reboundCmd, "--conversation conv-bound-123") || strings.Contains(reboundCmd, "--continue") {
+		t.Fatalf("bound continue mode should switch to --conversation conv-bound-123 without --continue, got: %q", reboundCmd)
+	}
+}
+
+func TestIsValidAgyConversationID(t *testing.T) {
+	valid := []string{"aafbb74d-9089-4066-9102-f9df37ff2809", "conv_123.abc"}
+	for _, id := range valid {
+		if !IsValidAgyConversationID(id) {
+			t.Errorf("IsValidAgyConversationID(%q) = false, want true", id)
+		}
+	}
+	invalid := []string{"", "   ", "bad id", "bad;rm", "quote'id", strings.Repeat("a", 129)}
+	for _, id := range invalid {
+		if IsValidAgyConversationID(id) {
+			t.Errorf("IsValidAgyConversationID(%q) = true, want false", id)
+		}
+	}
+}

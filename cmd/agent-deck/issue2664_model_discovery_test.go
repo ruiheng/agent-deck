@@ -19,7 +19,7 @@ func TestIssue2664_CapabilitiesCarryOpenCodeProbeAndOverrides(t *testing.T) {
 	if err := os.MkdirAll(configDir, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	config := "[models.opencode]\nextra = [\"local/qwen\"]\n\n[models.codex]\nlist = [\"nova-2\"]\n"
+	config := "[models.opencode]\nextra = [\"local/qwen\"]\n\n[models.codex]\nlist = [\"nova-2\"]\n\n[models.agy]\nextra = [\"custom-agy-1\"]\n"
 	if err := os.WriteFile(filepath.Join(configDir, "config.toml"), []byte(config), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -27,6 +27,11 @@ func TestIssue2664_CapabilitiesCarryOpenCodeProbeAndOverrides(t *testing.T) {
 	script := "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then echo '1.19.3'; exit 0; fi\n" +
 		"[ \"$1\" = models ] || exit 2\nprintf 'opencode/big-pickle\\nacme/nova-2\\n'\n"
 	if err := os.WriteFile(filepath.Join(bin, "opencode"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	agyScript := "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then echo '1.5.9'; exit 0; fi\n" +
+		"[ \"$1\" = models ] || exit 2\nprintf 'gemini-5-ultra-high         Gemini 5 Ultra (High)\\n'\n"
+	if err := os.WriteFile(filepath.Join(bin, "agy"), []byte(agyScript), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	// A failing codex keeps the host's real one from being run for efforts.
@@ -57,5 +62,9 @@ func TestIssue2664_CapabilitiesCarryOpenCodeProbeAndOverrides(t *testing.T) {
 	}
 	if got := capabilityTool(t, &catalog, "codex").Models; !slices.Equal(got, []string{"nova-2"}) {
 		t.Fatalf("codex models = %v, want the pinned list", got)
+	}
+	agyWant := append([]string{"custom-agy-1", "gemini-5-ultra-high"}, session.KnownModelIDsForTool("agy")...)
+	if got := capabilityTool(t, &catalog, "agy").Models; !slices.Equal(got, agyWant) {
+		t.Fatalf("agy models = %v, want %v", got, agyWant)
 	}
 }

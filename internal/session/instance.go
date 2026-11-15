@@ -1750,7 +1750,8 @@ func (i *Instance) Start() (startErr error) {
 	case i.Tool == "cursor":
 		command = i.buildCursorCommand(i.Command, false)
 	case i.Tool == "agy":
-		command = i.buildAgyCommand(i.Command)
+		command = i.buildAgyCommandWithMessage(i.Command, i.StartupQuery)
+		i.StartupQuery = ""
 	case i.Tool == "hermes":
 		// Hermes emits no lifecycle event at process launch (on_session_start
 		// fires only at the first turn), so seed the "waiting" baseline the
