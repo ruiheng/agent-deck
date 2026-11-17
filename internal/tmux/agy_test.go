@@ -1,6 +1,9 @@
 package tmux
 
-import "testing"
+import (
+	"slices"
+	"testing"
+)
 
 func TestDetectToolFromCommand_Agy(t *testing.T) {
 	tests := []struct {
@@ -42,8 +45,96 @@ func TestDetectToolFromCommand_Agy_Negative(t *testing.T) {
 	}
 }
 
-func TestDefaultRawPatterns_Agy_ReturnsNil(t *testing.T) {
-	if raw := DefaultRawPatterns("agy"); raw != nil {
-		t.Errorf("DefaultRawPatterns(\"agy\") = %+v, want nil (hook-driven tool)", raw)
+func TestDefaultRawPatterns_Agy(t *testing.T) {
+	raw := DefaultRawPatterns("agy")
+	if raw == nil {
+		t.Fatal("DefaultRawPatterns(\"agy\") = nil, want agy patterns")
+	}
+	if _, err := CompilePatterns(raw); err != nil {
+		t.Fatalf("CompilePatterns(agy): %v", err)
+	}
+	for _, ch := range []string{"⣾", "⡿", "⠋"} {
+		if !slices.Contains(raw.SpinnerChars, ch) {
+			t.Errorf("agy SpinnerChars missing %q: %v", ch, raw.SpinnerChars)
+		}
+	}
+}
+
+func TestClassifyPaneFrame_Agy_RealCaptures(t *testing.T) {
+	const busySpinnerFrame = `
+      ▄▀▀▄        Antigravity CLI 1.5.10
+     ▀▀▀▀▀▀       user@example.com
+    ▀▀▀▀▀▀▀▀      Orchestrator (Carbon)
+   ▄▀▀    ▀▀▄     ~/work/project
+  ▄▀▀      ▀▀▄
+
+────────────────────────────────────────────────────────────
+○ Thought for 5m 5s (checking route evidence calculation)
+● Ran (rg -n "required_checkpoint_keys") (ctrl+o to expand)
+⡿  Running command...
+└ Tip: Use /feedback to share your experience with the team.
+────────────────────────────────────────────────────────────
+>
+────────────────────────────────────────────────────────────
+esc to cancel                                  auto · Orchestrator (Carbon)
+`
+
+	const busyFooterOnlyFrame = `
+────────────────────────────────────────────────────────────
+● Explored 3 files
+└ Tip: Use /feedback to share your experience with the team.
+────────────────────────────────────────────────────────────
+>
+────────────────────────────────────────────────────────────
+esc to cancel                                  auto · Orchestrator (Carbon)
+`
+
+	const waitingFrame = `
+────────────────────────────────────────────────────────────
+▸ Thought for 3s, 200 tokens
+
+  All checks passed and the session is ready for your next prompt.
+
+────────────────────────────────────────────────────────────
+>
+────────────────────────────────────────────────────────────
+? for shortcuts                                auto · Orchestrator (Carbon)
+`
+
+	const quotedProseAboveIdleComposerFrame = `
+────────────────────────────────────────────────────────────
+▸ Thought for 2s, 110 tokens
+
+  Previously the worker pane displayed:
+⡿  Running command...
+esc to cancel                                  auto · Orchestrator (Carbon)
+
+────────────────────────────────────────────────────────────
+>
+────────────────────────────────────────────────────────────
+? for shortcuts                                auto · Orchestrator (Carbon)
+`
+
+	d := NewPromptDetector("agy")
+
+	for _, tc := range []struct {
+		name       string
+		pane       string
+		wantFrame  FrameVerdict
+		wantPrompt bool
+	}{
+		{"busy spinner + esc to cancel footer", busySpinnerFrame, FrameActive, false},
+		{"busy footer between tool calls", busyFooterOnlyFrame, FrameActive, false},
+		{"idle waiting ? for shortcuts footer", waitingFrame, FrameWaiting, true},
+		{"quoted prose in reply above idle composer", quotedProseAboveIdleComposerFrame, FrameWaiting, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := ClassifyPaneFrame("agy", tc.pane); got != tc.wantFrame {
+				t.Errorf("ClassifyPaneFrame(%q) = %s, want %s", tc.name, got, tc.wantFrame)
+			}
+			if got := d.HasPrompt(tc.pane); got != tc.wantPrompt {
+				t.Errorf("HasPrompt(%q) = %v, want %v", tc.name, got, tc.wantPrompt)
+			}
+		})
 	}
 }

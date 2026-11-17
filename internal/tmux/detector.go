@@ -93,6 +93,9 @@ func (d *PromptDetector) HasPrompt(content string) bool {
 	case "omp":
 		return d.hasOMPPrompt(content)
 
+	case "agy":
+		return d.hasAgyPrompt(content)
+
 	default:
 		// Generic shell - check for common prompts
 		return d.hasShellPrompt(content)

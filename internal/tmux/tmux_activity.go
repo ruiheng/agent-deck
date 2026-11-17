@@ -137,7 +137,8 @@ func brailleFollows(s string) bool {
 // isBrailleSpinnerChar returns true for the classic 10-frame braille spinner.
 func isBrailleSpinnerChar(ch string) bool {
 	switch ch {
-	case "⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏":
+	case "⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏",
+		"⣾", "⣽", "⣻", "⢿", "⡿", "⣟", "⣯", "⣷":
 		return true
 	default:
 		return false

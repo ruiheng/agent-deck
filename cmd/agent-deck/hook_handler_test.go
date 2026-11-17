@@ -346,6 +346,16 @@ func TestAgyHookHandler_CamelCaseEventsAndOutputs(t *testing.T) {
 			payload:    `{"hookEventName":"stop","conversationId":"agy-cid-1","continuationActive":true}`,
 			wantStatus: "waiting",
 		},
+		{
+			name:       "stop with fullyIdle=false keeps running",
+			payload:    `{"hookEventName":"Stop","conversationId":"agy-cid-1","fullyIdle":false}`,
+			wantStatus: "running",
+		},
+		{
+			name:       "stop with fullyIdle=true sets waiting",
+			payload:    `{"hookEventName":"Stop","conversationId":"agy-cid-1","fullyIdle":true}`,
+			wantStatus: "waiting",
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			out := captureStdout(t, func() {

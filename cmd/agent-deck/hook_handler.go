@@ -86,6 +86,7 @@ type hookPayload struct {
 	CamelConversationID   string          `json:"conversationId"`
 	CamelTranscriptPath   json.RawMessage `json:"transcriptPath"`
 	ContinuationActive    *bool           `json:"continuationActive"`
+	FullyIdle             *bool           `json:"fullyIdle"`
 	InvocationNum         *int            `json:"invocationNum"`
 	LastUserInput         json.RawMessage `json:"lastUserInput"`
 	ArtifactDirectoryPath string          `json:"artifactDirectoryPath"`
@@ -93,7 +94,7 @@ type hookPayload struct {
 
 func isAgyHookPayload(p hookPayload) bool {
 	if p.CamelHookEventName != "" || p.CamelConversationID != "" ||
-		p.ContinuationActive != nil || p.InvocationNum != nil ||
+		p.ContinuationActive != nil || p.FullyIdle != nil || p.InvocationNum != nil ||
 		len(p.CamelTranscriptPath) > 0 || p.ArtifactDirectoryPath != "" {
 		return true
 	}
@@ -603,6 +604,10 @@ func handleHookHandlerReceivedAt(receivedAt time.Time) {
 
 	// Map event to status
 	status := mapEventToStatus(payload.HookEventName)
+	agySubtasksRunning := isAgy && isStopHookEvent(payload.HookEventName) && payload.FullyIdle != nil && !*payload.FullyIdle
+	if agySubtasksRunning {
+		status = "running"
+	}
 
 	// Special handling for Notification events: only map to "waiting" if
 	// the matcher indicates a permission prompt or elicitation dialog
@@ -802,7 +807,7 @@ func handleHookHandlerReceivedAt(receivedAt time.Time) {
 	// the maintainer note in the PR. Emitting here is harmless under the legacy
 	// async install (Claude ignores stdout) and activates once sync lands.
 	stopDrainAllowed := (!isAgy && stopHookDrainEnabled(getClaudeConfigDirForHooks())) || (isAgy && agyStopHookDrainEnabled())
-	if isStopHookEvent(payload.HookEventName) && stopDrainAllowed {
+	if isStopHookEvent(payload.HookEventName) && stopDrainAllowed && !agySubtasksRunning {
 		stopActive := resolveStopHookActiveForHarness(payload, isAgy)
 		// Comms Ledger canary: the turn that ended confirms what it carried;
 		// urgent ledger records pending block once more. When the ledger does

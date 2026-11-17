@@ -290,6 +290,20 @@ func DefaultRawPatterns(toolName string) *RawPatterns {
 			BusyPatterns:   []string{"[PROCESSING]", "[CONNECTING]", "[RECONNECTING]"},
 			PromptPatterns: []string{"openclaw> "},
 		}
+	case "agy":
+		// Antigravity CLI (`agy`). PROVENANCE — CAPTURED LIVE from v1.5.10 in tmux panes:
+		//   Busy:  8-dot Braille circle spinner (`⡿  Running command...`) and framed composer
+		//          footer `esc to cancel          auto · Orchestrator (Carbon)`
+		//   Idle:  framed `>` composer above `? for shortcuts        auto · Orchestrator (Carbon)`
+		return &RawPatterns{
+			BusyPatterns: []string{
+				`re:(?m)^[ \t]*esc to cancel(?:[ \t]{2,}\S.*|[ \t]*$)`,
+			},
+			PromptPatterns: []string{
+				`re:(?m)^[ \t]*\? for shortcuts(?:[ \t]{2,}\S.*|[ \t]*$)`,
+			},
+			SpinnerChars: append([]string(nil), agySpinnerChars...),
+		}
 	default:
 		return nil
 	}
@@ -473,6 +487,7 @@ func defaultWhimsicalWords() []string {
 func SpinnerRuneSet() []rune {
 	return []rune{
 		'⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏',
+		'⣾', '⣽', '⣻', '⢿', '⡿', '⣟', '⣯', '⣷',
 		'·', '✳', '✽', '✶', '✻', '✢', // all spinner-like chars for normalization
 	}
 }

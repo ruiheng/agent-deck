@@ -30,7 +30,7 @@ type statusPaneCorpusEntry struct {
 // statusCorpusDetectorTools is every tool with built-in pane patterns
 // (DefaultRawPatterns). Each one's detector is run over every corpus frame.
 var statusCorpusDetectorTools = []string{
-	"claude", "codewhale", "codex", "copilot", "cursor", "deepseek", "gemini",
+	"agy", "claude", "codewhale", "codex", "copilot", "cursor", "deepseek", "gemini",
 	"muse", "omp", "opencode", "openclaw", "pi", "shell",
 }
 

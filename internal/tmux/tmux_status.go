@@ -1257,6 +1257,9 @@ func (s *Session) hasBusyIndicatorResolved(content string) bool {
 	if tool == "pi" {
 		spinnerContent = piLiveSpinnerContent(content, spinnerChars)
 	}
+	if tool == "agy" {
+		spinnerContent = agyLiveSpinnerContent(content)
+	}
 	char, spinnerLine, found := findSpinnerInContent(spinnerContent, spinnerChars)
 
 	// Get or create spinner tracker
@@ -1277,6 +1280,8 @@ func (s *Session) hasBusyIndicatorResolved(content string) bool {
 		regexContent := recentContent
 		if tool == "pi" {
 			regexContent = piBusyPatternContent(content)
+		} else if tool == "agy" {
+			regexContent = agyBusyPatternContent(content)
 		}
 		for _, re := range patterns.BusyRegexps {
 			if re.MatchString(regexContent) {
@@ -1376,8 +1381,12 @@ func (s *Session) hasPromptIndicator(content string) bool {
 	if patterns != nil {
 		recentLines := lastNLines(content, 25)
 		recentContent := strings.Join(recentLines, "\n")
+		regexContent := recentContent
+		if tool == "agy" {
+			regexContent = agyBusyPatternContent(content)
+		}
 		for _, re := range patterns.PromptRegexps {
-			if re.MatchString(recentContent) {
+			if re.MatchString(regexContent) {
 				return true
 			}
 		}
