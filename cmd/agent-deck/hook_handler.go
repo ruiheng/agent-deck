@@ -735,7 +735,7 @@ func handleHookHandlerReceivedAt(receivedAt time.Time) {
 			}
 			var ledger *session.LedgerDelivery
 			if isFirstInvocation {
-				if dl, ok := session.LedgerPromptContext(instanceID, rawString(payload.Prompt)); ok {
+				if dl, ok := session.LedgerPromptContext(instanceID, rawString(payload.Prompt), "", false); ok {
 					ledger = dl
 					if dl.Text != "" {
 						parts = append([]string{dl.Text}, parts...)
