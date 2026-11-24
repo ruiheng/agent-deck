@@ -933,10 +933,13 @@ func (i *Instance) restart(env map[string]string) (err error) {
 		return nil
 	}
 
-	// If Antigravity CLI (agy) session AND tmux session exists, use respawn-pane.
+	// If Antigravity CLI (agy) session with a bound conversation ID AND tmux
+	// session exists, use respawn-pane (mirroring Claude/Gemini/generic resume).
+	// Unbound sessions fall through to the recreate path so RestartFresh and
+	// explicit command overrides get a clean tmux spawn environment.
 	// Checked BEFORE the custom-tool block so a legacy [tools.antigravity]
 	// definition in config.toml never intercepts native Antigravity restarts.
-	if IsAntigravityTool(i.Tool) && i.tmuxSession != nil && i.tmuxSession.Exists() {
+	if IsAntigravityTool(i.Tool) && i.EffectiveAgySessionID() != "" && i.tmuxSession != nil && i.tmuxSession.Exists() {
 		prepInput := i.buildAgyCommand(i.Command)
 		resumeCmd, containerName, err := i.prepareCommand(prepInput)
 		if err != nil {
