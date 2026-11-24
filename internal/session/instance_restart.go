@@ -133,6 +133,14 @@ func (i *Instance) clearSessionBindingForFreshStart() {
 		i.clearHermesOwnedSessionID()
 	}
 
+	if IsAntigravityTool(i.Tool) {
+		i.AgySessionID = ""
+		i.AgyDetectedAt = time.Time{}
+		i.agySessionIDCleared = true
+		i.persistAgySessionBinding("", time.Time{})
+		ClearHookSessionAnchor(i.ID)
+	}
+
 	if i.Tool == "deepseek" {
 		// Same contract as hermes: drop the discovered resume ID so the next
 		// launch boots a new dsh session instead of reopening the old one.
@@ -925,6 +933,45 @@ func (i *Instance) restart(env map[string]string) (err error) {
 		return nil
 	}
 
+	// If Antigravity CLI (agy) session AND tmux session exists, use respawn-pane.
+	// Checked BEFORE the custom-tool block so a legacy [tools.antigravity]
+	// definition in config.toml never intercepts native Antigravity restarts.
+	if IsAntigravityTool(i.Tool) && i.tmuxSession != nil && i.tmuxSession.Exists() {
+		prepInput := i.buildAgyCommand(i.Command)
+		resumeCmd, containerName, err := i.prepareCommand(prepInput)
+		if err != nil {
+			i.recordPrepareFailure(prepInput, err)
+			return err
+		}
+		if containerName != "" {
+			i.SandboxContainer = containerName
+		}
+		ownershipCommand = resumeCmd
+		sid := i.EffectiveAgySessionID()
+		sessionLog.Info("restart_agy_respawn",
+			slog.String("command", logging.RedactCommandEnv(resumeCmd)),
+			slog.String("session_id_fingerprint", fingerprintSessionID(sid)))
+
+		i.ensureProfileEnv()
+		i.ensureClaudeConfigDirEnv()
+		if sid != "" {
+			_ = i.tmuxSession.SetEnvironment("AGY_SESSION_ID", sid)
+		}
+
+		if err := i.tmuxSession.RespawnPane(resumeCmd); err != nil {
+			sessionLog.Info("restart_agy_respawn_failed", slog.String("error", err.Error()))
+			return fmt.Errorf("failed to restart agy session: %w", err)
+		}
+
+		sessionLog.Info("restart_agy_respawn_succeeded")
+		if sid != "" {
+			WriteHookSessionAnchor(i.ID, sid)
+		}
+		i.sweepDuplicateToolSessions()
+		i.Status = StatusWaiting
+		return nil
+	}
+
 	// If custom tool with session resume support AND tmux session exists, use respawn-pane.
 	// Resolve id and ToolDef once (avoid double GetGenericSessionID / env races
 	// that could produce an empty --resume '' argv). Concurrent config reload
@@ -1063,8 +1110,8 @@ func (i *Instance) restart(env map[string]string) (err error) {
 			command = i.buildClaudeCommand(i.Command)
 		case i.Tool == "gemini":
 			command = i.buildGeminiCommand(i.Command)
-		case i.Tool == "antigravity":
-			command = i.buildEnvSourceCommand() + i.antigravityCommand()
+		case IsAntigravityTool(i.Tool):
+			command = i.buildAgyCommand(i.Command)
 		case i.Tool == "opencode":
 			command = i.buildOpenCodeCommand(i.Command)
 			// Record start time for async session ID detection
@@ -1487,9 +1534,9 @@ func (i *Instance) CanRestart() bool {
 		return true
 	}
 
-	// Antigravity restarts with its stored command, including any explicit
-	// --conversation flag. Without one, it starts a fresh conversation.
-	if i.Tool == "antigravity" {
+	// Antigravity CLI sessions can always restart: bound conversation IDs resume
+	// via --conversation <id>, unbound sessions start fresh without guessing.
+	if IsAntigravityTool(i.Tool) {
 		return true
 	}
 
@@ -1516,6 +1563,9 @@ func (i *Instance) CanRestartFresh() bool {
 	}
 	if i.Tool == "codex" {
 		return i.CodexSessionID != ""
+	}
+	if IsAntigravityTool(i.Tool) {
+		return i.EffectiveAgySessionID() != ""
 	}
 	// Hermes fresh-restart discards the resume binding and starts a new session.
 	if i.Tool == "hermes" {

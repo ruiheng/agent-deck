@@ -20,8 +20,9 @@ import (
 // transcriptContentMessage extracts the assistant message content blocks from
 // a transcript line, for completion-sentinel detection.
 type transcriptContentMessage struct {
-	Type        string `json:"type"`
-	IsSidechain bool   `json:"isSidechain"`
+	Type        string          `json:"type"`
+	IsSidechain bool            `json:"isSidechain"`
+	Content     json.RawMessage `json:"content"`
 	Message     struct {
 		Content json.RawMessage `json:"content"`
 	} `json:"message"`
@@ -123,6 +124,7 @@ func transcriptRoots() []string {
 		}
 	}
 	add(workerScratchDirRoot())
+	add(GetAgyDataDir())
 	return roots
 }
 
@@ -161,9 +163,20 @@ func ScanTranscriptTailForDone(path string) (sig DoneSignal, found bool, pending
 		}
 		switch msg.Type {
 		case "assistant":
-			sig, found = ScanDoneSentinel(transcriptText(msg.Message.Content))
+			content := msg.Message.Content
+			if len(content) == 0 {
+				content = msg.Content
+			}
+			sig, found = ScanDoneSentinel(transcriptText(content))
 			return sig, found, false
-		case "user":
+		case "PLANNER_RESPONSE":
+			content := msg.Content
+			if len(content) == 0 {
+				content = msg.Message.Content
+			}
+			sig, found = ScanDoneSentinel(transcriptText(content))
+			return sig, found, false
+		case "user", "USER_INPUT":
 			return DoneSignal{}, false, true
 		}
 	}

@@ -29,10 +29,14 @@ func openCodeExecutableBase(command string) string {
 
 // CanonicalToolName maps launcher aliases to the identity used by session features.
 func CanonicalToolName(tool string) string {
-	if tool == "opencode2" {
+	switch tool {
+	case "opencode2":
 		return "opencode"
+	case "agy":
+		return "antigravity"
+	default:
+		return tool
 	}
-	return tool
 }
 
 // openCodeUsesV2CLI reports whether this session's OpenCode launch must avoid

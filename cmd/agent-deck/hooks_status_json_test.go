@@ -16,6 +16,7 @@ func TestHooksStatusJSON_AllKindsEmitOneShape(t *testing.T) {
 		{"gemini", handleGeminiHooks},
 		{"hermes", handleHermesHooks},
 		{"cursor", handleCursorHooks},
+		{"agy", handleAgyHooks},
 		{"pi", handlePiHooks},
 	}
 	for _, tc := range cases {
@@ -25,6 +26,7 @@ func TestHooksStatusJSON_AllKindsEmitOneShape(t *testing.T) {
 			t.Setenv("XDG_CONFIG_HOME", home+"/config")
 			t.Setenv("CLAUDE_CONFIG_DIR", "")
 			t.Setenv("CODEX_HOME", "")
+			t.Setenv("AGY_CONFIG_DIR", "")
 			out := captureStdout(t, func() { tc.run([]string{"status", "--json"}) })
 			var got hooksStatusJSON
 			if err := json.Unmarshal([]byte(out), &got); err != nil {

@@ -148,6 +148,7 @@ func (i *Instance) wrapForSandbox(command string) (string, string, error) {
 // an interactive shell when exit_to_shell is enabled (issue #1161).
 var builtinAgentTools = map[string]bool{
 	"antigravity": true,
+	"agy":         true,
 	"claude":      true,
 	"gemini":      true,
 	"opencode":    true,

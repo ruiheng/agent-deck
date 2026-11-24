@@ -173,7 +173,7 @@ func (i *Instance) storedNeverStarted() bool {
 	}
 	for _, id := range []string{
 		i.ClaudeSessionID, i.GeminiSessionID, i.OpenCodeSessionID, i.CodexSessionID,
-		i.PiSessionID, i.CopilotSessionID, i.GenericSessionID,
+		i.PiSessionID, i.CopilotSessionID, i.AgySessionID, i.GenericSessionID,
 	} {
 		if id != "" {
 			return false
@@ -239,7 +239,7 @@ func (i *Instance) LiveStatusPrior() (status Status, flipPending bool, sampled b
 // The call site in updateStatus explains why.
 func shouldDebounceTmuxFlipForTool(tool string) bool {
 	return tool == "" || IsClaudeCompatible(tool) || IsCodexCompatible(tool) ||
-		tool == "gemini" || tool == "hermes" || tool == "cursor"
+		tool == "gemini" || tool == "hermes" || tool == "cursor" || IsAntigravityTool(tool)
 }
 
 // setCodexGenerationEvidence copies the durable notify edge pair into the

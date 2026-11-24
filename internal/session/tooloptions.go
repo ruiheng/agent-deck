@@ -663,6 +663,98 @@ func UnmarshalMuseOptions(data json.RawMessage) (*MuseOptions, error) {
 	return &opts, nil
 }
 
+// AgyOptions holds launch options for Google Antigravity CLI (`agy`) sessions.
+type AgyOptions struct {
+	SessionMode          string   `json:"session_mode,omitempty"`
+	ResumeConversationID string   `json:"resume_conversation_id,omitempty"`
+	Model                string   `json:"model,omitempty"`
+	Effort               string   `json:"effort,omitempty"`
+	Mode                 string   `json:"mode,omitempty"`
+	Agent                string   `json:"agent,omitempty"`
+	DangerousMode        bool     `json:"dangerous_mode,omitempty"`
+	Sandbox              bool     `json:"sandbox,omitempty"`
+	ExtraArgs            []string `json:"extra_args,omitempty"`
+}
+
+// ToolName returns "antigravity".
+func (o *AgyOptions) ToolName() string {
+	return "antigravity"
+}
+
+// ToArgs returns command-line arguments for launching `agy`.
+func (o *AgyOptions) ToArgs() []string {
+	var args []string
+	if o.Model != "" {
+		args = append(args, "--model", o.Model)
+	}
+	if o.Effort != "" {
+		args = append(args, "--effort", o.Effort)
+	}
+	if o.Mode != "" {
+		args = append(args, "--mode", o.Mode)
+	}
+	if o.Agent != "" {
+		args = append(args, "--agent", o.Agent)
+	}
+	if o.DangerousMode {
+		args = append(args, "--dangerously-skip-permissions")
+	}
+	if o.Sandbox {
+		args = append(args, "--sandbox")
+	}
+	for _, arg := range o.ExtraArgs {
+		if trimmed := strings.TrimSpace(arg); trimmed != "" {
+			args = append(args, trimmed)
+		}
+	}
+	return args
+}
+
+// NewAgyOptions creates AgyOptions with defaults from global config.
+func NewAgyOptions(config *UserConfig) *AgyOptions {
+	opts := &AgyOptions{
+		SessionMode: "new",
+	}
+	if config != nil {
+		eff := config.EffectiveAntigravitySettings()
+		opts.Model = eff.DefaultModel
+		opts.Effort = eff.Effort
+		opts.Mode = eff.Mode
+		opts.Agent = strings.TrimSpace(eff.Agent)
+		opts.DangerousMode = eff.DangerousMode
+		opts.Sandbox = eff.Sandbox
+		for _, arg := range eff.ExtraArgs {
+			if trimmed := strings.TrimSpace(arg); trimmed != "" {
+				opts.ExtraArgs = append(opts.ExtraArgs, trimmed)
+			}
+		}
+	}
+	return opts
+}
+
+// UnmarshalAgyOptions deserializes AgyOptions from the tool options JSON wrapper.
+func UnmarshalAgyOptions(data json.RawMessage) (*AgyOptions, error) {
+	if len(data) == 0 {
+		return nil, nil
+	}
+
+	var wrapper ToolOptionsWrapper
+	if err := json.Unmarshal(data, &wrapper); err != nil {
+		return nil, err
+	}
+
+	if !IsAntigravityTool(wrapper.Tool) {
+		return nil, nil
+	}
+
+	var opts AgyOptions
+	if err := json.Unmarshal(wrapper.Options, &opts); err != nil {
+		return nil, err
+	}
+
+	return &opts, nil
+}
+
 // StripResumeFields removes session-specific fields (resume_session_id,
 // session_mode) from serialized ToolOptionsJSON so that a new session
 // inheriting another session's settings starts fresh instead of resuming
@@ -683,6 +775,7 @@ func StripResumeFields(raw json.RawMessage) json.RawMessage {
 	}
 
 	delete(wrapper.Options, "resume_session_id")
+	delete(wrapper.Options, "resume_conversation_id")
 	delete(wrapper.Options, "session_mode")
 
 	cleaned, err := json.Marshal(wrapper)

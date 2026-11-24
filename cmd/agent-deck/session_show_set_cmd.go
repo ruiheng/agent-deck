@@ -223,6 +223,10 @@ func handleSessionShow(profile string, args []string) {
 	if inst.Tool == "opencode" {
 		jsonData["opencode_session_id"] = inst.OpenCodeSessionID
 	}
+	if session.IsAntigravityTool(inst.Tool) {
+		jsonData["agy_session_id"] = inst.EffectiveAgySessionID()
+		jsonData["can_restart"] = inst.CanRestart()
+	}
 	if session.IsClaudeCompatible(inst.Tool) {
 		jsonData["claude_session_id"] = inst.ClaudeSessionID
 		jsonData["can_restart"] = inst.CanRestart()
@@ -397,6 +401,13 @@ func handleSessionShow(profile string, args []string) {
 	if piHooks.State != "" {
 		sb.WriteString(fmt.Sprintf("pi:      %s\n", piHooksLine(piHooks)))
 	}
+	if session.IsAntigravityTool(inst.Tool) {
+		if sid := inst.EffectiveAgySessionID(); sid != "" {
+			sb.WriteString(fmt.Sprintf("Agy:     conversation_id=%s\n", sid))
+		} else {
+			sb.WriteString("Agy:     no conversation ID detected\n")
+		}
+	}
 
 	if inst.NoTransitionNotify {
 		sb.WriteString("Notify:  transition events suppressed\n")
@@ -475,6 +486,7 @@ func handleSessionSet(profile string, args []string) {
 		fmt.Println("  claude-session-id  Claude conversation ID")
 		fmt.Println("  favorite           Favourite flag: true or false (favorite in list/show --json)")
 		fmt.Println("  gemini-session-id  Gemini conversation ID")
+		fmt.Println("  agy-session-id     Antigravity CLI conversation ID (for --conversation resume)")
 		fmt.Println("  tool-session-id    Custom [tools.*] conversation ID (for resume_flag after reboot)")
 		fmt.Println("  account            Named account slot (#924) — resolves via [profiles.<account>.claude].config_dir; restart required")
 		fmt.Println("  idle-timeout       Auto-stop after no tmux output for this duration (#1143; Go duration: 30m, 1h, 24h; 0 disables)")
@@ -684,6 +696,12 @@ func handleSessionSet(profile string, args []string) {
 	if field == session.FieldToolSessionID {
 		if err := session.PersistGenericSessionBinding(storage.GetDB(), inst); err != nil {
 			out.Error(fmt.Sprintf("failed to persist tool-session-id: %v", err), ErrCodeInvalidOperation)
+			exitCLI(1)
+		}
+	}
+	if field == session.FieldAgySessionID || (field == session.FieldToolSessionID && session.IsAntigravityTool(inst.Tool)) {
+		if err := session.PersistAgySessionBinding(storage.GetDB(), inst); err != nil {
+			out.Error(fmt.Sprintf("failed to persist agy-session-id: %v", err), ErrCodeInvalidOperation)
 			exitCLI(1)
 		}
 	}

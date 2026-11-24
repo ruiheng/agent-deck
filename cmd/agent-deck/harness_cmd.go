@@ -141,6 +141,9 @@ func loginFacts(name string, cfg *session.UserConfig) (*bool, []harnessAccountJS
 	case "hermes":
 		dir := session.GetHermesConfigDir()
 		return boolPtr(nonEmptyFile(filepath.Join(dir, ".env")) || nonEmptyFile(filepath.Join(dir, "auth.json"))), accounts
+	case "antigravity":
+		dir := session.GetAgyConfigDir()
+		return boolPtr(nonEmptyFile(filepath.Join(dir, "oauth_creds.json")) || nonEmptyFile(filepath.Join(dir, "auth.json")) || os.Getenv("GEMINI_API_KEY") != "" || os.Getenv("GOOGLE_API_KEY") != ""), accounts
 	}
 	return nil, accounts
 }
@@ -179,6 +182,8 @@ func hooksFacts(name string) *bool {
 		return boolPtr(session.CheckHermesHooksInstalled(session.GetHermesConfigDir()))
 	case "pi":
 		return boolPtr(session.CheckPiHooksInstalled(session.PiExtensionsDir()))
+	case "antigravity":
+		return boolPtr(session.CheckAgyHooksInstalled(session.GetAgyConfigDir()))
 	}
 	return nil
 }

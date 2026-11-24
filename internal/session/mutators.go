@@ -30,6 +30,7 @@ const (
 	FieldGeminiSessionID   = "gemini-session-id"
 	FieldOpenCodeSessionID = "opencode-session-id"
 	FieldCodexSessionID    = "codex-session-id"
+	FieldAgySessionID      = "agy-session-id"
 	// FieldToolSessionID binds a custom [tools.*] conversation id so restart
 	// after reboot can pass resume_flag <id>. Alias of the tool_data key
 	// generic_session_id.
@@ -96,6 +97,7 @@ var ValidMutableFields = []string{
 	FieldGeminiSessionID,
 	FieldOpenCodeSessionID,
 	FieldCodexSessionID,
+	FieldAgySessionID,
 	FieldToolSessionID,
 	FieldTitleLocked,
 	FieldNoTransitionNotify,
@@ -134,7 +136,7 @@ func RestartPolicyFor(field string) FieldRestartPolicy {
 	case FieldCommand, FieldWrapper, FieldTool, FieldChannels, FieldPlugins, FieldExtraArgs, FieldPath,
 		FieldSkipPermissions, FieldAutoMode, FieldAccount, FieldModel, FieldContextLevel, FieldInstructionsFile, FieldPromptSuggestions,
 		// Resume flags are baked into the next spawn command.
-		FieldToolSessionID:
+		FieldAgySessionID, FieldToolSessionID:
 		return FieldRestartRequired
 	default:
 		return FieldLive
@@ -410,6 +412,28 @@ func SetField(inst *Instance, field, value string, extraArgsTokens []string) (ol
 		inst.CodexSessionID = normalized
 		inst.CodexDetectedAt = time.Now()
 
+	case FieldAgySessionID:
+		value = strings.TrimSpace(value)
+		oldValue = inst.EffectiveAgySessionID()
+		inst.AgySessionID = value
+		if value == "" {
+			inst.AgyDetectedAt = time.Time{}
+			inst.agySessionIDCleared = true
+			ClearHookSessionAnchor(inst.ID)
+		} else {
+			inst.AgyDetectedAt = time.Now()
+			inst.agySessionIDCleared = false
+		}
+		if err := inst.withOwningStateDB(func(db *statedb.StateDB) error {
+			return db.WriteAgySessionBinding(inst.ID, value, inst.AgyDetectedAt)
+		}); !errors.Is(err, errNoStateDB) && err != nil {
+			return oldValue, nil, &MutationError{
+				Field: field,
+				Msg:   fmt.Sprintf("failed to persist agy-session-id: %v", err),
+			}
+		}
+		postCommit = makeGenericSessionEnvPostCommit(inst, value, []string{"AGY_SESSION_ID"})
+
 	case FieldToolSessionID:
 		// Trim so whitespace-only is a clear; resume argv must not inject bare spaces.
 		value = strings.TrimSpace(value)
@@ -453,9 +477,33 @@ func SetField(inst *Instance, field, value string, extraArgsTokens []string) (ol
 				}
 			}
 		}
+		envNames := inst.genericSessionEnvNames()
+		if IsAntigravityTool(inst.Tool) {
+			if oldValue == "" {
+				oldValue = inst.AgySessionID
+			}
+			inst.AgySessionID = value
+			if value == "" {
+				inst.AgyDetectedAt = time.Time{}
+				inst.agySessionIDCleared = true
+				ClearHookSessionAnchor(inst.ID)
+			} else {
+				inst.AgyDetectedAt = time.Now()
+				inst.agySessionIDCleared = false
+			}
+			if err := inst.withOwningStateDB(func(db *statedb.StateDB) error {
+				return db.WriteAgySessionBinding(inst.ID, value, inst.AgyDetectedAt)
+			}); !errors.Is(err, errNoStateDB) && err != nil {
+				return oldValue, nil, &MutationError{
+					Field: field,
+					Msg:   fmt.Sprintf("failed to persist agy-session-id: %v", err),
+				}
+			}
+			envNames = append(envNames, "AGY_SESSION_ID")
+		}
 		// Publish into the tool's env var when configured, and into the
 		// agent-deck-owned fallback either way, so a live pane sees it.
-		postCommit = makeGenericSessionEnvPostCommit(inst, value, inst.genericSessionEnvNames())
+		postCommit = makeGenericSessionEnvPostCommit(inst, value, envNames)
 
 	case FieldTitleLocked:
 		oldValue = strconv.FormatBool(inst.TitleLocked)

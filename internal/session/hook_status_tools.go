@@ -13,9 +13,11 @@ import "strings"
 // events that nothing consumed. New hook-emitting tools belong here and
 // nowhere else.
 var hookStatusToolNames = map[string]bool{
-	"gemini": true,
-	"hermes": true,
-	"cursor": true,
+	"antigravity": true,
+	"agy":         true,
+	"gemini":      true,
+	"hermes":      true,
+	"cursor":      true,
 	// pi (pi-coding-agent) emits through the agent-deck extension that
 	// `agent-deck pi-hooks install` writes into pi's extensions dir (#2222).
 	"pi": true,

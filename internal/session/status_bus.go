@@ -131,6 +131,8 @@ func LiveTranscriptPath(inst *Instance, peers []*Instance) string {
 			return ""
 		}
 		return artifact.Path
+	case IsAntigravityTool(inst.Tool):
+		return AgyTranscriptPath(inst)
 	}
 	return ""
 }

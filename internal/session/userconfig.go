@@ -194,6 +194,9 @@ type UserConfig struct {
 	// Antigravity defines Google Antigravity CLI integration settings.
 	Antigravity AntigravitySettings `toml:"antigravity,omitempty"`
 
+	// Agy is a legacy read alias for [antigravity] config.
+	Agy AntigravitySettings `toml:"agy,omitempty"`
+
 	// OpenCode defines OpenCode CLI integration settings
 	OpenCode OpenCodeSettings `toml:"opencode,omitempty"`
 
@@ -2890,10 +2893,94 @@ func (c *ClaudeSettings) GetAutoResumeSummary() bool {
 	return *c.AutoResumeSummary
 }
 
-// AntigravitySettings defines Antigravity CLI configuration.
+// AntigravitySettings defines Google Antigravity CLI (`agy`) configuration.
 type AntigravitySettings struct {
 	// Command is an executable, path, or shell command. Defaults to "agy".
 	Command string `toml:"command,omitempty"`
+
+	// EnvFile is a .env file specific to Antigravity sessions (sourced before `agy` runs).
+	// Default: "" (none).
+	EnvFile string `toml:"env_file,omitempty"`
+
+	// DefaultModel is the default --model passed for new Antigravity sessions when no
+	// per-session override is set. Default: "" (CLI default).
+	DefaultModel string `toml:"default_model,omitempty"`
+
+	// Effort sets the default --effort level (low, medium, high, xhigh, max).
+	// Default: "" (CLI default).
+	Effort string `toml:"effort,omitempty"`
+
+	// Mode sets the default --mode (accept-edits, auto, plan).
+	// Default: "" (CLI default).
+	Mode string `toml:"mode,omitempty"`
+
+	// DangerousMode enables --dangerously-skip-permissions by default for
+	// Antigravity sessions. Default: false.
+	DangerousMode bool `toml:"dangerous_mode,omitempty"`
+
+	// Sandbox enables Antigravity CLI's native --sandbox terminal restriction
+	// flag by default for Antigravity sessions. Valid values: true/false. Default: false.
+	Sandbox bool `toml:"sandbox,omitempty"`
+
+	// Agent sets the default --agent name passed for new Antigravity sessions.
+	// Valid values: any agent name accepted by `agy --agent`. Default: "" (CLI default).
+	Agent string `toml:"agent,omitempty"`
+
+	// ExtraArgs appends default extra CLI tokens passed when launching `agy`.
+	// Valid values: array of CLI argument strings. Default: none (empty).
+	ExtraArgs []string `toml:"extra_args,omitempty"`
+
+	// HooksEnabled enables global Antigravity CLI hooks (~/.gemini/config/hooks.json)
+	// for real-time status detection and session ID binding. Default: true.
+	HooksEnabled *bool `toml:"hooks_enabled,omitempty"`
+}
+
+// GetHooksEnabled reports whether Antigravity CLI hooks are enabled, defaulting to true.
+func (a AntigravitySettings) GetHooksEnabled() bool {
+	if a.HooksEnabled == nil {
+		return true
+	}
+	return *a.HooksEnabled
+}
+
+// EffectiveAntigravitySettings returns [antigravity] merged over legacy [agy]
+// config fields so pre-v1.16.40 [agy] settings continue to apply.
+func (c *UserConfig) EffectiveAntigravitySettings() AntigravitySettings {
+	if c == nil {
+		return AntigravitySettings{}
+	}
+	eff := c.Agy
+	if c.Antigravity.Command != "" {
+		eff.Command = c.Antigravity.Command
+	}
+	if c.Antigravity.EnvFile != "" {
+		eff.EnvFile = c.Antigravity.EnvFile
+	}
+	if c.Antigravity.DefaultModel != "" {
+		eff.DefaultModel = c.Antigravity.DefaultModel
+	}
+	if c.Antigravity.Effort != "" {
+		eff.Effort = c.Antigravity.Effort
+	}
+	if c.Antigravity.Mode != "" {
+		eff.Mode = c.Antigravity.Mode
+	}
+	if c.Antigravity.DangerousMode {
+		eff.DangerousMode = true
+	}
+	if c.Antigravity.Sandbox {
+		eff.Sandbox = true
+	}
+	if c.Antigravity.Agent != "" {
+		eff.Agent = c.Antigravity.Agent
+	}
+	if len(c.Antigravity.ExtraArgs) > 0 {
+		eff.ExtraArgs = c.Antigravity.ExtraArgs
+	}
+	if c.Antigravity.HooksEnabled != nil {
+		eff.HooksEnabled = c.Antigravity.HooksEnabled
+	}
+	return eff
 }
 
 // GeminiSettings defines Gemini CLI configuration
@@ -5009,7 +5096,7 @@ func IsCodexCompatible(toolName string) bool {
 // IsAntigravityCompatible reports whether sends must wait for the Antigravity
 // composer rather than accepting any waiting state (which includes menus).
 func IsAntigravityCompatible(toolName string) bool {
-	if toolName == "antigravity" {
+	if CanonicalToolName(toolName) == "antigravity" {
 		return true
 	}
 	def := GetToolDef(toolName)
@@ -5165,7 +5252,7 @@ func GetToolCommand(toolName string) string {
 		if toolName == "deepseek" {
 			return deepSeekBinary
 		}
-		if toolName == "antigravity" {
+		if toolName == "antigravity" || toolName == "agy" {
 			return "agy"
 		}
 		return toolName
@@ -5179,11 +5266,14 @@ func GetToolCommand(toolName string) string {
 		if config.Gemini.Command != "" {
 			return config.Gemini.Command
 		}
-	case "antigravity":
-		if config.Antigravity.Command != "" {
-			return config.Antigravity.Command
+	case "antigravity", "agy":
+		if cmd := strings.TrimSpace(config.Antigravity.Command); cmd != "" {
+			return cmd
 		}
-		if command := config.Tools["antigravity"].Command; command != "" {
+		if cmd := strings.TrimSpace(config.Agy.Command); cmd != "" {
+			return cmd
+		}
+		if command := strings.TrimSpace(config.Tools["antigravity"].Command); command != "" {
 			return command
 		}
 		return "agy"

@@ -1,0 +1,8 @@
+Usage: agent-deck agy-hooks <command>
+
+Manage Antigravity (agy) CLI hook integration.
+
+Commands:
+  install      Install agent-deck Antigravity hooks
+  uninstall    Remove agent-deck Antigravity hooks
+  status       Show Antigravity hooks install status (--json for machine output)

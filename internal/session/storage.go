@@ -238,6 +238,11 @@ type InstanceData struct {
 	// HermesDetectedAt is when the binding was recorded (tool_data
 	// hermes_detected_at); restart compares it with the hook record.
 	HermesDetectedAt time.Time `json:"-"`
+
+	// AgySessionID mirrors Instance.AgySessionID, stored in the tool_data
+	// extras zone (agy_session_persist.go).
+	AgySessionID  string    `json:"agy_session_id,omitempty"`
+	AgyDetectedAt time.Time `json:"agy_detected_at,omitempty"`
 }
 
 // GroupData represents serializable group data
@@ -1249,6 +1254,7 @@ func instanceToRow(inst *Instance) (*statedb.InstanceRow, error) {
 	// can only ever be "restarted" into dsh's usage error.
 	toolData = WriteDeepSeekTaskToToolData(toolData, inst.DeepSeekTask)
 	toolData = WriteHermesSessionIDToToolData(toolData, inst.HermesSessionID)
+	toolData = WriteAgySessionIDToToolData(toolData, inst.AgySessionID, inst.AgyDetectedAt, inst.agySessionIDCleared)
 	toolData = WriteCrossHarnessLineageToToolData(toolData, inst.SupersededBy, inst.Supersedes)
 
 	return &statedb.InstanceRow{
@@ -1439,6 +1445,8 @@ func (s *Storage) LoadLite() ([]*InstanceData, []*GroupData, error) {
 			DeepSeekTask:              ReadDeepSeekTaskFromToolData(r.ToolData),
 			HermesSessionID:           ReadHermesSessionIDFromToolData(r.ToolData),
 			HermesDetectedAt:          ReadHermesDetectedAtFromToolData(r.ToolData),
+			AgySessionID:              ReadAgySessionIDFromToolData(r.ToolData),
+			AgyDetectedAt:             ReadAgyDetectedAtFromToolData(r.ToolData),
 			SupersededBy:              ReadCrossHarnessSupersededByFromToolData(r.ToolData),
 			Supersedes:                ReadCrossHarnessSupersedesFromToolData(r.ToolData),
 		}
@@ -1590,6 +1598,8 @@ func (s *Storage) LoadWithGroupsSnapshot() ([]*Instance, []*GroupData, *statedb.
 			DeepSeekTask:              ReadDeepSeekTaskFromToolData(r.ToolData),
 			HermesSessionID:           ReadHermesSessionIDFromToolData(r.ToolData),
 			HermesDetectedAt:          ReadHermesDetectedAtFromToolData(r.ToolData),
+			AgySessionID:              ReadAgySessionIDFromToolData(r.ToolData),
+			AgyDetectedAt:             ReadAgyDetectedAtFromToolData(r.ToolData),
 			SupersededBy:              ReadCrossHarnessSupersededByFromToolData(r.ToolData),
 			Supersedes:                ReadCrossHarnessSupersedesFromToolData(r.ToolData),
 		}
@@ -1916,6 +1926,8 @@ func (s *Storage) convertToInstances(data *StorageData) ([]*Instance, []*GroupDa
 			DeepSeekTask:                 instData.DeepSeekTask,
 			HermesSessionID:              instData.HermesSessionID,
 			hermesBoundAt:                instData.HermesDetectedAt,
+			AgySessionID:                 instData.AgySessionID,
+			AgyDetectedAt:                instData.AgyDetectedAt,
 			SubcommandPassthrough:        instData.SubcommandPassthrough,
 			TrackCommandExit:             instData.TrackCommandExit,
 			PiSocketExported:             instData.PiSocketExported,

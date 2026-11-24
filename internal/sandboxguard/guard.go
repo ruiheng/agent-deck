@@ -54,6 +54,8 @@ var isolationRootEnvs = []string{"HOME", "XDG_CONFIG_HOME", "XDG_DATA_HOME", "XD
 // was swapped. testutil.IsolateHome clears every one of them (testutil
 // re-exports this list), and Check names the one a refused path came through.
 var ToolConfigDirEnvs = []string{
+	"AGY_CONFIG_DIR",
+	"AGY_DATA_DIR",
 	"CLAUDE_CONFIG_DIR",
 	"CODEX_HOME",
 	"COPILOT_CONFIG_DIR",

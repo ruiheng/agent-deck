@@ -388,9 +388,16 @@ type Instance struct {
 	// GitHub Copilot CLI integration
 	CopilotSessionID  string    `json:"copilot_session_id,omitempty"`
 	CopilotDetectedAt time.Time `json:"copilot_detected_at,omitempty"`
-	CopilotStartedAt  int64     `json:"-"`                           // Unix millis when we started Copilot (for session matching, not persisted)
-	CopilotModel      string    `json:"copilot_model,omitempty"`     // Active model for this session
-	CopilotAllowAll   bool      `json:"copilot_allow_all,omitempty"` // Per-session --allow-all override
+
+	// Antigravity CLI (agy) integration. Persisted in the tool_data extras zone
+	// (agy_session_persist.go) so restarts resume via --conversation <id> even
+	// after a reboot, without falling back to mtime or --continue.
+	AgySessionID        string    `json:"agy_session_id,omitempty"`
+	AgyDetectedAt       time.Time `json:"agy_detected_at,omitempty"`
+	agySessionIDCleared bool
+	CopilotStartedAt    int64  `json:"-"`                           // Unix millis when we started Copilot (for session matching, not persisted)
+	CopilotModel        string `json:"copilot_model,omitempty"`     // Active model for this session
+	CopilotAllowAll     bool   `json:"copilot_allow_all,omitempty"` // Per-session --allow-all override
 
 	// Latest user input for context (extracted from session files)
 	LatestPrompt      string    `json:"latest_prompt,omitempty"`
@@ -1685,8 +1692,9 @@ func (i *Instance) Start() (startErr error) {
 		}
 	case i.Tool == "gemini":
 		command = i.buildGeminiCommand(i.Command)
-	case i.Tool == "antigravity":
-		command = i.buildEnvSourceCommand() + i.antigravityCommand()
+	case IsAntigravityTool(i.Tool):
+		command, _ = i.buildAgyCommandWithMessage(i.Command, i.StartupQuery)
+		i.StartupQuery = ""
 	case i.Tool == "copilot":
 		command = buildCopilotCommand(i)
 		// Record start time for session ID detection (Unix millis)
@@ -1899,6 +1907,9 @@ func (i *Instance) Start() (startErr error) {
 	if i.GeminiSessionID != "" {
 		_ = i.tmuxSession.SetEnvironment("GEMINI_SESSION_ID", i.GeminiSessionID)
 	}
+	if agySID := i.EffectiveAgySessionID(); IsAntigravityTool(i.Tool) && agySID != "" {
+		_ = i.tmuxSession.SetEnvironment("AGY_SESSION_ID", agySID)
+	}
 	if i.Tool == "gemini" {
 		yoloVal := "false"
 		if i.GeminiYoloMode != nil && *i.GeminiYoloMode {
@@ -2097,9 +2108,8 @@ func (i *Instance) StartWithMessage(message string) (startErr error) {
 		}
 	case i.Tool == "gemini":
 		command = i.buildGeminiCommand(i.Command)
-	case i.Tool == "antigravity":
-		command, promptEmbeddedInCommand = i.buildAntigravityCommandWithPrompt(message)
-		command = i.buildEnvSourceCommand() + command
+	case IsAntigravityTool(i.Tool):
+		command, promptEmbeddedInCommand = i.buildAgyCommandWithMessage(i.Command, message)
 	case i.Tool == "opencode":
 		if i.IsForkAwaitingStart {
 			command = i.buildOpenCodeCommand(i.consumeForkStartCommand())
@@ -2280,6 +2290,9 @@ func (i *Instance) StartWithMessage(message string) (startErr error) {
 	}
 	if i.GeminiSessionID != "" {
 		_ = i.tmuxSession.SetEnvironment("GEMINI_SESSION_ID", i.GeminiSessionID)
+	}
+	if agySID := i.EffectiveAgySessionID(); IsAntigravityTool(i.Tool) && agySID != "" {
+		_ = i.tmuxSession.SetEnvironment("AGY_SESSION_ID", agySID)
 	}
 	if i.Tool == "gemini" {
 		yoloVal := "false"

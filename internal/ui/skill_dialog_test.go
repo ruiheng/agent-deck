@@ -215,6 +215,43 @@ func TestSkillDialog_ApplyUsesAgentSkillsDirForGemini(t *testing.T) {
 	}
 }
 
+func TestSkillDialog_ApplyUsesAgentSkillsDirForAntigravity(t *testing.T) {
+	cleanup := setupSkillDialogEnv(t)
+	defer cleanup()
+
+	sourcePath := t.TempDir()
+	writeDialogSkillDir(t, sourcePath, "lint", "lint", "Linting best practices")
+
+	if err := session.SaveSkillSources(map[string]session.SkillSourceDef{
+		"pool": {Path: sourcePath, Enabled: boolPtrDialog(true)},
+	}); err != nil {
+		t.Fatalf("SaveSkillSources failed: %v", err)
+	}
+
+	projectPath := t.TempDir()
+
+	dialog := NewSkillDialog()
+	if err := dialog.Show(projectPath, "sess-agy", "antigravity"); err != nil {
+		t.Fatalf("Show failed: %v", err)
+	}
+	if dialog.emptyHelpText != "" {
+		t.Fatalf("unexpected emptyHelpText for antigravity: %q", dialog.emptyHelpText)
+	}
+
+	dialog.column = SkillColumnAvailable
+	dialog.availableIdx = 0
+	dialog.Move()
+
+	if err := dialog.Apply(); err != nil {
+		t.Fatalf("Apply failed: %v", err)
+	}
+
+	targetPath := filepath.Join(projectPath, ".agents", "skills", "lint")
+	if _, err := os.Lstat(targetPath); err != nil {
+		t.Fatalf("expected materialized skill at %s: %v", targetPath, err)
+	}
+}
+
 func TestSkillDialog_ShowMarksReconcileNeededForRuntimeSwitch(t *testing.T) {
 	cleanup := setupSkillDialogEnv(t)
 	defer cleanup()

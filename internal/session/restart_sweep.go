@@ -59,6 +59,8 @@ func (i *Instance) sweepDuplicateToolSessions() {
 		killDuplicateSessionsFn("OPENCODE_SESSION_ID", i.OpenCodeSessionID, keepName)
 	case i.Tool == "codex" && i.CodexSessionID != "":
 		killDuplicateSessionsFn("CODEX_SESSION_ID", i.CodexSessionID, keepName)
+	case IsAntigravityTool(i.Tool) && i.EffectiveAgySessionID() != "":
+		killDuplicateSessionsFn("AGY_SESSION_ID", i.EffectiveAgySessionID(), keepName)
 	}
 
 	if i.ID != "" {
