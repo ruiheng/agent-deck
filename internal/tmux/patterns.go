@@ -55,7 +55,7 @@ func DefaultRawPatterns(toolName string) *RawPatterns {
 			BusyPatterns:   []string{"esc to cancel"},
 			PromptPatterns: []string{"gemini>", "Type your message"},
 		}
-	case "antigravity":
+	case "antigravity", "agy":
 		return &RawPatterns{
 			BusyPatterns: []string{"re:" + antigravityBusyFooter},
 			PromptPatterns: []string{
@@ -66,6 +66,7 @@ func DefaultRawPatterns(toolName string) *RawPatterns {
 				`re:(?m)^[ \t]*(?:Trust this folder\?|Do you trust the contents of this project\?)[ \t]*$`,
 				`re:(?im)^[ \t]*(?:(?:choose|select) (?:your |a )?(?:colou?r scheme|rendering mode)|rendering mode)[:?]?[ \t]*$`,
 			},
+			SpinnerChars: append([]string(nil), agySpinnerChars...),
 		}
 	case "opencode":
 		return &RawPatterns{
@@ -485,6 +486,7 @@ func defaultWhimsicalWords() []string {
 func SpinnerRuneSet() []rune {
 	return []rune{
 		'⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏',
+		'⣾', '⣽', '⣻', '⢿', '⡿', '⣟', '⣯', '⣷',
 		'·', '✳', '✽', '✶', '✻', '✢', // all spinner-like chars for normalization
 	}
 }

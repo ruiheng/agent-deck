@@ -1257,6 +1257,9 @@ func (s *Session) hasBusyIndicatorResolved(content string) bool {
 	if tool == "pi" {
 		spinnerContent = piLiveSpinnerContent(content, spinnerChars)
 	}
+	if tool == "antigravity" || tool == "agy" {
+		spinnerContent = agyLiveSpinnerContent(content)
+	}
 	char, spinnerLine, found := findSpinnerInContent(spinnerContent, spinnerChars)
 
 	// Get or create spinner tracker

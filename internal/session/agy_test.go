@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestBuildAgyCommand_FreshAndBoundResume(t *testing.T) {
@@ -303,5 +304,80 @@ func TestIsValidAgyConversationID(t *testing.T) {
 		if IsValidAgyConversationID(id) {
 			t.Errorf("IsValidAgyConversationID(%q) = true, want false", id)
 		}
+	}
+}
+
+const agyBusyLivePaneFrame = "────────────────────────────────────────────────────────────\n" +
+	"○ Thought for 5m 5s (analyzing test cases)\n" +
+	"⡿  Running command...\n" +
+	"────────────────────────────────────────────────────────────\n" +
+	">\n" +
+	"────────────────────────────────────────────────────────────\n" +
+	"esc to cancel                                  auto · Orchestrator (Carbon)\n"
+
+const agyIdleLivePaneFrame = "────────────────────────────────────────────────────────────\n" +
+	"▸ Thought for 3s, 200 tokens\n\n" +
+	"  Ready for next task.\n\n" +
+	"────────────────────────────────────────────────────────────\n" +
+	">\n" +
+	"────────────────────────────────────────────────────────────\n" +
+	"? for shortcuts                                auto · Orchestrator (Carbon)\n"
+
+func TestAgyUpdateStatus_BusyPanePastHookFreshnessWindowStaysRunning(t *testing.T) {
+	inst, cleanup := startPaneInstance(t, "antigravity", "agy-stale-hook-busy", agyBusyLivePaneFrame)
+	defer cleanup()
+	inst.tmuxSession.Command = "agy"
+
+	inst.UpdateHookStatus(&HookStatus{
+		Status:    "running",
+		Event:     "PreInvocation",
+		SessionID: "conv-agy-stale-1",
+		UpdatedAt: time.Now().Add(-5 * time.Minute),
+	})
+
+	if err := inst.UpdateStatus(); err != nil {
+		t.Fatalf("first UpdateStatus: %v", err)
+	}
+	if err := inst.UpdateStatus(); err != nil {
+		t.Fatalf("second UpdateStatus: %v", err)
+	}
+	if got := inst.GetStatusThreadSafe(); got != StatusRunning {
+		t.Fatalf("busy agy pane past hook freshness window = %s, want running", got)
+	}
+}
+
+func TestAgyUpdateStatus_BusyPaneOverridesWaitingHookUntilIdle(t *testing.T) {
+	busyInst, busyCleanup := startPaneInstance(t, "antigravity", "agy-busy-over-wait", agyBusyLivePaneFrame)
+	defer busyCleanup()
+	busyInst.tmuxSession.Command = "agy"
+
+	busyInst.UpdateHookStatus(&HookStatus{
+		Status:    "waiting",
+		Event:     "Stop",
+		SessionID: "conv-agy-wait-1",
+		UpdatedAt: time.Now(),
+	})
+	if err := busyInst.UpdateStatus(); err != nil {
+		t.Fatalf("busyInst UpdateStatus: %v", err)
+	}
+	if got := busyInst.GetStatusThreadSafe(); got != StatusRunning {
+		t.Fatalf("busy agy pane with waiting hook = %s, want running", got)
+	}
+
+	idleInst, idleCleanup := startPaneInstance(t, "antigravity", "agy-idle-wait", agyIdleLivePaneFrame)
+	defer idleCleanup()
+	idleInst.tmuxSession.Command = "agy"
+
+	idleInst.UpdateHookStatus(&HookStatus{
+		Status:    "waiting",
+		Event:     "Stop",
+		SessionID: "conv-agy-idle-1",
+		UpdatedAt: time.Now(),
+	})
+	if err := idleInst.UpdateStatus(); err != nil {
+		t.Fatalf("idleInst UpdateStatus: %v", err)
+	}
+	if got := idleInst.GetStatusThreadSafe(); got != StatusWaiting {
+		t.Fatalf("idle agy pane with waiting hook = %s, want waiting", got)
 	}
 }

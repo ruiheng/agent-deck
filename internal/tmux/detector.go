@@ -64,7 +64,7 @@ func (d *PromptDetector) HasPrompt(content string) bool {
 	case "gemini":
 		return d.hasGeminiPrompt(content)
 
-	case "antigravity":
+	case "antigravity", "agy":
 		content = StripANSI(content)
 		return antigravityPrompt.MatchString(content) &&
 			!antigravityBusy.MatchString(content) &&

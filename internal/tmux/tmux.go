@@ -582,6 +582,8 @@ type Session struct {
 	bgWorkBlocked        bool
 	bgWorkForegroundBusy bool
 	bgWorkCheckedAt      time.Time
+	agyBusy              bool
+	agyBusyCheckedAt     time.Time
 
 	// lastBackgroundWork is the background work (issue #2473) the last
 	// prepared pane frame showed, read from the frame BEFORE the agent-roster

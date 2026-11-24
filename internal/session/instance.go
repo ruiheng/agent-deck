@@ -2682,6 +2682,15 @@ func (i *Instance) updateStatus(pass *StatusUpdatePass, syncMetadata bool) error
 					if i.Status == StatusStopped {
 						return nil
 					}
+				} else if i.tmuxSession != nil && IsAntigravityTool(i.Tool) {
+					hookAt := i.hookLastUpdate
+					i.mu.Unlock()
+					busy := i.tmuxSession.AgyForegroundBusySince(hookAt)
+					i.mu.Lock()
+					if i.Status == StatusStopped {
+						return nil
+					}
+					foregroundBusy = busy
 				}
 				switch {
 				case foregroundBusy:
