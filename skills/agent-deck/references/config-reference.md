@@ -286,15 +286,38 @@ command = "gemini"                   # Binary/invocation override
 
 ## [antigravity] Section
 
-The built-in `antigravity` preset launches Google's `agy` CLI. Override the
-invocation for the preset with:
+Google Antigravity CLI (`agy`) integration settings. Per-session overrides set in the TUI Antigravity launch panel take precedence over these defaults (legacy `[agy]` and `[models.agy]` sections remain supported as fallbacks when `[antigravity]` / `[models.antigravity]` fields are unset).
 
 ```toml
 [antigravity]
-command = "agy --mode plan" # Default: "agy"
+command = "agy"
+env_file = "~/.agy.env"
+default_model = "gemini-4-carbon-high"
+effort = "high"                     # low | medium | high | xhigh | max
+mode = "auto"                       # accept-edits | auto | plan
+dangerous_mode = false              # Maps to --dangerously-skip-permissions
+sandbox = false                     # Maps to --sandbox
+agent = ""                          # Maps to --agent <name>
+extra_args = ["--remote-control"]   # Extra CLI arguments appended on launch
+hooks_enabled = true                # Auto-install lifecycle hooks into ~/.gemini/config/hooks.json
 ```
 
-An existing `[tools.antigravity].command` is used if `[antigravity].command` is
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `command` | string | `"agy"` | Override the binary/invocation for Antigravity (`agy`) sessions. |
+| `env_file` | string | `""` | A `.env` file sourced for Antigravity sessions only. See [Path Resolution](#path-resolution). |
+| `default_model` | string | `""` | Default `--model` when no per-session model override is set. |
+| `effort` | string | `""` | Default `--effort` level (`low`, `medium`, `high`, `xhigh`, `max`). |
+| `mode` | string | `""` | Default `--mode` (`accept-edits`, `auto`, `plan`). |
+| `dangerous_mode` | bool | `false` | Enables `--dangerously-skip-permissions` (YOLO mode) by default. |
+| `sandbox` | bool | `false` | Enables `agy` CLI's native `--sandbox` terminal restriction flag by default. |
+| `agent` | string | `""` | Default `--agent` passed when launching `agy`. |
+| `extra_args` | []string | `[]` | Extra CLI arguments appended when launching `agy`. |
+| `hooks_enabled` | bool | `true` | Auto-install lifecycle hooks on TUI startup; set `false` by `agent-deck agy-hooks uninstall`. |
+
+The TUI new-session dialog also exposes per-session Session mode (`New` / `Continue --continue` / `Resume --conversation <id>`), execution `--mode`, YOLO (`--dangerously-skip-permissions`, also bound to the `y` hotkey), `--sandbox`, `--agent`, extra args, and an initial interactive prompt (`--prompt-interactive`).
+
+An existing `[tools.antigravity].command` is used if `[antigravity].command` and `[agy].command` are
 unset. Set terminal detection overrides under `[tools.antigravity]`. Gemini CLI
 remains a separate tool with its own settings.
 
@@ -351,8 +374,8 @@ list = ["acme/nova-2", "local/qwen"]   # replaces the suggestions entirely
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
-| `probe` | bool | `true` | Ask an installed CLI that can list its own models for its model and effort lists, merged in front of the built-in catalog. Today that is Codex (`codex debug models`, about 1s timeout) and OpenCode (`opencode models`, about 3s timeout, run from your home directory; it lists the models of providers you have credentials for). Neither sends a prompt. Claude Code and Gemini have no local listing and use the built-in catalog. The probe runs with the `VAR=value` prefix of the configured `command`. Results are cached per CLI binary and prefix for up to a day in `<cache dir>/model-probe/`; a provider you add to OpenCode shows up after that day, or at once if you delete `model-probe/opencode.json`. The TUI and web server never wait on a probe: they show the last list (or the built-in one) while it runs. A missing CLI, timeout or unrecognized output falls back to the built-in catalog, and a failed probe is retried after about a minute. `false` uses only the built-in catalog. |
-| `<tool>.list` | string array | `[]` | Pins the model suggestions for `claude`, `codex`, `gemini` or `opencode`: only these IDs are offered, without the probed or built-in models. Codex may still be asked for its reasoning efforts. A custom tool wrapping Claude or Codex uses that tool's table. |
+| `probe` | bool | `true` | Ask an installed CLI that can list its own models for its model and effort lists, merged in front of the built-in catalog. Today that is Codex (`codex debug models`, about 1s timeout), OpenCode (`opencode models`, about 3s timeout, run from your home directory; it lists the models of providers you have credentials for), and Antigravity (`agy models`, about 5s timeout, run from your home directory). None sends a prompt. Claude Code and Gemini have no local listing and use the built-in catalog. The probe runs with the `VAR=value` prefix of the configured `command`. Results are cached per CLI binary and prefix for up to a day in `<cache dir>/model-probe/`; a change shows up after that day, or at once if you delete `model-probe/<tool>.json`. The TUI and web server never wait on a probe: they show the last list (or the built-in one) while it runs. A missing CLI, timeout or unrecognized output falls back to the built-in catalog, and a failed probe is retried after about a minute. `false` uses only the built-in catalog. |
+| `<tool>.list` | string array | `[]` | Pins the model suggestions for `claude`, `codex`, `gemini`, `opencode` or `antigravity` (legacy `agy`): only these IDs are offered, without the probed or built-in models. Codex may still be asked for its reasoning efforts. A custom tool wrapping Claude or Codex uses that tool's table. |
 | `<tool>.extra` | string array | `[]` | Extra IDs shown first, ahead of the probed and built-in models. Applies with `probe = false` too. |
 
 The lists are suggestions, not an allowlist: a `[claude] default_model` the catalog does not know is still prefilled in the new-session dialog (with a warning in the log), and `--model` passes any ID through.

@@ -33,6 +33,19 @@ func TestApplyCLIYoloOverride(t *testing.T) {
 		}
 	})
 
+	for _, tool := range []string{"antigravity", "agy"} {
+		t.Run("enabled for "+tool+" sets DangerousMode", func(t *testing.T) {
+			inst := session.NewInstanceWithTool("agy-test", "/tmp/test", tool)
+			if err := applyCLIYoloOverride(inst, true); err != nil {
+				t.Fatalf("applyCLIYoloOverride() error = %v", err)
+			}
+			opts := inst.GetAgyOptions()
+			if opts == nil || !opts.DangerousMode {
+				t.Fatalf("AgyOptions.DangerousMode = %v, want true", opts)
+			}
+		})
+	}
+
 	t.Run("disabled is a no-op", func(t *testing.T) {
 		inst := session.NewInstanceWithTool("gemini-test", "/tmp/test", "gemini")
 		if err := applyCLIYoloOverride(inst, false); err != nil {

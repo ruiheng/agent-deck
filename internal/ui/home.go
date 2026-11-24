@@ -6847,6 +6847,22 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 					opts.YoloMode = &newYolo
 					_ = inst.SetHermesOptions(opts)
 					toggled = true
+
+				case "antigravity", "agy":
+					userConfig, _ := session.LoadUserConfig()
+					currentDangerous := false
+					opts := inst.GetAgyOptions()
+					if opts != nil {
+						currentDangerous = opts.DangerousMode
+					} else if userConfig != nil {
+						currentDangerous = userConfig.EffectiveAntigravitySettings().DangerousMode
+					}
+					if opts == nil {
+						opts = session.NewAgyOptions(userConfig)
+					}
+					opts.DangerousMode = !currentDangerous
+					_ = inst.SetAgyOptions(opts)
+					toggled = true
 				}
 
 				if toggled {
@@ -6857,7 +6873,7 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 						return h, h.restartSession(inst)
 					}
 				} else {
-					h.setError(fmt.Errorf("YOLO toggle is for Gemini, Codex and Hermes sessions; '%s' runs %q", inst.Title, inst.Tool))
+					h.setError(fmt.Errorf("YOLO toggle is for Gemini, Codex, Hermes and Antigravity sessions; '%s' runs %q", inst.Title, inst.Tool))
 				}
 			} else {
 				h.explainKeyNeedsSession("YOLO toggle")
@@ -8561,6 +8577,12 @@ func (h *Home) renderSessionItem(
 		if opts := inst.GetHermesOptions(); opts != nil && opts.YoloMode != nil {
 			showYolo = *opts.YoloMode
 		} else if cfg, _ := session.LoadUserConfig(); cfg != nil && cfg.Hermes.YoloMode {
+			showYolo = true
+		}
+	} else if session.IsAntigravityTool(instTool) {
+		if opts := inst.GetAgyOptions(); opts != nil {
+			showYolo = opts.DangerousMode
+		} else if cfg, _ := session.LoadUserConfig(); cfg != nil && cfg.EffectiveAntigravitySettings().DangerousMode {
 			showYolo = true
 		}
 	}

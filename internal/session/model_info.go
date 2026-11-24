@@ -36,6 +36,10 @@ func (i *Instance) LaunchModelID() string {
 		if opts := i.GetOMPOptions(); opts != nil {
 			return strings.TrimSpace(opts.Model)
 		}
+	case IsAntigravityTool(i.Tool):
+		if opts := i.GetAgyOptions(); opts != nil {
+			return strings.TrimSpace(opts.Model)
+		}
 	case IsCodexCompatible(i.Tool):
 		if opts := i.GetCodexOptions(); opts != nil {
 			return strings.TrimSpace(opts.Model)

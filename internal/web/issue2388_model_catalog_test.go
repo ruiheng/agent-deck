@@ -50,13 +50,13 @@ func staticJSCatalog(t *testing.T, table string) map[string][]string {
 // off in test binaries, so session.* return the static catalog here.
 func TestIssue2388_WebStaticCatalogMatchesTUI(t *testing.T) {
 	models := staticJSCatalog(t, "MODEL_ID_CATALOG")
-	for _, tool := range []string{"claude", "codex", "gemini", "opencode"} {
+	for _, tool := range []string{"claude", "codex", "gemini", "opencode", "antigravity"} {
 		if got, want := models[tool], session.KnownModelIDsForTool(tool); !slices.Equal(got, want) {
 			t.Errorf("%s models: web %v, TUI %v", tool, got, want)
 		}
 	}
 	efforts := staticJSCatalog(t, "REASONING_EFFORT_CATALOG")
-	for _, tool := range []string{"claude", "codex"} {
+	for _, tool := range []string{"claude", "codex", "antigravity"} {
 		if got, want := efforts[tool], session.LaunchReasoningEffortsForTool(tool); !slices.Equal(got, want) {
 			t.Errorf("%s efforts: web %v, TUI %v", tool, got, want)
 		}
@@ -82,7 +82,7 @@ func fetchSettingsModelCatalog(t *testing.T) map[string]ToolModelCatalog {
 // /api/settings serves the same lists the TUI dialog reads, per picker tool.
 func TestIssue2388_SettingsModelCatalogMatchesTUI(t *testing.T) {
 	catalog := fetchSettingsModelCatalog(t)
-	for _, tool := range []string{"claude", "codex", "gemini", "opencode"} {
+	for _, tool := range []string{"claude", "codex", "gemini", "opencode", "antigravity"} {
 		entry, ok := catalog[tool]
 		if !ok {
 			t.Fatalf("modelCatalog missing %s: %v", tool, catalog)
@@ -130,5 +130,26 @@ func TestIssue2388_SettingsModelCatalogCarriesProbe(t *testing.T) {
 	}
 	if !slices.Equal(entry.ModelEfforts["gpt-7-nova"], []string{"low", "hyper"}) {
 		t.Fatalf("modelEfforts = %v", entry.ModelEfforts)
+	}
+}
+
+func TestAgySettingsModelCatalogCarriesProbe(t *testing.T) {
+	dir := t.TempDir()
+	script := "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then echo '1.5.9'; exit 0; fi\nprintf 'gemini-5-ultra-high         Gemini 5 Ultra (High)\\nclaude-opus-6-high           Claude Opus 6 (High)\\n'\n"
+	if err := os.WriteFile(filepath.Join(dir, "agy"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+"/usr/bin"+string(os.PathListSeparator)+"/bin")
+	t.Setenv("XDG_CACHE_HOME", t.TempDir())
+	t.Setenv("AGENTDECK_TEST_MODEL_PROBE", "1")
+	session.ResetModelProbeMemo()
+	t.Cleanup(session.ResetModelProbeMemo)
+
+	entry := fetchSettingsModelCatalog(t)["antigravity"]
+	if want := []string{"gemini-5-ultra-high", "claude-opus-6-high"}; len(entry.Models) < 2 || !slices.Equal(entry.Models[:2], want) {
+		t.Fatalf("antigravity models = %v, want probed prefix %v", entry.Models, want)
+	}
+	if !slices.Equal(entry.Models, session.KnownModelIDsForTool("antigravity")) {
+		t.Fatalf("settings %v != TUI %v", entry.Models, session.KnownModelIDsForTool("antigravity"))
 	}
 }

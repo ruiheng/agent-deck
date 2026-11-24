@@ -20,6 +20,7 @@ Complete reference for all agent-deck CLI commands.
 - [Health Command](#health-command)
 - [Inbox Commands](#inbox-commands)
 - [Codex Hook Commands](#codex-hook-commands)
+- [Antigravity Hook Commands](#antigravity-hook-commands)
 - [DeepSeek Commands](#deepseek-commands)
 - [Conductor Commands](#conductor-commands)
 
@@ -96,9 +97,9 @@ agent-deck launch -g book-keeper -c claude   # no path: lands on the group's def
 Notes:
 - `[path]` omitted: resolves the target group's `default_path`, then the global `default_path` config key, then the group's most recent session path, then cwd — the same chain as `add` (#1303). An explicit `.` always means the current directory.
 - `--account <name>` selects a named slot from `[profiles.<name>.claude].config_dir` for this session, matching `add --account`. Without `--account` (or `AGENTDECK_ACCOUNT`), `add` and `launch` put a Claude session on `[claude].default_account` when it is set, unless the target group or parent conductor has its own `config_dir` or `CLAUDE_CONFIG_DIR` is set in the environment (a child created from an agent-deck Claude session keeps that session's account); the same default the TUI's New Session dialog preselects.
-- `--model <id>` and `--effort <level>` are the per-session overrides behind the TUI's Model ID and Reasoning effort rows (also on `add`). Effort levels: claude `low|medium|high|xhigh|max`, codex `minimal|low|medium|high|xhigh|max|ultra` plus any level the installed Codex advertises; other tools refuse the flag. When the installed Codex describes the chosen `--model`, only that model's levels are accepted. Both are echoed in `--json` output (`model`, `effort`) and by `session show --json`.
+- `--model <id>` and `--effort <level>` are the per-session overrides behind the TUI's Model ID and Reasoning effort rows (also on `add`). Effort levels: claude `low|medium|high|xhigh|max`, antigravity `low|medium|high|xhigh|max`, codex `minimal|low|medium|high|xhigh|max|ultra` plus any level the installed Codex advertises; other tools refuse the flag. When the installed Codex describes the chosen `--model`, only that model's levels are accepted. Both are echoed in `--json` output (`model`, `effort`) and by `session show --json`.
 - `--model` accepts any ID: the model lists are suggestions, not an allowlist, and an ID the list lacks is passed to the tool as is.
-- `launch -capabilities --json` (and `add -capabilities --json`) prints what this host can create: per tool `models`, `default_model`, `reasoning_efforts` and, when the installed CLI was probed, `model_efforts` (model ID to accepted efforts). For Codex the lists come from `codex debug models` (models with `visibility: list`, by priority) and for OpenCode from `opencode models` (about 3s timeout), each merged in front of the built-in catalog; Claude Code, Gemini and the rest use the built-in catalog. `[models.<tool>] extra` IDs come first, and a `[models.<tool>] list` replaces the whole list. The probe never sends a prompt, times out after about 1s (Codex) or 3s (OpenCode), runs with the `VAR=value` prefix of the configured command, and its result is cached per CLI binary (path, mtime, size) in the cache dir (`model-probe/<tool>.json`) for up to a day. A missing CLI, a timeout, a non-zero exit or unrecognized output falls back to the built-in catalog; a failed probe is remembered (also on disk) for about a minute and then retried. Remote hosts report their own lists through their own `-capabilities`. Turn the probe off with `[models] probe = false`.
+- `launch -capabilities --json` (and `add -capabilities --json`) prints what this host can create: per tool `models`, `default_model`, `reasoning_efforts` and, when the installed CLI was probed, `model_efforts` (model ID to accepted efforts). For Codex the lists come from `codex debug models` (models with `visibility: list`, by priority), for OpenCode from `opencode models` (about 3s timeout), and for Antigravity from `agy models` (about 5s timeout), each merged in front of the built-in catalog; Claude Code, Gemini and the rest use the built-in catalog. `[models.<tool>] extra` IDs come first, and a `[models.<tool>] list` replaces the whole list. The probe never sends a prompt, times out after about 1s (Codex), 3s (OpenCode), or 5s (Antigravity), runs with the `VAR=value` prefix of the configured command, and its result is cached per CLI binary (path, mtime, size) in the cache dir (`model-probe/<tool>.json`) for up to a day. A missing CLI, a timeout, a non-zero exit or unrecognized output falls back to the built-in catalog; a failed probe is remembered (also on disk) for about a minute and then retried. Remote hosts report their own lists through their own `-capabilities`. Turn the probe off with `[models] probe = false`.
 - `--account` requires an explicit name. If the next token is another launch flag, launch stops with an error before resolving a fallback account or creating a session; use `--account=<name>` when a name intentionally begins with a dash.
 - `--hint/--tag/--ticket/--why` (also on `add`): durable recall hints written to state.db at creation (`docs/recall.md`). `launch` additionally derives `purpose` from the first line of `-m` and both commands derive `parent` for a child; an explicit `--hint purpose=` wins. Echoed in `--json` as `hints` and `tags`.
 - `--trust-folder` (also on `add`): add the session's folder to `[security] trusted_folders`, so agent-deck pre-trusts it for Claude, Codex and Cursor and sources a relative `env_file` from it. Needed on a new install (v1.16.34+, where `auto_trust_folders` is off) for a headless launch in a folder the tool has never been allowed to open; without it Claude shows its "trust the files in this folder?" prompt first and the launch prints a note on stderr and, with `--json`, adds `"warnings": [{"code": "FOLDER_NOT_TRUSTED", "folder": "<dir>", "hint": "..."}]` to the result (a queued start logs `queued_start_folder_not_trusted` with the same code). The flag edits config.toml in place, so comments and layout are kept. Installs from before v1.16.34 keep pre-trusting every folder (config-reference.md, `[security]`).
@@ -370,6 +371,7 @@ Auto-detects current session if no ID provided.
 - `account`: the exact stored slot, always present including an empty string. Human output shows a quoted, control-escaped `Account:` field; neither form resolves login identity.
 - Claude/Gemini session ID
 - `opencode_session_id`: the native OpenCode conversation id, present for OpenCode sessions only (an empty string until one is known or set with `session set <id> opencode-session-id <ses_...>`)
+- `agy_session_id`: the Antigravity CLI conversation id, present for Antigravity sessions only (empty string until bound by hooks or set with `session set <id> agy-session-id <conversation_id>`)
 - Attached MCPs (local, global, project)
 - tmux session name
 - `archived` (always present, as in `list --json`) and `archived_at` (only when archived). `list --json` differs here: it always carries `archived_at`, set to the zero time `0001-01-01T00:00:00Z` for a session that is not archived, so read `archived` rather than the presence of `archived_at`. Archiving records `stopped`, including for a session whose pane was already gone, and like `session stop` it releases a 401 auth hold, so restarting the session after `session unarchive` does not need `--force`.
@@ -471,7 +473,7 @@ When the session has instruction files (`--instructions-file`), the text include
 agent-deck session set <id|title> <field> <value>
 ```
 
-**Fields:** title, path, command, tool, wrapper, channels, plugins, extra-args, model, color, favorite, claude-session-id, gemini-session-id, tool-session-id, account, idle-timeout, context-level, instructions-file, prompt-suggestions, wait-timeout, order, intended-switch (run `session set --help` for each). `account` and `model` also take `--intended "<reason>"` [`--intended-for 48h`] to mark a switch as on purpose.
+**Fields:** title, path, command, tool, wrapper, channels, plugins, extra-args, model, color, favorite, claude-session-id, gemini-session-id, agy-session-id, tool-session-id, account, idle-timeout, context-level, instructions-file, prompt-suggestions, wait-timeout, order, intended-switch (run `session set --help` for each). `account` and `model` also take `--intended "<reason>"` [`--intended-for 48h`] to mark a switch as on purpose.
 
 Setting `account` auto-migrates the Claude conversation into the target account's config dir (same migration as `session switch-account`, but without the automatic stop/restart).
 
@@ -1099,11 +1101,11 @@ agent-deck skill attach <session> <skill> [--source <name>] [--restart] [--json]
 ```
 
 - `--source`: Force source when name is ambiguous
-- `--restart`: Restart session immediately after attach for Claude, Gemini, and Codex sessions
+- `--restart`: Restart session immediately after attach for Claude, Gemini, Codex, and Antigravity sessions
 
 Attach target root is runtime-specific:
 - Claude-compatible sessions -> `<project>/.claude/skills`
-- Gemini, Codex, and Pi sessions -> `<project>/.agents/skills`
+- Gemini, Codex, Pi, and Antigravity sessions -> `<project>/.agents/skills`
 
 ### skill detach
 
@@ -1112,7 +1114,7 @@ agent-deck skill detach <session> <skill> [--source <name>] [--restart] [--json]
 ```
 
 - `--source`: Filter by source when detaching
-- `--restart`: Restart session immediately after detach for Claude, Gemini, and Codex sessions
+- `--restart`: Restart session immediately after detach for Claude, Gemini, Codex, and Antigravity sessions
 
 ### skill source list
 
@@ -1494,6 +1496,16 @@ agent-deck pi-hooks uninstall
 ```
 
 pi turn-level status uses an agent-deck extension installed into pi's global extension directory (`~/.pi/agent/extensions/agent-deck.ts`, or under `PI_CODING_AGENT_DIR` when set). It forwards `session_start`, `turn_start`, `turn_end` and `session_shutdown`; restart running pi sessions after installing. `status` reports `INSTALLED`, `OUTDATED` (reinstall to upgrade), `FOREIGN` (a file agent-deck did not write is in the way) or `NOT INSTALLED`. Without it, pi status falls back to pane detection.
+
+## Antigravity Hook Commands
+
+```bash
+agent-deck agy-hooks install
+agent-deck agy-hooks status [--json]
+agent-deck agy-hooks uninstall
+```
+
+Manages Antigravity CLI (`agy`) lifecycle hooks under `~/.gemini/config/hooks.json` (or `$AGY_CONFIG_DIR/hooks.json`) for real-time turn status and `conversationId` binding. TUI startup auto-installs them when `agy` is on `PATH` unless `[antigravity] hooks_enabled = false` is set (which `agy-hooks uninstall` writes persistently).
 
 ## DeepSeek Commands
 

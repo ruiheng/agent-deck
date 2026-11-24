@@ -3,9 +3,10 @@
 //
 // GET /api/settings carries `modelCatalog`, built server-side from the same
 // session catalog the TUI dialog and `launch -capabilities` read: the models
-// the installed CLI reports (Codex: `codex debug models`) merged in front of
-// the built-in list. The static tables below are the fallback when the server
-// sends no entry for a tool, and they supply display labels for known IDs.
+// the installed CLI reports (Codex: `codex debug models`, OpenCode: `opencode models`,
+// Antigravity: `agy models`) merged in front of the built-in list. The static
+// tables below are the fallback when the server sends no entry for a tool, and
+// they supply display labels for known IDs.
 
 export const CUSTOM_MODEL = '__custom__'
 
@@ -25,6 +26,13 @@ export const REASONING_EFFORT_CATALOG = {
     { value: 'xhigh', label: 'Extra high' },
     { value: 'max', label: 'Max' },
     { value: 'ultra', label: 'Ultra' },
+  ],
+  antigravity: [
+    { value: 'low', label: 'Low' },
+    { value: 'medium', label: 'Medium' },
+    { value: 'high', label: 'High' },
+    { value: 'xhigh', label: 'Extra high' },
+    { value: 'max', label: 'Max' },
   ],
 }
 
@@ -98,38 +106,70 @@ export const MODEL_ID_CATALOG = {
     { value: 'anthropic/claude-opus-4-7', label: 'Anthropic Claude Opus 4.7' },
     { value: 'anthropic/claude-haiku-4-5', label: 'Anthropic Claude Haiku 4.5' },
   ],
+  antigravity: [
+    { value: 'gemini-4-carbon-medium', label: 'Gemini 4 Carbon (Medium)' },
+    { value: 'gemini-4-carbon-high', label: 'Gemini 4 Carbon (High)' },
+    { value: 'gemini-4-carbon-low', label: 'Gemini 4 Carbon (Low)' },
+    { value: 'gemini-4-argon-medium', label: 'Gemini 4 Argon (Medium)' },
+    { value: 'gemini-4-argon-high', label: 'Gemini 4 Argon (High)' },
+    { value: 'gemini-4-argon-low', label: 'Gemini 4 Argon (Low)' },
+    { value: 'gemini-4-hydrogen-high', label: 'Gemini 4 Hydrogen (High)' },
+    { value: 'gemini-4-hydrogen-xhigh', label: 'Gemini 4 Hydrogen (XHigh)' },
+    { value: 'gemini-4-hydrogen-medium', label: 'Gemini 4 Hydrogen (Medium)' },
+    { value: 'gemini-4-hydrogen-low', label: 'Gemini 4 Hydrogen (Low)' },
+    { value: 'gemini-pro-orchestrator', label: 'Orchestrator (Carbon)' },
+    { value: 'gemini-pro-orchestrator-argon', label: 'Orchestrator (Argon)' },
+    { value: 'gemini-3.8-flash-high', label: 'Gemini 3.8 Flash (High)' },
+    { value: 'gemini-3.8-flash-medium', label: 'Gemini 3.8 Flash (Medium)' },
+    { value: 'gemini-3.8-flash-low', label: 'Gemini 3.8 Flash (Low)' },
+    { value: 'claude-opus-5-5-low', label: 'Claude Opus 5.5 (Low)' },
+    { value: 'claude-opus-5-5-medium', label: 'Claude Opus 5.5 (Medium)' },
+    { value: 'claude-opus-5-5-high', label: 'Claude Opus 5.5 (High)' },
+    { value: 'claude-sonnet-5-5-low', label: 'Claude Sonnet 5.5 (Low)' },
+    { value: 'claude-sonnet-5-5-medium', label: 'Claude Sonnet 5.5 (Medium)' },
+    { value: 'claude-sonnet-5-5-high', label: 'Claude Sonnet 5.5 (High)' },
+    { value: 'gpt-oss-120b-medium', label: 'GPT-OSS 120B (Medium)' },
+  ],
 }
 
 const EFFORT_LABELS = Object.fromEntries(
   Object.values(REASONING_EFFORT_CATALOG).flat().map(e => [e.value, e.label]),
 )
 
+function canonicalCatalogTool(tool) {
+  if (tool === 'opencode2') return 'opencode'
+  if (tool === 'agy') return 'antigravity'
+  return tool
+}
+
 function staticModelLabel(tool, id) {
-  if (tool === 'opencode2') tool = 'opencode'
-  const hit = (MODEL_ID_CATALOG[tool] || []).find(m => m.value === id)
+  const canon = canonicalCatalogTool(tool)
+  const hit = (MODEL_ID_CATALOG[canon] || []).find(m => m.value === id)
   return hit ? hit.label : id
 }
 
 // modelOptionsForTool returns [{ value, label }] for the MODEL ID select.
 export function modelOptionsForTool(tool, serverCatalog) {
-  const entry = serverCatalog && serverCatalog[tool]
+  const canon = canonicalCatalogTool(tool)
+  const entry = serverCatalog && (serverCatalog[tool] || serverCatalog[canon])
   if (entry && Array.isArray(entry.models) && entry.models.length > 0) {
-    return entry.models.map(id => ({ value: id, label: staticModelLabel(tool, id) }))
+    return entry.models.map(id => ({ value: id, label: staticModelLabel(canon, id) }))
   }
-  return MODEL_ID_CATALOG[tool === 'opencode2' ? 'opencode' : tool] || []
+  return MODEL_ID_CATALOG[canon] || []
 }
 
 // effortOptionsForTool returns [{ value, label }] for the REASONING EFFORT
 // select, narrowed to the chosen model when the server knows its efforts.
 export function effortOptionsForTool(tool, modelId, serverCatalog) {
-  const entry = serverCatalog && serverCatalog[tool]
+  const canon = canonicalCatalogTool(tool)
+  const entry = serverCatalog && (serverCatalog[tool] || serverCatalog[canon])
   if (entry && Array.isArray(entry.reasoningEfforts) && entry.reasoningEfforts.length > 0) {
     const perModel = modelId && entry.modelEfforts && entry.modelEfforts[modelId]
     const efforts = Array.isArray(perModel) && perModel.length > 0 ? perModel : entry.reasoningEfforts
     return efforts.map(value => ({ value, label: EFFORT_LABELS[value] || value }))
   }
   if (entry) return []
-  return REASONING_EFFORT_CATALOG[tool] || []
+  return REASONING_EFFORT_CATALOG[canon] || []
 }
 
 // seedModelSelection maps a prefilled model ID onto the select state. A known

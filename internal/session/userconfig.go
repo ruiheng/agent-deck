@@ -3036,18 +3036,20 @@ type OpenCodeSettings struct {
 // `launch -capabilities` and reasoning-effort validation.
 type ModelsSettings struct {
 	// Probe asks installed CLIs that can list their own models (today:
-	// `codex debug models` and `opencode models`) for their model and effort
-	// lists, cached per CLI binary, merged in front of the built-in catalog.
-	// Set false to use only the built-in catalog.
+	// `codex debug models`, `opencode models`, and `agy models`) for their
+	// model and effort lists, cached per CLI binary, merged in front of the
+	// built-in catalog. Set false to use only the built-in catalog.
 	// Default: true
 	Probe *bool `toml:"probe,omitempty"`
 
-	// Per-tool overrides (#2664): [models.codex], [models.opencode], ...
+	// Per-tool overrides (#2664): [models.codex], [models.opencode], [models.antigravity], ...
 	// A custom tool uses the table of the tool it wraps.
-	Claude   ModelListSettings `toml:"claude,omitempty"`
-	Codex    ModelListSettings `toml:"codex,omitempty"`
-	Gemini   ModelListSettings `toml:"gemini,omitempty"`
-	OpenCode ModelListSettings `toml:"opencode,omitempty"`
+	Claude      ModelListSettings `toml:"claude,omitempty"`
+	Codex       ModelListSettings `toml:"codex,omitempty"`
+	Gemini      ModelListSettings `toml:"gemini,omitempty"`
+	OpenCode    ModelListSettings `toml:"opencode,omitempty"`
+	Antigravity ModelListSettings `toml:"antigravity,omitempty"`
+	Agy         ModelListSettings `toml:"agy,omitempty"`
 }
 
 // ModelListSettings pins or extends one tool's model suggestions.
@@ -3060,7 +3062,7 @@ type ModelListSettings struct {
 }
 
 // ForTool returns the override table for a tool kind ("claude", "codex",
-// "gemini", "opencode"); other kinds have none.
+// "gemini", "opencode", "antigravity", or legacy "agy"); other kinds have none.
 func (m ModelsSettings) ForTool(kind string) ModelListSettings {
 	switch kind {
 	case "claude":
@@ -3071,6 +3073,15 @@ func (m ModelsSettings) ForTool(kind string) ModelListSettings {
 		return m.Gemini
 	case "opencode":
 		return m.OpenCode
+	case "antigravity", "agy":
+		merged := m.Agy
+		if len(m.Antigravity.List) > 0 {
+			merged.List = m.Antigravity.List
+		}
+		if len(m.Antigravity.Extra) > 0 {
+			merged.Extra = m.Antigravity.Extra
+		}
+		return merged
 	}
 	return ModelListSettings{}
 }

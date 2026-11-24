@@ -31,9 +31,9 @@ import (
 // The static lists in model_catalog.go and reasoning_effort.go go stale every
 // time a vendor ships a model. Where the installed CLI can list its own models
 // without a billed request, Agent Deck asks it and merges the answer in front
-// of the static list. Codex (`codex debug models`) and OpenCode (`opencode
-// models`, #2664) have such a command; Claude Code and Gemini have no local
-// listing and stay static.
+// of the static list. Codex (`codex debug models`), OpenCode (`opencode
+// models`, #2664), and Antigravity (`agy models`) have such a command; Claude
+// Code and Gemini have no local listing and stay static.
 //
 // The probe runs on the host that launches the session, with a short timeout.
 // Its result is cached on disk per tool, keyed by the resolved binary path,
@@ -85,8 +85,17 @@ var openCodeModelProber = modelProber{
 	env: func() []string { return probeEnvFromCommand(GetToolCommand("opencode")) },
 }
 
+// agyModelProber asks `agy models`, which boots Antigravity's local language
+// server to fetch the user's available models (~1-2s cold, so 5s timeout).
+// Runs from the home directory so the cache stays per binary.
+var agyModelProber = modelProber{
+	name: "antigravity", binary: agyProbeBinary, args: []string{"models"}, parse: parseAgyModels,
+	timeout: 5 * time.Second, dir: modelProbeHomeDir,
+	env: func() []string { return probeEnvFromCommand(GetAgyCommand()) },
+}
+
 // modelProbers lists the tools that can answer.
-var modelProbers = []modelProber{codexModelProber, openCodeModelProber}
+var modelProbers = []modelProber{codexModelProber, openCodeModelProber, agyModelProber}
 
 // modelProberFor returns the prober for a tool kind. A switch, not a map
 // lookup, so the returned prober never carries the caller's string.
@@ -96,6 +105,8 @@ func modelProberFor(kind string) (modelProber, bool) {
 		return codexModelProber, true
 	case "opencode":
 		return openCodeModelProber, true
+	case "antigravity", "agy":
+		return agyModelProber, true
 	}
 	return modelProber{}, false
 }
@@ -109,6 +120,11 @@ func codexProbeBinary() string {
 // openCodeProbeBinary is the executable of the configured [opencode] command.
 func openCodeProbeBinary() string {
 	return probeBinaryFromCommand(GetToolCommand("opencode"), "opencode")
+}
+
+// agyProbeBinary is the executable of the configured [antigravity] command.
+func agyProbeBinary() string {
+	return probeBinaryFromCommand(GetAgyCommand(), defaultAgyCommand)
 }
 
 // probeBinaryFromCommand returns the executable of a configured command line.
@@ -573,6 +589,56 @@ func parseOpenCodeModels(data []byte) (*ModelProbeResult, error) {
 	}
 	if len(result.Models) == 0 {
 		return nil, errors.New("parse opencode models: no models")
+	}
+	return result, nil
+}
+
+var ansiCSIPattern = regexp.MustCompile("\x1b\\[[0-9;?]*[ -/]*[@-~]")
+
+// parseAgyModels parses `agy models` stdout (`<model-id>  <Display Label>`,
+// prefixed by `\r` spinner frames). Rejects unrecognized lines strictly so
+// CLI updates or warnings fall back cleanly to the static catalog.
+func parseAgyModels(data []byte) (*ModelProbeResult, error) {
+	result := &ModelProbeResult{}
+	for _, rawLine := range strings.Split(string(data), "\n") {
+		line := strings.TrimRight(rawLine, "\r")
+		if idx := strings.LastIndexByte(line, '\r'); idx >= 0 {
+			line = line[idx+1:]
+		}
+		line = ansiCSIPattern.ReplaceAllString(line, "")
+		line = strings.TrimSpace(line)
+		if line == "" || (strings.HasSuffix(line, "...") && strings.Contains(line, "Fetching")) {
+			continue
+		}
+
+		var id string
+		var hasLabel bool
+		if tabIdx := strings.IndexByte(line, '\t'); tabIdx >= 0 {
+			id = strings.TrimSpace(line[:tabIdx])
+			hasLabel = strings.TrimSpace(line[tabIdx+1:]) != ""
+		} else if sepIdx := strings.Index(line, "  "); sepIdx >= 0 {
+			id = strings.TrimSpace(line[:sepIdx])
+			hasLabel = strings.TrimSpace(line[sepIdx+2:]) != ""
+		} else {
+			id = line
+		}
+
+		if id == "" || !probeIDPattern.MatchString(id) {
+			return nil, fmt.Errorf("parse agy models: unexpected line %q", truncateProbeLine(line))
+		}
+		if !hasLabel && !strings.ContainsAny(id, "-/.") {
+			return nil, fmt.Errorf("parse agy models: unexpected bare word %q", truncateProbeLine(line))
+		}
+		switch strings.ToLower(id) {
+		case "id", "model", "models", "name", "slug":
+			return nil, fmt.Errorf("parse agy models: unexpected header %q", truncateProbeLine(line))
+		}
+		if !slices.Contains(result.Models, id) {
+			result.Models = append(result.Models, id)
+		}
+	}
+	if len(result.Models) == 0 {
+		return nil, errors.New("parse agy models: no models")
 	}
 	return result, nil
 }

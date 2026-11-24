@@ -57,6 +57,9 @@ func modelProbeKind(tool string) string {
 	if IsCodexCompatible(tool) {
 		return "codex"
 	}
+	if IsAntigravityCompatible(tool) {
+		return "antigravity"
+	}
 	return tool
 }
 
@@ -136,6 +139,31 @@ func staticModelIDsForTool(tool string) []string {
 			"gpt-4o-mini",
 			"o3-pro",
 			"o3",
+		}
+	case IsAntigravityCompatible(tool):
+		return []string{
+			"gemini-4-carbon-medium",
+			"gemini-4-carbon-high",
+			"gemini-4-carbon-low",
+			"gemini-4-argon-medium",
+			"gemini-4-argon-high",
+			"gemini-4-argon-low",
+			"gemini-4-hydrogen-high",
+			"gemini-4-hydrogen-xhigh",
+			"gemini-4-hydrogen-medium",
+			"gemini-4-hydrogen-low",
+			"gemini-pro-orchestrator",
+			"gemini-pro-orchestrator-argon",
+			"gemini-3.8-flash-high",
+			"gemini-3.8-flash-medium",
+			"gemini-3.8-flash-low",
+			"claude-opus-5-5-low",
+			"claude-opus-5-5-medium",
+			"claude-opus-5-5-high",
+			"claude-sonnet-5-5-low",
+			"claude-sonnet-5-5-medium",
+			"claude-sonnet-5-5-high",
+			"gpt-oss-120b-medium",
 		}
 	default:
 		return nil

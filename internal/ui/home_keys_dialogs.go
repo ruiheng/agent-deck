@@ -237,6 +237,9 @@ func (h *Home) handleNewDialogKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			toolOptionsJSON, _ = session.MarshalToolOptions(hermesOpts)
 		} else if command == "omp" {
 			toolOptionsJSON, _ = session.MarshalToolOptions(h.newDialog.GetOMPOptions())
+		} else if session.IsAntigravityTool(command) {
+			toolOptionsJSON, _ = session.MarshalToolOptions(h.newDialog.GetAgyOptions())
+			claudeStartQuery = h.newDialog.GetAgyStartPrompt()
 		}
 
 		// The account row is offered for every claude-compatible tool (the

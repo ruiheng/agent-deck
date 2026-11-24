@@ -177,6 +177,13 @@ func (h *Home) createSessionInGroupWithWorktreeAndOptions(
 					inst.ClaudeDetectedAt = time.Now()
 				}
 			}
+		} else if session.IsAntigravityTool(tool) && len(toolOptionsJSON) > 0 {
+			if opts, err := session.UnmarshalAgyOptions(toolOptionsJSON); err == nil && opts != nil &&
+				opts.SessionMode == "resume" {
+				if candidate := strings.TrimSpace(opts.ResumeConversationID); candidate != "" && session.IsValidAgyConversationID(candidate) {
+					inst.AgySessionID = candidate
+				}
+			}
 		}
 
 		if launchModelID != "" {
@@ -190,10 +197,9 @@ func (h *Home) createSessionInGroupWithWorktreeAndOptions(
 			inst.ExtraArgs = claudeExtraArgs
 		}
 
-		// Apply claude startup query (claude-only, per-session, not
-		// persisted — v1.7.67, #725). buildClaudeCommand emits this as a
-		// single shell-quoted positional arg on the new-session command.
-		if tool == "claude" && claudeStartQuery != "" {
+		// Apply initial startup query / prompt (claude positional arg or agy
+		// --prompt-interactive; per-session, not persisted).
+		if (tool == "claude" || session.IsAntigravityTool(tool)) && claudeStartQuery != "" {
 			inst.StartupQuery = claudeStartQuery
 		}
 
@@ -545,8 +551,9 @@ func createSessionTool(command string) (string, string) {
 		tool = "claude"
 	case "gemini":
 		tool = "gemini"
-	case "antigravity":
+	case "antigravity", "agy":
 		tool = "antigravity"
+		command = session.GetToolCommand("antigravity")
 	case "aider":
 		tool = "aider"
 	case "codex":
@@ -791,6 +798,8 @@ func (h *Home) quickCreateSession() tea.Cmd {
 			command = toolDef.Command
 		} else if tool == "cursor" {
 			command = session.GetToolCommand("cursor")
+		} else if session.IsAntigravityTool(tool) {
+			command = session.GetToolCommand("antigravity")
 		} else {
 			command = tool
 		}

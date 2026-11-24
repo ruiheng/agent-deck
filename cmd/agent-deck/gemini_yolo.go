@@ -13,6 +13,8 @@ func applyCLIYoloOverride(inst *session.Instance, enabled bool, explicit ...bool
 	tool := inst.Tool
 	if session.IsCodexCompatible(tool) {
 		tool = "codex"
+	} else if session.IsAntigravityTool(tool) {
+		tool = "antigravity"
 	}
 	switch tool {
 	case "gemini":
@@ -35,8 +37,16 @@ func applyCLIYoloOverride(inst *session.Instance, enabled bool, explicit ...bool
 		yolo := enabled
 		opts.YoloMode = &yolo
 		return inst.SetHermesOptions(opts)
+	case "antigravity":
+		opts := inst.GetAgyOptions()
+		if opts == nil {
+			userConfig, _ := session.LoadUserConfig()
+			opts = session.NewAgyOptions(userConfig)
+		}
+		opts.DangerousMode = enabled
+		return inst.SetAgyOptions(opts)
 	default:
-		return fmt.Errorf("--yolo only works with Gemini, Codex or Hermes sessions")
+		return fmt.Errorf("--yolo only works with Gemini, Codex, Hermes or Antigravity sessions")
 	}
 	return nil
 }

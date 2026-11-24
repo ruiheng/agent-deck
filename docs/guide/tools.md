@@ -10,7 +10,7 @@ Agent Deck works with any terminal-based AI tool:
 |------|-------------------|
 | **Claude Code** | Full (status, MCP, fork, resume) |
 | **Gemini CLI** | Full (status, MCP, resume) |
-| **Antigravity CLI** (`agy`) | Launch, terminal status detection, organization |
+| **Antigravity CLI** (`agy`) | Status detection (hook + live pane), resume (`--conversation`), launch options, project skills |
 | **OpenCode** | Status detection, MCP, organization, fork |
 | **OpenCode 2** (`opencode2`) | Status detection, MCP, model/agent selection, launch, resume, fork |
 | **Codex** | Status detection, MCP, organization, conductor, fork |
@@ -26,10 +26,9 @@ Agent Deck works with any terminal-based AI tool:
 
 Install [Antigravity CLI](https://antigravity.google/docs/getting-started/), then
 choose `antigravity` in the session picker or run `agent-deck launch -c antigravity .`.
-Complete Google's sign-in and workspace trust prompts in the session. To reopen a
-conversation, use Antigravity's `/resume` picker or launch explicitly with
-`agent-deck launch -c 'agy --conversation <id>' .`. Agent Deck does not
-automatically bind Antigravity conversation IDs or manage its hooks or MCP servers.
+Complete Google's sign-in and workspace trust prompts in the session.
+
+Agent Deck automatically injects global Antigravity lifecycle hooks (`~/.gemini/config/hooks.json`, managed with `agent-deck agy-hooks install|status|uninstall`) to track turn status and bind `conversationId` so restarts resume via `--conversation <id>` (you can also set `[antigravity] hooks_enabled = false` to opt out). Project-scoped skills attach to `<project>/.agents/skills`. Agent Deck does not manage Antigravity MCP servers.
 
 If you previously used `[tools.antigravity]` as a custom tool, the built-in
 preset keeps its `command` and detection patterns. To keep custom fields such
